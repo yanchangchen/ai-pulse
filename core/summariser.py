@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Ollama Cloud configuration
 OLLAMA_BASE_URL = "https://api.ollama.com"
-DEFAULT_MODEL = "qwen3-coder:30b"
+DEFAULT_MODEL = "minimax-m2.5:cloud"
 OLLAMA_API_KEY = "45beed49227f4ef5af146efb097df093.UN3XitWdoKXnweyM1t7fp6bP"
 
 
@@ -71,9 +71,9 @@ def generate_theme_summary(
 
 Provide:
 1. WHAT IS HAPPENING: [3-5 sentence factual summary of the key developments]
-2. WHY IT MATTERS: [2-3 sentence explanation of significance and implications]
-3. WHAT TO WATCH: [2-3 specific things worth investigating deeper, as bullet points]
-4. FURTHER READING: [3 most insightful articles with one-sentence explanation each, formatted as:
+2. WHY IT MATTERS: [2-5 sentence explanation of significance and implications]
+3. WHAT TO WATCH: [2-5 specific things worth investigating deeper, as bullet points]
+4. FURTHER READING: [5 most insightful articles with one-sentence explanation each, formatted as:
    - Article Title | Source | URL | Why read this]
 
 Be precise, avoid hype. Focus on signal over noise. Write in clear, direct language for a technically sophisticated audience."""
