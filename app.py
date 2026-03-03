@@ -47,7 +47,7 @@ st.markdown("""
 
 # Ollama Cloud configuration
 OLLAMA_BASE_URL = "https://api.ollama.com"
-DEFAULT_MODEL = "qwen3-coder:30b"
+DEFAULT_MODEL = "minimax-m2.5:cloud"
 OLLAMA_API_KEY = "45beed49227f4ef5af146efb097df093.UN3XitWdoKXnweyM1t7fp6bP"
 
 
