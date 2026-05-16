@@ -1,21 +1,21 @@
 """
 Caching module for AI Pulse.
 Provides caching utilities using st.cache_data with disk-based JSON persistence
-for surviving restarts.
+for surviving restarts and content-based hashing to optimize LLM calls.
 """
 
 import json
 import hashlib
-import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Dict
 
 import streamlit as st
 
 from config.settings import CACHE_TTL_SECONDS
+from core.logger import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 # Cache TTL in seconds (6 hours)
 CACHE_TTL = CACHE_TTL_SECONDS
@@ -58,6 +58,13 @@ def load_from_disk(key: str) -> Any:
         logger.warning("Failed to read disk cache for %s: %s", key, exc)
     return None
 
+def get_articles_hash(articles: List[Dict]) -> str:
+    """Generate a stable hash for a list of articles based on titles and links."""
+    if not articles:
+        return "empty"
+    # Sort and join identifying info
+    ids = sorted([f"{a.get('title', '')}{a.get('link', '')}" for a in articles])
+    return hashlib.sha256("".join(ids).encode()).hexdigest()
 
 # ---------------------------------------------------------------------------
 # Streamlit-cached wrappers
@@ -67,48 +74,52 @@ def load_from_disk(key: str) -> Any:
 def cache_fetch_news() -> list:
     """Cache news fetching with 6-hour TTL."""
     from core.fetcher import fetch_all_news
-
+    logger.info("Executing fresh news fetch from sources...")
     articles = fetch_all_news()
     save_to_disk("fetch_news", articles)
     return articles
 
 
 @st.cache_data(ttl=CACHE_TTL)
-def cache_classify_articles(articles: list) -> dict:
-    """Cache article classification with 6-hour TTL."""
+def cache_classify_articles(articles: list, articles_hash: str) -> dict:
+    """
+    Cache article classification with 6-hour TTL.
+    Uses articles_hash as a key to prevent re-classification if content hasn't changed.
+    """
     from core.classifier import classify_articles
-
+    logger.info("Classifying articles with content hash: %s...", articles_hash[:8])
     result = classify_articles(articles)
-    save_to_disk("classify_articles", result)
+    save_to_disk(f"classify_{articles_hash}", result)
     return result
 
 
 @st.cache_data(ttl=CACHE_TTL)
-def cache_generate_summaries(themed_articles: dict) -> dict:
-    """Cache summary generation with 6-hour TTL."""
+def cache_generate_summaries(themed_articles: dict, articles_hash: str) -> dict:
+    """
+    Cache summary generation with 6-hour TTL.
+    Uses articles_hash as a key to skip LLM calls if content is unchanged.
+    """
     from core.summariser import generate_all_summaries
-
+    logger.info("Generating LLM summaries with content hash: %s...", articles_hash[:8])
     result = generate_all_summaries(themed_articles)
-    save_to_disk("generate_summaries", result)
+    save_to_disk(f"summaries_{articles_hash}", result)
     return result
 
 
 @st.cache_data(ttl=CACHE_TTL)
-def cache_wordclouds(themed_articles: dict) -> dict:
+def cache_wordclouds(themed_articles: dict, articles_hash: str) -> dict:
     """Cache word cloud generation with 6-hour TTL."""
     from core.visualiser import generate_all_wordclouds
-
+    logger.info("Generating wordclouds with content hash: %s...", articles_hash[:8])
     result = generate_all_wordclouds(themed_articles)
-    save_to_disk("wordclouds", result)
+    save_to_disk(f"wordclouds_{articles_hash}", result)
     return result
 
 
 def clear_all_caches() -> None:
     """Clear all Streamlit caches."""
-    cache_fetch_news.clear()
-    cache_classify_articles.clear()
-    cache_generate_summaries.clear()
-    cache_wordclouds.clear()
+    logger.warning("Application-wide cache clear triggered.")
+    st.cache_data.clear()
 
 
 def get_cache_info() -> dict:

@@ -88,22 +88,20 @@ def main() -> None:
             st.markdown(f"""
             <div class="theme-card" style="border-left-color: {color1};">
                 <div class="theme-header" style="color: {color1};">{theme1}</div>
-                <div class="article-count">📰 {len(articles1)} articles</div>
+                <div class="article-count">📰 {len(articles1)} articles tracked this period</div>
+                <div style="margin-top: 15px;">
+                    <div style="font-weight: bold; color: {color1}; font-size: 14px; margin-bottom: 5px;">THE LATEST SIGNAL</div>
+                    <div style="font-size: 16px; line-height: 1.6;">{summary1.get('what_is_happening')}</div>
+                </div>
+            </div>
             """, unsafe_allow_html=True)
 
-            # What is happening
-            if summary1.get('what_is_happening'):
-                st.markdown(f"**What is happening:**")
-                st.markdown(f"{summary1.get('what_is_happening')}")
+            # Expandable sections for deeper insights
+            with st.expander("🎯 Strategic Significance"):
+                st.markdown(summary1.get('why_it_matters', 'No analysis available.'))
 
-            # Expandable sections
-            with st.expander("🔍 Why it matters"):
-                st.markdown(f"{summary1.get('why_it_matters', 'No analysis available.')}")
-
-            with st.expander("👁️ What to watch"):
-                st.markdown(f"{summary1.get('what_to_watch', 'No items to watch.')}")
-
-            st.markdown("</div>", unsafe_allow_html=True)
+            with st.expander("👁️ Future Outlook (Watchlist)"):
+                st.markdown(summary1.get('what_to_watch', 'No items to watch.'))
 
         # Second theme in row (if exists)
         if i + 1 < len(THEME_ORDER):
@@ -116,22 +114,20 @@ def main() -> None:
                 st.markdown(f"""
                 <div class="theme-card" style="border-left-color: {color2};">
                     <div class="theme-header" style="color: {color2};">{theme2}</div>
-                    <div class="article-count">📰 {len(articles2)} articles</div>
+                    <div class="article-count">📰 {len(articles2)} articles tracked this period</div>
+                    <div style="margin-top: 15px;">
+                        <div style="font-weight: bold; color: {color2}; font-size: 14px; margin-bottom: 5px;">THE LATEST SIGNAL</div>
+                        <div style="font-size: 16px; line-height: 1.6;">{summary2.get('what_is_happening')}</div>
+                    </div>
+                </div>
                 """, unsafe_allow_html=True)
 
-                # What is happening
-                if summary2.get('what_is_happening'):
-                    st.markdown(f"**What is happening:**")
-                    st.markdown(f"{summary2.get('what_is_happening')}")
-
                 # Expandable sections
-                with st.expander("🔍 Why it matters"):
-                    st.markdown(f"{summary2.get('why_it_matters', 'No analysis available.')}")
+                with st.expander("🎯 Strategic Significance"):
+                    st.markdown(summary2.get('why_it_matters', 'No analysis available.'))
 
-                with st.expander("👁️ What to watch"):
-                    st.markdown(f"{summary2.get('what_to_watch', 'No items to watch.')}")
-
-                st.markdown("</div>", unsafe_allow_html=True)
+                with st.expander("👁️ Future Outlook (Watchlist)"):
+                    st.markdown(summary2.get('what_to_watch', 'No items to watch.'))
 
         st.markdown("<br>", unsafe_allow_html=True)
 

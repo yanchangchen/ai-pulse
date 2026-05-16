@@ -13,22 +13,49 @@ logger = logging.getLogger(__name__)
 
 
 def _get_secret(key: str, default: str = "") -> str:
-    """Read a config value from Streamlit secrets, then env vars, then default."""
+    """Read a config value from Streamlit secrets, then .toml file, then env vars, then default."""
     # 1. Streamlit secrets (only available at runtime inside a Streamlit app)
     try:
         import streamlit as st
+        # This will fail or return empty if not running via 'streamlit run'
         value = st.secrets.get(key)
         if value:
             return str(value)
     except Exception:
         pass
 
-    # 2. Environment variable
+    # 2. Direct TOML parse fallback (for CLI/Tests/Scripts)
+    try:
+        from pathlib import Path
+        # Look for .streamlit/secrets.toml relative to project root
+        secrets_path = Path(__file__).resolve().parent.parent / ".streamlit" / "secrets.toml"
+        if secrets_path.exists():
+            import toml
+            secrets = toml.load(secrets_path)
+            value = secrets.get(key)
+            if value:
+                return str(value)
+    except Exception:
+        # Fallback to manual line parsing if toml package is missing
+        try:
+            with open(secrets_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().startswith(key):
+                        # Simple "KEY = VALUE" parser
+                        parts = line.split("=", 1)
+                        if len(parts) == 2:
+                            val = parts[1].strip().strip('"').strip("'")
+                            if val:
+                                return val
+        except Exception:
+            pass
+
+    # 3. Environment variable
     value = os.environ.get(key)
     if value:
         return value
 
-    # 3. Default
+    # 4. Default
     return default
 
 

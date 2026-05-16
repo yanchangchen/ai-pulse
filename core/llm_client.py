@@ -12,7 +12,9 @@ import requests
 
 from config.settings import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_API_KEY
 
-logger = logging.getLogger(__name__)
+from core.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -62,7 +64,7 @@ class LLMClient:
         """Send a generation request with automatic retries.
 
         Returns the model's text response.
-        Raises LLMClientError after MAX_RETRIES failures.
+        Raises LLMClientError if call fails or returns empty content.
         """
         payload = {
             "model": self.model,
@@ -87,14 +89,19 @@ class LLMClient:
                     timeout=120,
                 )
                 if resp.status_code == 200:
-                    return resp.json().get("response", "")
-
-                last_error = LLMClientError(
-                    f"HTTP {resp.status_code}: {resp.text[:200]}"
-                )
+                    result = resp.json().get("response", "").strip()
+                    if result:
+                        return result
+                    else:
+                        last_error = LLMClientError("Ollama returned an empty response.")
+                else:
+                    last_error = LLMClientError(
+                        f"HTTP {resp.status_code}: {resp.text[:200]}"
+                    )
+                
                 logger.warning(
-                    "Ollama API returned %s (attempt %d/%d)",
-                    resp.status_code,
+                    "Ollama API issue: %s (attempt %d/%d)",
+                    last_error,
                     attempt,
                     MAX_RETRIES,
                 )
@@ -112,7 +119,7 @@ class LLMClient:
                 time.sleep(backoff)
 
         raise LLMClientError(
-            f"All {MAX_RETRIES} attempts failed. Last error: {last_error}"
+            f"All {MAX_RETRIES} attempts failed. {last_error}"
         )
 
     # ------------------------------------------------------------------

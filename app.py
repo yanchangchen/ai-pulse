@@ -9,8 +9,18 @@ import pandas as pd
 
 from config.settings import DAYS_LOOKBACK
 from config.themes import THEME_ORDER, THEME_COLORS
-from core.cache import cache_fetch_news, cache_classify_articles, cache_generate_summaries, clear_all_caches
+from core.cache import (
+    cache_fetch_news, 
+    cache_classify_articles, 
+    cache_generate_summaries, 
+    clear_all_caches,
+    get_articles_hash
+)
 from core.llm_client import LLMClient
+from core.logger import setup_logger
+
+# Initialize logger
+logger = setup_logger(__name__)
 
 # Page configuration
 st.set_page_config(
@@ -24,22 +34,36 @@ st.set_page_config(
 st.markdown("""
 <style>
     .theme-card {
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 15px;
-        border-left: 5px solid;
+        padding: 25px;
+        border-radius: 12px;
+        margin-bottom: 20px;
+        border-left: 8px solid;
+        background-color: #ffffff;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        transition: transform 0.2s;
+    }
+    .theme-card:hover {
+        transform: translateY(-2px);
     }
     .stAlert {
         padding: 10px;
+        border-radius: 10px;
     }
     .metric-card {
         text-align: center;
-        padding: 15px;
-        background-color: #f0f2f6;
-        border-radius: 10px;
+        padding: 20px;
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        border-radius: 12px;
+        border: 1px solid #dee2e6;
     }
     h1, h2, h3 {
-        font-weight: 600;
+        font-family: 'Outfit', 'Inter', sans-serif;
+        font-weight: 700;
+        color: #1a1a1a;
+    }
+    .stMarkdown p {
+        line-height: 1.6;
+        font-size: 16px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -63,7 +87,7 @@ def init_session_state() -> None:
 
 
 def load_data() -> bool:
-    """Load and process all data."""
+    """Load and process all data with content-based caching optimization."""
     # Check if Ollama Cloud is available
     if not _llm_client.is_available():
         st.error("⚠️ Unable to connect to Ollama Cloud. Please check your API key and internet connection.")
@@ -71,12 +95,20 @@ def load_data() -> bool:
 
     with st.spinner("📥 Fetching AI news from sources..."):
         articles = cache_fetch_news()
+        
+    if not articles:
+        st.warning("No articles found in the last 14 days.")
+        return False
+
+    # Generate hash for token optimization
+    articles_hash = get_articles_hash(articles)
+    logger.info("Signal processed with hash: %s", articles_hash[:8])
 
     with st.spinner("🏷️ Classifying articles into themes..."):
-        themed_articles = cache_classify_articles(articles)
+        themed_articles = cache_classify_articles(articles, articles_hash)
 
-    with st.spinner("📝 Generating theme summaries (this may take a while)..."):
-        summaries = cache_generate_summaries(themed_articles)
+    with st.spinner("📝 Generating theme summaries (token optimized)..."):
+        summaries = cache_generate_summaries(themed_articles, articles_hash)
 
     st.session_state.articles = articles
     st.session_state.themed_articles = themed_articles
@@ -95,17 +127,13 @@ def main() -> None:
     st.markdown("### AI News Intelligence Dashboard")
     st.markdown("---")
 
-    # Calculate date range
-    days_lookback = DAYS_LOOKBACK
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days_lookback)
-
     # Sidebar
     with st.sidebar:
         st.header("📊 Dashboard Controls")
 
         # Refresh button
         if st.button("🔄 Refresh Data"):
+            logger.info("Manual cache clear triggered from sidebar.")
             st.session_state.force_refresh = True
             clear_all_caches()
             st.rerun()
@@ -113,31 +141,21 @@ def main() -> None:
         st.divider()
 
         # Date range display
-        st.subheader("📅 Date Range")
-        st.write(f"**From:** {start_date.strftime('%B %d, %Y')}")
-        st.write(f"**To:** {end_date.strftime('%B %d, %Y')}")
+        st.subheader("📅 Data Period")
+        st.write(f"Past **{DAYS_LOOKBACK} days**")
 
         st.divider()
 
         # Article counts by theme
-        st.subheader("📈 Articles by Theme")
+        st.subheader("📈 Coverage by Theme")
 
         if st.session_state.data_loaded and st.session_state.themed_articles:
             theme_counts = {theme: len(st.session_state.themed_articles.get(theme, []))
                           for theme in THEME_ORDER}
 
-            # Create DataFrame for bar chart
-            df_counts = pd.DataFrame({
-                'Theme': [t.split()[0] for t in THEME_ORDER],  # Short names
-                'Count': [theme_counts[t] for t in THEME_ORDER]
-            })
-
             # Display as metric
             total_articles = len(st.session_state.articles)
-            st.metric("Total Articles", total_articles)
-
-            # Mini bar chart
-            st.bar_chart(df_counts.set_index('Theme')['Count'], horizontal=True)
+            st.metric("Total Articles Tracked", total_articles)
 
             # Legend with counts
             for theme in THEME_ORDER:
@@ -148,96 +166,60 @@ def main() -> None:
 
         st.divider()
 
-        # Source filter
-        st.subheader("🔍 Filter by Source")
-        if st.session_state.data_loaded and st.session_state.articles:
-            sources = sorted(list(set(a['source_name'] for a in st.session_state.articles)))
-            selected_sources = st.multiselect("Select sources", sources, default=sources)
-
-            if selected_sources:
-                filtered_count = len([a for a in st.session_state.articles if a['source_name'] in selected_sources])
-                st.write(f"Showing {filtered_count} articles from {len(selected_sources)} sources")
-        else:
-            st.write("No sources available")
-
-        st.divider()
-
         # Ollama info
-        st.subheader("🤖 Ollama Status")
+        st.subheader("🤖 Intelligence Engine")
         if _llm_client.is_available():
-            st.success("✅ Ollama Cloud is connected")
-            st.caption(f"Using model: {_llm_client.model}")
+            st.success("Connected to Ollama Cloud")
+            st.caption(f"Model: {_llm_client.model}")
         else:
-            st.error("❌ Ollama Cloud not connected")
-            st.caption("Check your API key in the configuration")
+            st.error("Engine Disconnected")
 
         st.divider()
-
-        # Cache info
-        st.caption("📦 Data is cached for 6 hours")
+        st.caption("📦 Signal cached for 6 hours")
 
     # Main content
     if not st.session_state.data_loaded:
-        # First load
         success = load_data()
         if not success:
             return
 
-    # Show info banner if data loaded
-    if 'data_loaded' in st.session_state and st.session_state.data_loaded:
-        st.success(f"📊 Showing {len(st.session_state.articles)} articles from the past {days_lookback} days")
-
-    # Show overview link
+    # Navigation links
     st.markdown("### 🚀 Quick Navigation")
     col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.page_link("pages/1_Overview.py", label="📋 Theme Overview", icon="📋")
-
-    with col2:
-        st.page_link("pages/2_Deep_Dive.py", label="🔍 Deep Dive", icon="🔍")
-
-    with col3:
-        st.page_link("pages/3_Word_Clouds.py", label="☁️ Word Clouds", icon="☁️")
-
-    with col4:
-        st.page_link("pages/4_Sources.py", label="📰 Sources", icon="📰")
+    with col1: st.page_link("pages/1_Overview.py", label="📋 Overview", icon="📋")
+    with col2: st.page_link("pages/2_Deep_Dive.py", label="🔍 Deep Dive", icon="🔍")
+    with col3: st.page_link("pages/3_Word_Clouds.py", label="☁️ Word Clouds", icon="☁️")
+    with col4: st.page_link("pages/4_Sources.py", label="📰 Sources", icon="📰")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.page_link("pages/5_History.py", label="🧠 Memory Wiki (Past Developments)", icon="🧠")
 
     st.markdown("---")
 
     # Summary stats
-    st.subheader("📊 This Week at a Glance")
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    columns = [col1, col2, col3, col4, col5]
-
+    st.subheader("📊 Thematic Pulse")
+    cols = st.columns(len(THEME_ORDER))
     for i, theme in enumerate(THEME_ORDER):
         count = len(st.session_state.themed_articles.get(theme, []))
         color = THEME_COLORS.get(theme, '#000')
-
-        with columns[i]:
+        with cols[i]:
             st.markdown(f"""
             <div style="text-align: center; padding: 10px; border: 2px solid {color}; border-radius: 10px;">
                 <div style="font-size: 24px; font-weight: bold; color: {color};">{count}</div>
-                <div style="font-size: 12px;">{theme.split()[0]} {theme.split()[1] if len(theme.split()) > 1 else ''}</div>
+                <div style="font-size: 11px; text-transform: uppercase;">{theme.split()[0]}</div>
             </div>
             """, unsafe_allow_html=True)
 
     st.markdown("---")
 
     # Theme summaries preview
-    st.subheader("📝 Theme Summaries Preview")
-
+    st.subheader("📝 Intelligence Preview")
     for theme in THEME_ORDER:
         summary = st.session_state.summaries.get(theme, {})
         articles = st.session_state.themed_articles.get(theme, [])
-
         if summary and summary.get('what_is_happening'):
             with st.expander(f"📌 {theme} ({len(articles)} articles)"):
-                st.markdown(f"**What is happening:** {summary.get('what_is_happening', '')}")
-                st.markdown(f"**Why it matters:** {summary.get('why_it_matters', '')}")
-                st.markdown(f"**What to watch:** {summary.get('what_to_watch', '')}")
+                st.markdown(f"**The Signal:** {summary.get('what_is_happening', '')}")
+                st.markdown(f"**Significance:** {summary.get('why_it_matters', '')}")
 
 
 if __name__ == "__main__":

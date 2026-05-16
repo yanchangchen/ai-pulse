@@ -105,49 +105,57 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
 
     # Second pass: Ollama classification for unmatched articles (batched)
     if ollama_needed:
-        batch_size = 10
+        batch_size = 20  # Increased batch size
         llm = _get_llm()
 
         for i in range(0, len(ollama_needed), batch_size):
             batch = ollama_needed[i:i + batch_size]
+            
+            # Create a simple lookup for the prompt
+            batch_items = [f"ID {idx}: {a['title']}" for idx, a in enumerate(batch)]
+            items_text = "\n".join(batch_items)
 
-            titles_summaries = "\n\n".join(
-                f"Title: {a['title']}\nSummary: {a['summary'][:300]}"
-                for a in batch
+            system_prompt = (
+                "You are an AI news classifier. You must categorize articles into exactly one of these themes:\n"
+                "- AI Applications & Architecture\n"
+                "- AI Models\n"
+                "- AI Infrastructure\n"
+                "- AI Companies & Business\n"
+                "- AI in Government & Policy\n\n"
+                "Return a JSON object mapping IDs to theme names. "
+                "Example: {\"ID 0\": \"AI Models\", \"ID 1\": \"AI Infrastructure\"}"
             )
 
-            prompt = (
-                "Classify each of these AI news items into exactly one of these themes:\n"
-                "[AI Applications & Architecture, AI Models, AI Infrastructure, "
-                "AI Companies & Business, AI in Government & Policy].\n\n"
-                "Return the theme for each item on its own line, in the same order. "
-                "Only return the theme name, nothing else.\n\n"
-                f"{titles_summaries}"
-            )
+            prompt = f"Classify these articles:\n\n{items_text}"
 
             try:
-                result = llm.generate(prompt, temperature=0.1, max_tokens=200)
-                themes = result.strip().split('\n')
+                result = llm.generate(prompt, system=system_prompt, temperature=0.1, max_tokens=1000)
+                
+                # Attempt to parse JSON from the response
+                import json
+                # Handle cases where LLM adds extra text around JSON
+                json_match = re.search(r'\{.*\}', result, re.DOTALL)
+                if json_match:
+                    mapping = json.loads(json_match.group(0))
+                    
+                    for idx, article in enumerate(batch):
+                        id_key = f"ID {idx}"
+                        theme_name = mapping.get(id_key)
+                        
+                        if theme_name:
+                            # Clean and validate the theme name
+                            for valid_theme in THEMES.keys():
+                                if valid_theme.lower() in theme_name.lower():
+                                    article['theme'] = valid_theme
+                                    keyword_classified.append(article)
+                                    break
+                else:
+                    logger.warning("LLM response did not contain JSON: %s", result)
 
-                for j, theme_line in enumerate(themes):
-                    if j < len(batch):
-                        valid_themes = list(THEMES.keys())
-                        for valid_theme in valid_themes:
-                            if valid_theme.lower() in theme_line.lower():
-                                batch[j]['theme'] = valid_theme
-                                keyword_classified.append(batch[j])
-                                break
-                        else:
-                            batch[j]['theme'] = "AI Applications & Architecture"
-                            keyword_classified.append(batch[j])
+            except Exception as exc:
+                logger.error("Batch JSON Ollama classification error: %s", exc)
 
-            except LLMClientError as exc:
-                logger.error("Batch Ollama classification error: %s", exc)
-                for a in batch:
-                    a['theme'] = "AI Applications & Architecture"
-                    keyword_classified.append(a)
-
-    # For articles still without theme, assign default
+    # Final cleanup: Assign default for anything missed
     for article in ollama_needed:
         if 'theme' not in article:
             article['theme'] = "AI Applications & Architecture"

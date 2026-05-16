@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 from config.themes import THEMES, THEME_ORDER
 from core.llm_client import LLMClient, LLMClientError
+from core.history_manager import get_recent_context, save_run_to_history
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,9 +59,12 @@ def generate_theme_summary(
             "further_reading": ""
         }
 
+    # Retrieve memory context
+    past_context = get_recent_context(theme_name)
+
     if len(articles) < 3:
         return {
-            "what_is_happening": f"Limited coverage this week with only {len(articles)} articles found.",
+            "what_is_happening": f"Limited coverage this week with only {len(articles)} articles found. {past_context}",
             "why_it_matters": "This theme has fewer articles this week, possibly indicating lower activity or a quiet period.",
             "what_to_watch": "Monitor for upcoming announcements and developments.",
             "further_reading": ""
@@ -73,8 +77,10 @@ def generate_theme_summary(
 
 {formatted_articles}
 
+{past_context if past_context else ""}
+
 Provide:
-1. WHAT IS HAPPENING: [3-5 sentence factual summary of the key developments]
+1. WHAT IS HAPPENING: [3-5 sentence factual summary of the key developments. If there is past context provided, highlight what is NEW or what has EVOLVED since then.]
 2. WHY IT MATTERS: [2-5 sentence explanation of significance and implications]
 3. WHAT TO WATCH: [2-5 specific things worth investigating deeper, as bullet points]
 4. FURTHER READING: [5 most insightful articles with one-sentence explanation each, formatted as:
@@ -148,15 +154,23 @@ Write in clear, direct language."""
 def generate_all_summaries(
     themed_articles: Dict[str, List[Dict]],
 ) -> Dict[str, Dict[str, str]]:
-    """Generate summaries for all themes."""
+    """Generate summaries for all themes and persist to history."""
     summaries: Dict[str, Dict[str, str]] = {}
+    article_counts = {}
 
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
+        article_counts[theme] = len(articles)
         logger.info("Generating summary for %s (%d articles)", theme, len(articles))
 
         summary = generate_theme_summary(theme, articles)
         summaries[theme] = summary
+
+    # Save to memory/wiki
+    try:
+        save_run_to_history(summaries, article_counts)
+    except Exception as e:
+        logger.error("Failed to save history: %s", e)
 
     return summaries
 
