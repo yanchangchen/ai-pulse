@@ -94,14 +94,14 @@ def cache_classify_articles(articles: list, articles_hash: str) -> dict:
 
 
 @st.cache_data(ttl=CACHE_TTL)
-def cache_generate_summaries(themed_articles: dict, articles_hash: str) -> dict:
+def cache_generate_summaries(themed_articles: dict, articles: list, articles_hash: str) -> dict:
     """
     Cache summary generation with 6-hour TTL.
     Uses articles_hash as a key to skip LLM calls if content is unchanged.
     """
     from core.summariser import generate_all_summaries
     logger.info("Generating LLM summaries with content hash: %s...", articles_hash[:8])
-    result = generate_all_summaries(themed_articles)
+    result = generate_all_summaries(themed_articles, articles)
     save_to_disk(f"summaries_{articles_hash}", result)
     return result
 

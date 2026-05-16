@@ -16,6 +16,7 @@ from core.cache import (
     clear_all_caches,
     get_articles_hash
 )
+from core.history_manager import get_last_run, get_last_run_time
 from core.llm_client import LLMClient
 from core.logger import setup_logger
 
@@ -87,12 +88,29 @@ def init_session_state() -> None:
 
 
 def load_data() -> bool:
-    """Load and process all data with content-based caching optimization."""
+    """Load and process all data with content-based caching and 6-hour persistence optimization."""
     # Check if Ollama Cloud is available
     if not _llm_client.is_available():
         st.error("⚠️ Unable to connect to Ollama Cloud. Please check your API key and internet connection.")
         return False
 
+    # 1. Check Persistence Cache (6-hour TTL)
+    if not st.session_state.get('force_refresh', False):
+        last_run_time = get_last_run_time()
+        if last_run_time:
+            hours_since = (datetime.now() - last_run_time).total_seconds() / 3600
+            if hours_since < 6:
+                last_run = get_last_run()
+                if last_run and 'full_articles' in last_run['data']:
+                    logger.info("Restoring state from persistence cache (%0.1f hours old)", hours_since)
+                    st.session_state.articles = last_run['data']['full_articles']
+                    st.session_state.themed_articles = last_run['data']['themed_articles']
+                    st.session_state.summaries = last_run['data']['summaries']
+                    st.session_state.data_loaded = True
+                    st.toast(f"✅ Loaded from cache ({int(hours_since)}h ago)")
+                    return True
+
+    # 2. Regular Data Pipeline (Fetch -> Classify -> Summarize)
     with st.spinner("📥 Fetching AI news from sources..."):
         articles = cache_fetch_news()
         
@@ -108,12 +126,13 @@ def load_data() -> bool:
         themed_articles = cache_classify_articles(articles, articles_hash)
 
     with st.spinner("📝 Generating theme summaries (token optimized)..."):
-        summaries = cache_generate_summaries(themed_articles, articles_hash)
+        summaries = cache_generate_summaries(themed_articles, articles, articles_hash)
 
     st.session_state.articles = articles
     st.session_state.themed_articles = themed_articles
     st.session_state.summaries = summaries
     st.session_state.data_loaded = True
+    st.session_state.force_refresh = False # Reset refresh flag
 
     return True
 

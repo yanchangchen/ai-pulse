@@ -153,6 +153,7 @@ Write in clear, direct language."""
 
 def generate_all_summaries(
     themed_articles: Dict[str, List[Dict]],
+    full_articles: List[Dict]
 ) -> Dict[str, Dict[str, str]]:
     """Generate summaries for all themes and persist to history."""
     summaries: Dict[str, Dict[str, str]] = {}
@@ -168,7 +169,7 @@ def generate_all_summaries(
 
     # Save to memory/wiki
     try:
-        save_run_to_history(summaries, article_counts)
+        save_run_to_history(summaries, article_counts, full_articles, themed_articles)
     except Exception as e:
         logger.error("Failed to save history: %s", e)
 

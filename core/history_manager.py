@@ -5,6 +5,7 @@ Handles persisting summaries to JSON (for parsing) and memory.md (for context/wi
 
 import json
 import os
+import streamlit as st
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -14,8 +15,13 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 HISTORY_JSON = ROOT_DIR / "history.json"
 MEMORY_MD = ROOT_DIR / "memory.md"
 
-def save_run_to_history(summaries: Dict[str, Dict[str, str]], article_counts: Dict[str, int]) -> None:
-    """Save the current summaries to both JSON and Markdown history."""
+def save_run_to_history(
+    summaries: Dict[str, Dict[str, str]], 
+    article_counts: Dict[str, int],
+    full_articles: List[Dict],
+    themed_articles: Dict[str, List[Dict]]
+) -> None:
+    """Save the current summaries and full state to both JSON and Markdown history."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date_key = datetime.now().strftime("%Y-%m-%d")
 
@@ -31,7 +37,9 @@ def save_run_to_history(summaries: Dict[str, Dict[str, str]], article_counts: Di
     history_data[timestamp] = {
         "date": date_key,
         "summaries": summaries,
-        "counts": article_counts
+        "counts": article_counts,
+        "full_articles": full_articles,
+        "themed_articles": themed_articles
     }
 
     with open(HISTORY_JSON, "w", encoding="utf-8") as f:
@@ -89,3 +97,26 @@ def load_full_history() -> Dict:
             return json.load(f)
     except Exception:
         return {}
+
+def get_last_run() -> Optional[Dict]:
+    """Retrieve the absolute latest run data."""
+    history = load_full_history()
+    if not history:
+        return None
+    
+    # Sort by timestamp descending
+    latest_ts = sorted(history.keys(), reverse=True)[0]
+    return {
+        "timestamp": latest_ts,
+        "data": history[latest_ts]
+    }
+
+def get_last_run_time() -> Optional[datetime]:
+    """Get the datetime of the most recent run."""
+    last_run = get_last_run()
+    if not last_run:
+        return None
+    try:
+        return datetime.strptime(last_run["timestamp"], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
