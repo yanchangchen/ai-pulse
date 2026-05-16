@@ -195,12 +195,12 @@ def main() -> None:
     # Navigation links
     st.markdown("### 🚀 Quick Navigation")
     col1, col2, col3, col4 = st.columns(4)
-    with col1: st.page_link("pages/1_Overview.py", label="📋 Overview", icon="📋")
-    with col2: st.page_link("pages/2_Deep_Dive.py", label="🔍 Deep Dive", icon="🔍")
-    with col3: st.page_link("pages/3_Word_Clouds.py", label="☁️ Word Clouds", icon="☁️")
-    with col4: st.page_link("pages/4_Sources.py", label="📰 Sources", icon="📰")
+    with col1: st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
+    with col2: st.page_link("pages/2_Deep_Dive.py", label="Deep Dive", icon="🔍")
+    with col3: st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
+    with col4: st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
     st.markdown("<br>", unsafe_allow_html=True)
-    st.page_link("pages/5_History.py", label="🧠 Memory Wiki (Past Developments)", icon="🧠")
+    st.page_link("pages/5_History.py", label="Memory Wiki (Past Developments)", icon="🧠")
 
     st.markdown("---")
 
