@@ -6,6 +6,9 @@ THEMES = {
         "keywords": {
             "RAG": 3, "agents": 3, "agentic": 3, "LangChain": 3, "LangGraph": 3,
             "vector database": 3, "Neo4j": 2, "MCP": 2, "tool use": 3,
+            "multi-agent": 3, "orchestration": 3, "swarm": 2, "A2A": 2,
+            "agentic token control": 3, "doom-loop": 3, "dreaming": 2,
+            "memory distillation": 3, "episodic memory": 3, "context engineering": 2,
             "prompt engineering": 2, "production": 1, "deployment": 1,
             "fine-tuning": 2, "LLM": 1, "chatbot": 2, "automation": 1,
             "workflow": 1, "API integration": 2, "pipeline": 2,
@@ -19,6 +22,8 @@ THEMES = {
             "Gemini": 2, "Llama": 2, "Mistral": 2, "multimodal": 2,
             "reasoning": 2, "context window": 3, "training": 1, "weights": 2,
             "open source model": 3, "new model": 3, "frontier": 2,
+            "MoE": 3, "speculative decoding": 3, "KV cache": 3,
+            "MMLU": 2, "GPQA": 3, "SWE-bench": 3, "ARC-AGI": 3,
             "parameters": 2, "capabilities": 1,
         },
         "color": "purple"
@@ -27,9 +32,11 @@ THEMES = {
         "keywords": {
             "GPU": 3, "NVIDIA": 2, "compute": 2, "inference": 2,
             "latency": 2, "cost": 1, "TPU": 3, "hardware": 2,
+            "Blackwell": 3, "CoreWeave": 3, "Graviton": 2,
             "data center": 3, "MLOps": 3, "LLMOps": 3, "Kubernetes": 2,
             "serving": 2, "cluster": 2, "chip": 3, "AMD": 2, "Intel": 2,
             "Semiconductor": 3, "memory": 1, "bandwidth": 2, "throughput": 2,
+            "electricity": 2, "carbon footprint": 2, "power demand": 2,
         },
         "color": "orange"
     },
@@ -48,6 +55,8 @@ THEMES = {
             "regulation": 3, "EU AI Act": 3, "executive order": 3, "safety": 2,
             "alignment": 2, "risk": 1, "copyright": 2, "policy": 2,
             "senate": 3, "congress": 3, "governance": 2, "ban": 2,
+            "export control": 3, "sovereign AI": 3, "malicious model": 3,
+            "supply chain security": 3, "model signing": 2,
             "legislation": 3, "compliance": 2, "law": 1, "government": 2,
             "NIST": 3, "White House": 3, "Europe": 1, "China AI": 2,
         },

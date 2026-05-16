@@ -74,6 +74,78 @@ SOURCES = [
         "type": "rss",
         "category": "blog"
     },
+    {
+        "name": "Anthropic Research",
+        "url": "https://www.anthropic.com/research",
+        "type": "web",
+        "category": "blog"
+    },
+    {
+        "name": "Anthropic Engineering",
+        "url": "https://www.anthropic.com/engineering",
+        "type": "web",
+        "category": "blog"
+    },
+    {
+        "name": "Meta Engineering",
+        "url": "https://engineering.fb.com/category/ai/feed/",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "GitHub Engineering",
+        "url": "https://github.blog/category/engineering/feed/",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Netflix Tech Blog",
+        "url": "https://netflixtechblog.com/feed",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Spotify Engineering",
+        "url": "https://engineering.atspotify.com/feed/",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Stripe Engineering",
+        "url": "https://stripe.com/blog/engineering/rss",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Cloudflare Blog",
+        "url": "https://blog.cloudflare.com/tag/ai/rss",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "ServiceNow Engineering",
+        "url": "https://www.servicenow.com/blog.category.engineering.rss",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Scale AI Blog",
+        "url": "https://scale.com/blog/rss",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Langfuse Blog",
+        "url": "https://langfuse.com/blog/rss",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Latent.Space",
+        "url": "https://www.latent.space/feed",
+        "type": "rss",
+        "category": "newsletter"
+    },
     # Web sources (require scraping)
     {
         "name": "Ethan Mollick",
@@ -90,12 +162,6 @@ SOURCES = [
     {
         "name": "OpenAI Blog",
         "url": "https://openai.com/blog",
-        "type": "web",
-        "category": "blog"
-    },
-    {
-        "name": "Anthropic News",
-        "url": "https://www.anthropic.com/news",
         "type": "web",
         "category": "blog"
     }
