@@ -201,11 +201,15 @@ def main() -> None:
     for i, theme in enumerate(THEME_ORDER):
         count = len(st.session_state.themed_articles.get(theme, []))
         color = THEME_COLORS.get(theme, '#000')
+        
+        # Better label: Remove "AI " prefix if present
+        display_label = theme.replace("AI ", "").replace("& ", "").upper()
+        
         with cols[i]:
             st.markdown(f"""
             <div style="text-align: center; padding: 10px; border: 2px solid {color}; border-radius: 10px;">
                 <div style="font-size: 24px; font-weight: bold; color: {color};">{count}</div>
-                <div style="font-size: 11px; text-transform: uppercase;">{theme.split()[0]}</div>
+                <div style="font-size: 10px; font-weight: bold; color: #666;">{display_label}</div>
             </div>
             """, unsafe_allow_html=True)
 
