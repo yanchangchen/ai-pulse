@@ -1,21 +1,26 @@
 """
 LLM summarisation module for AI Pulse.
-Generates theme summaries using Ollama.
+Generates theme summaries using the shared LLM client.
 """
 
 import logging
-import requests
-from typing import List, Dict
+from typing import Dict, List, Optional
 
 from config.themes import THEMES, THEME_ORDER
+from core.llm_client import LLMClient, LLMClientError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Ollama Cloud configuration
-OLLAMA_BASE_URL = "https://api.ollama.com"
-DEFAULT_MODEL = "minimax-m2.5:cloud"
-OLLAMA_API_KEY = "45beed49227f4ef5af146efb097df093.UN3XitWdoKXnweyM1t7fp6bP"
+# Shared LLM client instance (initialised lazily)
+_llm: Optional[LLMClient] = None
+
+
+def _get_llm() -> LLMClient:
+    global _llm
+    if _llm is None:
+        _llm = LLMClient()
+    return _llm
 
 
 def format_articles_for_prompt(articles: List[Dict]) -> str:
@@ -42,9 +47,8 @@ def format_articles_for_prompt(articles: List[Dict]) -> str:
 def generate_theme_summary(
     theme_name: str,
     articles: List[Dict],
-    model: str = DEFAULT_MODEL
 ) -> Dict[str, str]:
-    """Generate a comprehensive summary for a theme using Ollama."""
+    """Generate a comprehensive summary for a theme using the LLM client."""
 
     if not articles:
         return {
@@ -83,37 +87,18 @@ Be precise, avoid hype. Focus on signal over noise. Write in clear, direct langu
 Write in clear, direct language."""
 
     try:
-        response = requests.post(
-            f"{OLLAMA_BASE_URL}/api/generate",
-            headers={"Authorization": f"Bearer {OLLAMA_API_KEY}"},
-            json={
-                "model": model,
-                "prompt": f"System: {system_prompt}\n\nUser: {user_prompt}",
-                "stream": False,
-                "options": {
-                    "temperature": 0.3,
-                    "num_predict": 1500
-                }
-            },
-            timeout=120
+        llm = _get_llm()
+        content = llm.generate(
+            user_prompt,
+            system=system_prompt,
+            temperature=0.3,
+            max_tokens=1500,
         )
 
-        if response.status_code == 200:
-            result = response.json()
-            content = result.get("response", "")
-        else:
-            logger.error(f"Ollama API error: {response.status_code} - {response.text}")
-            return {
-                "what_is_happening": f"Error calling Ollama API: {response.status_code}",
-                "why_it_matters": "Unable to analyze at this time.",
-                "what_to_watch": "Please try again later.",
-                "further_reading": ""
-            }
-
         # Parse the response
-        sections = {}
-        current_section = None
-        current_content = []
+        sections: Dict[str, str] = {}
+        current_section: Optional[str] = None
+        current_content: List[str] = []
 
         for line in content.split('\n'):
             line = line.strip()
@@ -150,10 +135,10 @@ Write in clear, direct language."""
             "further_reading": sections.get('further_reading', '')
         }
 
-    except Exception as e:
-        logger.error(f"Error generating summary for {theme_name}: {str(e)}")
+    except LLMClientError as exc:
+        logger.error("Error generating summary for %s: %s", theme_name, exc)
         return {
-            "what_is_happening": f"Error generating summary: {str(e)}",
+            "what_is_happening": f"Error generating summary: {exc}",
             "why_it_matters": "Unable to analyze at this time.",
             "what_to_watch": "Please try again later.",
             "further_reading": ""
@@ -162,20 +147,15 @@ Write in clear, direct language."""
 
 def generate_all_summaries(
     themed_articles: Dict[str, List[Dict]],
-    api_key: str = None
 ) -> Dict[str, Dict[str, str]]:
     """Generate summaries for all themes."""
-
-    # Get model from config or use default
-    model = DEFAULT_MODEL
-
-    summaries = {}
+    summaries: Dict[str, Dict[str, str]] = {}
 
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
-        logger.info(f"Generating summary for {theme} ({len(articles)} articles)")
+        logger.info("Generating summary for %s (%d articles)", theme, len(articles))
 
-        summary = generate_theme_summary(theme, articles, model)
+        summary = generate_theme_summary(theme, articles)
         summaries[theme] = summary
 
     return summaries
@@ -183,7 +163,7 @@ def generate_all_summaries(
 
 def parse_further_reading(further_reading_text: str) -> List[Dict]:
     """Parse the further reading section into structured data."""
-    articles = []
+    articles: List[Dict] = []
 
     if not further_reading_text:
         return articles

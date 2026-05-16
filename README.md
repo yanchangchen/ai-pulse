@@ -7,7 +7,7 @@ An AI news intelligence dashboard that aggregates, summarises, and visualises AI
 AI Pulse is a multi-page Streamlit application that:
 1. Fetches AI news from reputable RSS feeds and web sources
 2. Categorises stories into 5 thematic areas
-3. Summarises each theme using Claude (Anthropic API)
+3. Summarises each theme using Ollama Cloud (`qwen3.5:cloud`)
 4. Visualises trending topics as word clouds
 5. Suggests further reading per theme
 6. Lists all sources used with links
@@ -27,16 +27,25 @@ AI Pulse is a multi-page Streamlit application that:
 │  ┌──────────────┐    ┌──────────────────────────────────────┐  │
 │  │   Sources    │    │           Core Modules               │  │
 │  │    Page      │    ├──────────────────────────────────────┤  │
-│  └──────────────┘    │  • Fetcher (RSS + Web scraping)      │  │
-│                     │  • Classifier (Theme classification)    │  │
-│                     │  • Summariser (Claude LLM summaries)   │  │
-│                     │  • Visualiser (Word clouds)             │  │
-│                     │  • Cache (6-hour caching)              │  │
+│  └──────────────┘    │  • Fetcher (concurrent RSS + Web)    │  │
+│                     │  • Classifier (weighted keywords +    │  │
+│                     │    Ollama LLM fallback)               │  │
+│                     │  • Summariser (Ollama LLM summaries)  │  │
+│                     │  • Visualiser (Word clouds → PNG)     │  │
+│                     │  • Cache (6-hour TTL + disk backup)   │  │
+│                     │  • LLM Client (retries + backoff)     │  │
 │                     └──────────────────────────────────────┘  │
 │                                                                  │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-                           ▼
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │               Config Layer                               │  │
+│  ├──────────────────────────────────────────────────────────┤  │
+│  │  • settings.py  (centralised Ollama config)              │  │
+│  │  • themes.py    (weighted keyword definitions)           │  │
+│  │  • sources.py   (RSS/web source registry)                │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │
+                       ▼
          ┌─────────────────────────────────────────┐
          │           Data Sources                  │
          ├─────────────────────────────────────────┤
@@ -51,13 +60,14 @@ AI Pulse is a multi-page Streamlit application that:
          │  • LangChain Blog                       │
          │  • And more...                          │
          └─────────────────────────────────────────┘
-                           │
-                           ▼
+                       │
+                       ▼
          ┌─────────────────────────────────────────┐
-         │              APIs                        │
+         │          Ollama Cloud API                │
          ├─────────────────────────────────────────┤
-         │  • Anthropic Claude API (summaries)     │
-         │  • NewsAPI (optional, extra coverage)   │
+         │  • Model: qwen3.5:cloud                 │
+         │  • Classification + Summarisation       │
+         │  • Exponential backoff retries           │
          └─────────────────────────────────────────┘
 ```
 
@@ -89,18 +99,19 @@ AI Pulse is a multi-page Streamlit application that:
    pip install -r requirements.txt
    ```
 
-4. **Configure API keys:**
+4. **Configure API key:**
 
    Create a `.streamlit/secrets.toml` file:
    ```toml
-   ANTHROPIC_API_KEY = "your-anthropic-api-key"
-   NEWSAPI_KEY = "your-newsapi-key"  # optional
+   OLLAMA_API_KEY = "your-ollama-api-key"
+   OLLAMA_MODEL = "qwen3.5:cloud"       # optional, this is the default
+   OLLAMA_BASE_URL = "https://api.ollama.com"  # optional
    ```
 
    Or set environment variables:
    ```bash
-   export ANTHROPIC_API_KEY="your-key"
-   export NEWSAPI_KEY="your-key"  # optional
+   export OLLAMA_API_KEY="your-key"
+   export OLLAMA_MODEL="qwen3.5:cloud"  # optional
    ```
 
 5. **Run the application:**
@@ -118,8 +129,8 @@ AI Pulse is a multi-page Streamlit application that:
 2. **Add secrets in Streamlit Cloud:**
    - Go to your app settings in Streamlit Cloud
    - Add the following secrets:
-     - `ANTHROPIC_API_KEY` = your Anthropic API key
-     - `NEWSAPI_KEY` = your NewsAPI key (optional)
+     - `OLLAMA_API_KEY` = your Ollama Cloud API key
+     - `OLLAMA_MODEL` = `qwen3.5:cloud` (optional)
 
 3. **Deploy:**
    - Click "Deploy" in Streamlit Cloud
@@ -139,16 +150,21 @@ ai-pulse/
 │   ├── 3_Word_Clouds.py    # Trending topic word clouds
 │   └── 4_Sources.py        # Full source list with links
 ├── core/
-│   ├── fetcher.py          # News fetching logic (RSS + BeautifulSoup)
-│   ├── classifier.py       # Theme classification (keywords + Claude)
-│   ├── summariser.py       # LLM summarisation (Claude API)
-│   ├── visualiser.py       # Word cloud generation
-│   └── cache.py            # Caching layer (st.cache_data)
+│   ├── llm_client.py       # Ollama API wrapper with retries
+│   ├── fetcher.py          # Concurrent news fetching (RSS + BeautifulSoup)
+│   ├── classifier.py       # Theme classification (weighted keywords + Ollama)
+│   ├── summariser.py       # LLM summarisation (Ollama Cloud)
+│   ├── visualiser.py       # Word cloud generation (returns PNG bytes)
+│   └── cache.py            # Caching layer (st.cache_data + disk JSON)
 ├── config/
+│   ├── settings.py         # Centralised config (secrets → env → defaults)
 │   ├── sources.py          # All RSS feed URLs and source metadata
-│   └── themes.py           # Theme definitions and keywords
-├── .streamlit/
-│   └── secrets.toml.example # Example secrets configuration
+│   └── themes.py           # Theme definitions with weighted keywords
+├── tests/
+│   ├── test_classifier.py  # Keyword classification tests
+│   ├── test_fetcher.py     # Date parsing and timezone tests
+│   ├── test_summariser.py  # Further reading parser tests
+│   └── test_visualiser.py  # Text preprocessing tests
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -175,26 +191,27 @@ For web sources (requires BeautifulSoup scraping), add to `WEB_SCRAPE_SOURCES`.
 
 ## Cost Estimate
 
-### Claude API Usage
+### Ollama Cloud API Usage
 
-- **Classification**: ~$0.003 per article (keyword matching is free)
-- **Summarisation**: ~$0.05-0.10 per theme (5 themes total)
+- **Classification**: Keyword matching is free; only unmatched articles hit the LLM (~$0.001 per article)
+- **Summarisation**: ~$0.02–0.05 per theme (5 themes total)
 
 **Estimated cost for a typical run:**
-- 100 articles, 5 themes: ~$0.50-1.00
-- 200 articles, 5 themes: ~$1.00-2.00
+- 100 articles, 5 themes: ~$0.10–0.30
+- 200 articles, 5 themes: ~$0.20–0.50
 
 The app caches results for 6 hours, so you only pay once per cache period.
 
-### NewsAPI (Optional)
+## Running Tests
 
-- Free tier: 100 requests/day
-- Paid plans: Starting at $10/month
+```bash
+pytest tests/ -v
+```
 
 ## Troubleshooting
 
-### "ANTHROPIC_API_KEY not configured"
-Make sure you've added your API key to `.streamlit/secrets.toml` or Streamlit Cloud secrets.
+### "Unable to connect to Ollama Cloud"
+Make sure you've added your `OLLAMA_API_KEY` to `.streamlit/secrets.toml`, environment variables, or Streamlit Cloud secrets.
 
 ### "No articles found"
 - Check your internet connection
@@ -212,5 +229,5 @@ MIT License
 ## Credits
 
 - Built with [Streamlit](https://streamlit.io/)
-- Summaries powered by [Anthropic Claude](https://www.anthropic.com/)
+- Summaries powered by [Ollama Cloud](https://ollama.com/) using `qwen3.5:cloud`
 - News aggregation from various AI newsletters and blogs

@@ -6,11 +6,11 @@ AI News Intelligence Dashboard
 import streamlit as st
 from datetime import datetime, timedelta
 import pandas as pd
-import requests
 
+from config.settings import DAYS_LOOKBACK
 from config.themes import THEME_ORDER, THEME_COLORS
-from config.sources import SOURCES
 from core.cache import cache_fetch_news, cache_classify_articles, cache_generate_summaries, clear_all_caches
+from core.llm_client import LLMClient
 
 # Page configuration
 st.set_page_config(
@@ -44,40 +44,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
-# Ollama Cloud configuration
-OLLAMA_BASE_URL = "https://api.ollama.com"
-DEFAULT_MODEL = "minimax-m2.5:cloud"
-OLLAMA_API_KEY = "45beed49227f4ef5af146efb097df093.UN3XitWdoKXnweyM1t7fp6bP"
+# Shared LLM client
+_llm_client = LLMClient()
 
 
-def get_ollama_api_key():
-    """Get API key from config or secrets."""
-    return OLLAMA_API_KEY
-
-
-def check_ollama_available():
-    """Check if Ollama Cloud is accessible."""
-    try:
-        headers = {}
-        api_key = get_ollama_api_key()
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", headers=headers, timeout=10)
-        return response.status_code == 200
-    except Exception:
-        return False
-
-
-def get_ollama_model():
-    """Get configured Ollama model from secrets or use default."""
-    try:
-        return st.secrets.get("OLLAMA_MODEL", DEFAULT_MODEL)
-    except Exception:
-        return DEFAULT_MODEL
-
-
-def init_session_state():
+def init_session_state() -> None:
     """Initialize session state variables."""
     if 'data_loaded' not in st.session_state:
         st.session_state.data_loaded = False
@@ -91,24 +62,21 @@ def init_session_state():
         st.session_state.force_refresh = False
 
 
-def load_data():
+def load_data() -> bool:
     """Load and process all data."""
     # Check if Ollama Cloud is available
-    if not check_ollama_available():
+    if not _llm_client.is_available():
         st.error("⚠️ Unable to connect to Ollama Cloud. Please check your API key and internet connection.")
         return False
 
     with st.spinner("📥 Fetching AI news from sources..."):
-        # Fetch news
-        articles = cache_fetch_news(st.session_state.force_refresh)
+        articles = cache_fetch_news()
 
     with st.spinner("🏷️ Classifying articles into themes..."):
-        # Classify articles using Ollama Cloud
-        themed_articles = cache_classify_articles(articles, "")
+        themed_articles = cache_classify_articles(articles)
 
     with st.spinner("📝 Generating theme summaries (this may take a while)..."):
-        # Generate summaries
-        summaries = cache_generate_summaries(themed_articles, "")
+        summaries = cache_generate_summaries(themed_articles)
 
     st.session_state.articles = articles
     st.session_state.themed_articles = themed_articles
@@ -118,7 +86,7 @@ def load_data():
     return True
 
 
-def main():
+def main() -> None:
     """Main application entry point."""
     init_session_state()
 
@@ -128,7 +96,7 @@ def main():
     st.markdown("---")
 
     # Calculate date range
-    days_lookback = 14
+    days_lookback = DAYS_LOOKBACK
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days_lookback)
 
@@ -196,10 +164,9 @@ def main():
 
         # Ollama info
         st.subheader("🤖 Ollama Status")
-        if check_ollama_available():
+        if _llm_client.is_available():
             st.success("✅ Ollama Cloud is connected")
-            model = get_ollama_model()
-            st.caption(f"Using model: {model}")
+            st.caption(f"Using model: {_llm_client.model}")
         else:
             st.error("❌ Ollama Cloud not connected")
             st.caption("Check your API key in the configuration")

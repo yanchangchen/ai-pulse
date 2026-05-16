@@ -4,7 +4,7 @@ Shows trending topic word clouds for each theme.
 """
 
 import streamlit as st
-import matplotlib.pyplot as plt
+import pandas as pd
 
 from config.themes import THEME_ORDER, THEME_COLORS
 from core.visualiser import (
@@ -30,7 +30,7 @@ def get_session_data():
     return st.session_state.themed_articles
 
 
-def main():
+def main() -> None:
     """Main word clouds page."""
     themed_articles = get_session_data()
 
@@ -59,24 +59,24 @@ def main():
         if not articles:
             st.warning(f"No articles found for {selected_theme}.")
         else:
-            # Generate word cloud
+            # Generate word cloud (returns PNG bytes)
             st.markdown(f"### {selected_theme}")
-            fig = generate_wordcloud(selected_theme, articles)
-            if fig:
-                st.pyplot(fig)
+            img = generate_wordcloud(selected_theme, articles)
+            if img:
+                st.image(img, use_container_width=True)
             else:
                 st.warning("Unable to generate word cloud for this theme.")
 
             st.markdown("---")
 
-            # Top words chart
+            # Top words chart (returns PNG bytes)
             top_words = get_top_words_for_theme(selected_theme, articles, 20)
 
             if top_words:
                 st.subheader(f"Top 20 Trending Words: {selected_theme}")
-                fig2 = create_word_frequency_chart(top_words, selected_theme)
-                if fig2:
-                    st.pyplot(fig2)
+                chart_img = create_word_frequency_chart(top_words, selected_theme)
+                if chart_img:
+                    st.image(chart_img, use_container_width=True)
             else:
                 st.info("No trending words found.")
 
@@ -90,14 +90,13 @@ def main():
             # First theme
             theme1 = THEME_ORDER[i]
             articles1 = themed_articles.get(theme1, [])
-            color1 = THEME_COLORS.get(theme1, '#1f77b4')
 
             with col1:
                 st.markdown(f"**{theme1}** ({len(articles1)} articles)")
                 if articles1:
-                    fig1 = generate_wordcloud(theme1, articles1)
-                    if fig1:
-                        st.pyplot(fig1)
+                    img1 = generate_wordcloud(theme1, articles1)
+                    if img1:
+                        st.image(img1, use_container_width=True)
                 else:
                     st.info("No articles")
 
@@ -105,14 +104,13 @@ def main():
             if i + 1 < len(THEME_ORDER):
                 theme2 = THEME_ORDER[i + 1]
                 articles2 = themed_articles.get(theme2, [])
-                color2 = THEME_COLORS.get(theme2, '#9467bd')
 
                 with col2:
                     st.markdown(f"**{theme2}** ({len(articles2)} articles)")
                     if articles2:
-                        fig2 = generate_wordcloud(theme2, articles2)
-                        if fig2:
-                            st.pyplot(fig2)
+                        img2 = generate_wordcloud(theme2, articles2)
+                        if img2:
+                            st.image(img2, use_container_width=True)
                     else:
                         st.info("No articles")
 
@@ -130,13 +128,12 @@ def main():
         top_words = get_top_words_for_theme(theme_selector, articles, 20)
 
         if top_words:
-            fig = create_word_frequency_chart(top_words, theme_selector)
-            if fig:
-                st.pyplot(fig)
+            chart_img = create_word_frequency_chart(top_words, theme_selector)
+            if chart_img:
+                st.image(chart_img, use_container_width=True)
 
             # Also show as table
             st.markdown("#### Top Keywords Table")
-            import pandas as pd
             df_words = pd.DataFrame(top_words, columns=['Keyword', 'Frequency'])
             st.dataframe(
                 df_words,

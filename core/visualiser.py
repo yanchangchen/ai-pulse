@@ -1,14 +1,21 @@
 """
 Word cloud visualisation module for AI Pulse.
 Generates word clouds and trending topics for each theme.
+
+Returns image bytes (PNG) instead of raw Figure objects so that results
+are JSON-serialisable and safely cacheable.
 """
 
+import io
 import re
 from collections import Counter
-from typing import List, Dict, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend — no GUI needed
 import matplotlib.pyplot as plt
-from wordcloud import WordCloud, STOPWORDS
 import numpy as np
+from wordcloud import WordCloud, STOPWORDS
 
 from config.themes import THEMES, THEME_COLORS, THEME_ORDER
 
@@ -70,8 +77,20 @@ def extract_top_words(text: str, n: int = 20) -> List[Tuple[str, int]]:
     return word_counts.most_common(n)
 
 
-def generate_wordcloud(theme_name: str, articles: List[Dict]):
-    """Generate a word cloud for a theme from its articles."""
+def _fig_to_bytes(fig: plt.Figure) -> bytes:
+    """Render a matplotlib Figure to PNG bytes and close it."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def generate_wordcloud(theme_name: str, articles: List[Dict]) -> Optional[bytes]:
+    """Generate a word cloud PNG for a theme from its articles.
+
+    Returns PNG image bytes or None if there is nothing to render.
+    """
     if not articles:
         return None
 
@@ -112,22 +131,22 @@ def generate_wordcloud(theme_name: str, articles: List[Dict]):
         ax.set_title(f"{theme_name}", fontsize=14, fontweight='bold', pad=10)
 
         plt.tight_layout()
-        return fig
+        return _fig_to_bytes(fig)
 
     except Exception as e:
         print(f"Error generating word cloud for {theme_name}: {str(e)}")
         return None
 
 
-def generate_all_wordclouds(themed_articles: Dict[str, List[Dict]]) -> Dict[str, plt.Figure]:
-    """Generate word clouds for all themes."""
-    wordclouds = {}
+def generate_all_wordclouds(themed_articles: Dict[str, List[Dict]]) -> Dict[str, bytes]:
+    """Generate word cloud PNGs for all themes."""
+    wordclouds: Dict[str, bytes] = {}
 
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
-        fig = generate_wordcloud(theme, articles)
-        if fig:
-            wordclouds[theme] = fig
+        img = generate_wordcloud(theme, articles)
+        if img:
+            wordclouds[theme] = img
 
     return wordclouds
 
@@ -147,8 +166,8 @@ def get_top_words_for_theme(theme_name: str, articles: List[Dict], n: int = 20) 
     return extract_top_words(cleaned_text, n)
 
 
-def create_word_frequency_chart(top_words: List[Tuple[str, int]], theme_name: str):
-    """Create a horizontal bar chart of word frequencies."""
+def create_word_frequency_chart(top_words: List[Tuple[str, int]], theme_name: str) -> Optional[bytes]:
+    """Create a horizontal bar chart of word frequencies as PNG bytes."""
     if not top_words:
         return None
 
@@ -169,4 +188,4 @@ def create_word_frequency_chart(top_words: List[Tuple[str, int]], theme_name: st
     ax.set_title(f"Top {len(words)} Trending Words: {theme_name}", fontsize=12, fontweight='bold')
 
     plt.tight_layout()
-    return fig
+    return _fig_to_bytes(fig)

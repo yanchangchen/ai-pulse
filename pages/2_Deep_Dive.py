@@ -26,7 +26,7 @@ def get_session_data():
     return st.session_state.themed_articles, st.session_state.summaries
 
 
-def main():
+def main() -> None:
     """Main deep dive page."""
     themed_articles, summaries = get_session_data()
 

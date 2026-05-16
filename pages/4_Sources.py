@@ -26,7 +26,7 @@ def get_session_data():
     return st.session_state.articles
 
 
-def main():
+def main() -> None:
     """Main sources page."""
     articles = get_session_data()
 
