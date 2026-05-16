@@ -170,8 +170,9 @@ def main() -> None:
             for theme in THEME_ORDER:
                 count = theme_counts[theme]
                 color = THEME_COLORS.get(theme, '#000')
-                short_name = theme.split()[0]  # First word
-                st.markdown(f"<span style='color:{color}'>●</span> {short_name}: **{count}**", unsafe_allow_html=True)
+                # Better label: Remove "AI " prefix if present
+                display_label = theme.replace("AI ", "").replace("& ", "").title()
+                st.markdown(f"<span style='color:{color}'>●</span> {display_label}: **{count}**", unsafe_allow_html=True)
 
         st.divider()
 
