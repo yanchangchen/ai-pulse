@@ -140,12 +140,12 @@ def main() -> None:
 
         # Navigation
         st.subheader("🧭 Navigation")
-        st.page_link("app.py", label="🏠 Home", icon="🏠")
-        st.page_link("pages/1_Overview.py", label="📋 Overview", icon="📋")
-        st.page_link("pages/2_Deep_Dive.py", label="🔍 Deep Dive", icon="🔍")
-        st.page_link("pages/3_Word_Clouds.py", label="☁️ Word Clouds", icon="☁️")
-        st.page_link("pages/4_Sources.py", label="📰 Sources", icon="📰")
-        st.page_link("pages/5_History.py", label="🧠 Memory Wiki", icon="🧠")
+        st.page_link("app.py", label="Home", icon="🏠")
+        st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
+        st.page_link("pages/2_Deep_Dive.py", label="Deep Dive", icon="🔍")
+        st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
+        st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
+        st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
 
         st.divider()
 
