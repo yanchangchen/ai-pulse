@@ -1,0 +1,4 @@
+[client]
+# Hide Streamlit's auto-generated page navigation.
+# The app uses custom st.page_link() navigation instead.
+showSidebarNavigation = false
