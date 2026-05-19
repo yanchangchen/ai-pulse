@@ -51,7 +51,7 @@ st.markdown("""
 def get_session_data():
     """Get data from session state."""
     if 'themed_articles' not in st.session_state or 'summaries' not in st.session_state:
-        st.error("Please return to the main page to load data first.")
+        st.switch_page("app.py")
         st.stop()
 
     return st.session_state.themed_articles, st.session_state.summaries
@@ -60,6 +60,11 @@ def get_session_data():
 def main() -> None:
     """Main overview page."""
     themed_articles, summaries = get_session_data()
+
+    from core.bg_refresher import check_and_show_bg_status, render_sidebar_info
+
+    # 1. Top of page alert if background update finished
+    check_and_show_bg_status()
 
     # Sidebar Navigation
     with st.sidebar:
@@ -70,6 +75,9 @@ def main() -> None:
         st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
         st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
         st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
+        
+        # Background status tracker inside the sidebar
+        render_sidebar_info()
 
     # Header
     st.title("📋 Theme Overview")

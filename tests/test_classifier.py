@@ -1,7 +1,7 @@
 """Tests for the weighted keyword classifier."""
 
 import pytest
-from core.classifier import keyword_classify
+from core.classifier import keyword_classify, find_closest_theme
 
 
 class TestKeywordClassify:
@@ -47,3 +47,24 @@ class TestKeywordClassify:
         """Classification should be case-insensitive."""
         result = keyword_classify("rag agents langchain", "embedding retrieval pipeline")
         assert result == "AI Applications & Architecture"
+
+
+class TestFindClosestTheme:
+    """Test find_closest_theme fallback logic."""
+
+    def test_sub_keyword_match(self):
+        """Should match keyword even if it's not a full word bound keyword or in less structured text."""
+        # 'regulation' is a Government & Policy keyword, but even with relaxed match:
+        result = find_closest_theme("some regulator news", "policy and rules discussion")
+        assert result == "AI in Government & Policy"
+
+    def test_theme_word_overlap_match(self):
+        """Should match word from theme name when no other keywords match."""
+        result = find_closest_theme("news on infrastructure", "talking about centers and setups")
+        assert result == "AI Infrastructure"
+
+    def test_ultimate_default(self):
+        """Should fallback to AI Applications & Architecture when absolutely nothing matches."""
+        result = find_closest_theme("completely random text", "weather is nice today")
+        assert result == "AI Applications & Architecture"
+

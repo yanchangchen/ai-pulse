@@ -89,29 +89,39 @@ def init_session_state() -> None:
 
 def load_data() -> bool:
     """Load and process all data with content-based caching and 6-hour persistence optimization."""
+    from core.bg_refresher import BackgroundRefresher
+
+    # 1. Try to load from persistence cache FIRST (even if expired!)
+    last_run = get_last_run()
+    if last_run and 'full_articles' in last_run['data']:
+        last_run_time = get_last_run_time()
+        hours_since = (datetime.now() - last_run_time).total_seconds() / 3600 if last_run_time else 999
+        
+        # Load the cache immediately into session state
+        logger.info("Restoring state from persistence cache (last run was %0.1f hours ago)", hours_since)
+        st.session_state.articles = last_run['data']['full_articles']
+        st.session_state.themed_articles = last_run['data']['themed_articles']
+        st.session_state.summaries = last_run['data']['summaries']
+        st.session_state.data_loaded = True
+        st.session_state.loaded_timestamp = last_run['timestamp']
+        
+        # If the cache is expired (>= 6 hours) or we are forced to refresh, trigger the background update
+        if hours_since >= 6 or st.session_state.get('force_refresh', False):
+            st.session_state.force_refresh = False
+            BackgroundRefresher.start()
+            st.toast("🔄 Cache is older than 6 hours. Fetching fresh insights in the background...", icon="ℹ️")
+        else:
+            st.toast(f"✅ Loaded from cache ({int(hours_since)}h ago)")
+        
+        return True
+
+    # 2. No cache exists at all (fresh start). Run the pipeline synchronously.
     # Check if Ollama Cloud is available
     if not _llm_client.is_available():
         st.error("⚠️ Unable to connect to Ollama Cloud. Please check your API key and internet connection.")
         return False
 
-    # 1. Check Persistence Cache (6-hour TTL)
-    if not st.session_state.get('force_refresh', False):
-        last_run_time = get_last_run_time()
-        if last_run_time:
-            hours_since = (datetime.now() - last_run_time).total_seconds() / 3600
-            if hours_since < 6:
-                last_run = get_last_run()
-                if last_run and 'full_articles' in last_run['data']:
-                    logger.info("Restoring state from persistence cache (%0.1f hours old)", hours_since)
-                    st.session_state.articles = last_run['data']['full_articles']
-                    st.session_state.themed_articles = last_run['data']['themed_articles']
-                    st.session_state.summaries = last_run['data']['summaries']
-                    st.session_state.data_loaded = True
-                    st.toast(f"✅ Loaded from cache ({int(hours_since)}h ago)")
-                    return True
-
-    # 2. Regular Data Pipeline (Fetch -> Classify -> Summarize)
-    with st.spinner("📥 Fetching AI news from sources..."):
+    with st.spinner("📥 Fetching AI news from sources... (Initial run, please wait)"):
         articles = cache_fetch_news()
         
     if not articles:
@@ -132,7 +142,13 @@ def load_data() -> bool:
     st.session_state.themed_articles = themed_articles
     st.session_state.summaries = summaries
     st.session_state.data_loaded = True
-    st.session_state.force_refresh = False # Reset refresh flag
+    st.session_state.loaded_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.force_refresh = False
+
+    # Save to history immediately
+    from core.history_manager import save_run_to_history
+    from core.classifier import get_theme_counts
+    save_run_to_history(summaries, get_theme_counts(themed_articles), articles, themed_articles)
 
     return True
 
@@ -140,6 +156,11 @@ def load_data() -> bool:
 def main() -> None:
     """Main application entry point."""
     init_session_state()
+    
+    from core.bg_refresher import check_and_show_bg_status, render_sidebar_info
+    
+    # 1. Top of page alert if background update finished
+    check_and_show_bg_status()
 
     # Title banner
     st.title("⚡ AI Pulse")
@@ -152,9 +173,11 @@ def main() -> None:
 
         # Refresh button
         if st.button("🔄 Refresh Data"):
-            logger.info("Manual cache clear triggered from sidebar.")
-            st.session_state.force_refresh = True
+            logger.info("Manual background refresh triggered from sidebar.")
+            from core.bg_refresher import BackgroundRefresher
             clear_all_caches()
+            BackgroundRefresher.start()
+            st.toast("🔄 Background refresh started! Keep using the dashboard while we compile new insights.", icon="ℹ️")
             st.rerun()
 
         # Navigation
@@ -203,8 +226,8 @@ def main() -> None:
         else:
             st.error("Engine Disconnected")
 
-        st.divider()
-        st.caption("📦 Signal cached for 6 hours")
+        # Background status tracker inside the sidebar
+        render_sidebar_info()
 
     # Main content
     if not st.session_state.data_loaded:

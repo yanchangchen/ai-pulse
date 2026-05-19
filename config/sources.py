@@ -158,12 +158,6 @@ SOURCES = [
         "url": "https://www.lennysnewsletter.com/feed",
         "type": "rss",
         "category": "newsletter"
-    },
-    {
-        "name": "OpenAI Blog",
-        "url": "https://openai.com/blog",
-        "type": "web",
-        "category": "blog"
     }
 ]
 
@@ -174,11 +168,7 @@ WEB_SCRAPE_SOURCES = [
         "url": "https://www.oneusefulthing.org",
         "selectors": {"title": "h2, h3", "summary": "p", "link": "a"}
     },
-    {
-        "name": "OpenAI Blog",
-        "url": "https://openai.com/blog",
-        "selectors": {"title": "h1, h2", "summary": "p", "link": "a"}
-    },
+    
     {
         "name": "Anthropic News",
         "url": "https://www.anthropic.com/news",

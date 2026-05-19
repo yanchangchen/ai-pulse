@@ -55,9 +55,14 @@ def keyword_classify(title: str, summary: str) -> Optional[str]:
 def classify_with_ollama(title: str, summary: str) -> Optional[str]:
     """Use the LLM client to classify a single article."""
     prompt = (
-        "Classify this AI news item into exactly one of these themes:\n"
-        "[AI Applications & Architecture, AI Models, AI Infrastructure, "
-        "AI Companies & Business, AI in Government & Policy].\n\n"
+        "You are an AI news classifier. Classify this AI news item into exactly one of these five themes:\n"
+        "- AI Applications & Architecture\n"
+        "- AI Models\n"
+        "- AI Infrastructure\n"
+        "- AI Companies & Business\n"
+        "- AI in Government & Policy\n\n"
+        "CRITICAL INSTRUCTION: You must choose the single closest and most relevant category from the list above. "
+        "Under no circumstances should you return anything other than the exact theme name (e.g. do not say 'ambiguous', 'other', or 'none').\n\n"
         "Return only the theme name, nothing else.\n\n"
         f"Title: {title}\n"
         f"Summary: {summary[:500]}"
@@ -76,6 +81,39 @@ def classify_with_ollama(title: str, summary: str) -> Optional[str]:
         logger.error("Ollama classification error: %s", exc)
 
     return None
+
+
+def find_closest_theme(title: str, summary: str) -> str:
+    """Find the closest theme for an article when standard classification fails.
+    
+    Performs a relaxed check for theme keyword matches (case-insensitive, ignoring word boundaries
+    if needed) and maps it to the category with the highest relevance score.
+    """
+    text = f"{title} {summary}".lower()
+    
+    # Calculate overlap scores based on the defined theme keywords
+    scores = {theme: 0 for theme in THEMES}
+    for theme_name, theme_data in THEMES.items():
+        for keyword, weight in theme_data["keywords"].items():
+            if keyword.lower() in text:
+                scores[theme_name] += weight
+                
+    # If any score is > 0, return the theme with the highest score
+    if any(score > 0 for score in scores.values()):
+        return max(scores, key=scores.get)
+        
+    # If no keywords matched, try matching individual words from the theme names
+    for theme_name in THEMES:
+        words = re.findall(r'\w+', theme_name.lower())
+        for word in words:
+            if len(word) > 3 and word in text:
+                scores[theme_name] += 1
+                
+    if any(score > 0 for score in scores.values()):
+        return max(scores, key=scores.get)
+        
+    # Ultimate default if no keywords or theme words are found in the title/summary
+    return "AI Applications & Architecture"
 
 
 def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
@@ -122,7 +160,10 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
                 "- AI Infrastructure\n"
                 "- AI Companies & Business\n"
                 "- AI in Government & Policy\n\n"
-                "Return a JSON object mapping IDs to theme names. "
+                "CRITICAL INSTRUCTIONS:\n"
+                "1. You must categorize every single article provided. Do not skip or omit any article.\n"
+                "2. If an article does not fit a category perfectly or is ambiguous, choose the closest and most relevant one from the 5 themes above. Under no circumstances should you return 'Other', 'Unknown', or omit it.\n"
+                "3. You must return a valid JSON object mapping every single provided ID to its theme name.\n"
                 "Example: {\"ID 0\": \"AI Models\", \"ID 1\": \"AI Infrastructure\"}"
             )
 
@@ -155,10 +196,10 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
             except Exception as exc:
                 logger.error("Batch JSON Ollama classification error: %s", exc)
 
-    # Final cleanup: Assign default for anything missed
+    # Final cleanup: Assign closest theme for anything missed instead of a blind default
     for article in ollama_needed:
         if 'theme' not in article:
-            article['theme'] = "AI Applications & Architecture"
+            article['theme'] = find_closest_theme(article['title'], article['summary'])
             keyword_classified.append(article)
 
     # Group by theme

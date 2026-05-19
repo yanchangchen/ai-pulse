@@ -55,6 +55,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def main() -> None:
+    from core.bg_refresher import check_and_show_bg_status, render_sidebar_info
+
+    # 1. Top of page alert if background update finished
+    check_and_show_bg_status()
+
     st.title("🧠 Memory Wiki")
     st.markdown("### Historical AI Intelligence Timeline")
     st.info("This page tracks the evolution of AI trends across every 'Refresh' you perform.")
@@ -79,6 +84,9 @@ def main() -> None:
         st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
         st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
         st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
+        
+        # Background status tracker inside the sidebar
+        render_sidebar_info()
         st.divider()
         st.header("🔍 Filter History")
         selected_theme = st.selectbox("Filter by Theme", ["All Themes"] + THEME_ORDER)
