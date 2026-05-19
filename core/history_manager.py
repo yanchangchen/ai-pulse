@@ -15,6 +15,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 HISTORY_JSON = ROOT_DIR / "history.json"
 MEMORY_MD = ROOT_DIR / "memory.md"
 
+# In-memory history cache to optimize disk I/O performance
+_history_cache: Optional[Dict] = None
+
 def save_run_to_history(
     summaries: Dict[str, Dict[str, str]], 
     article_counts: Dict[str, int],
@@ -22,6 +25,7 @@ def save_run_to_history(
     themed_articles: Dict[str, List[Dict]]
 ) -> None:
     """Save the current summaries and full state to both JSON and Markdown history."""
+    global _history_cache
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date_key = datetime.now().strftime("%Y-%m-%d")
 
@@ -45,6 +49,9 @@ def save_run_to_history(
     with open(HISTORY_JSON, "w", encoding="utf-8") as f:
         json.dump(history_data, f, indent=2, ensure_ascii=False)
 
+    # Invalidate cache so it is reloaded from disk next time
+    _history_cache = None
+
     # 2. Update memory.md (Append-only Wiki)
     new_entry = f"\n## ⚡ AI Pulse Run: {timestamp}\n"
     for theme, summary in summaries.items():
@@ -64,13 +71,11 @@ def save_run_to_history(
 
 def get_recent_context(theme_name: str, limit: int = 2) -> str:
     """Retrieve the most recent summaries for a theme to provide context to the LLM."""
-    if not HISTORY_JSON.exists():
+    history_data = load_full_history()
+    if not history_data:
         return ""
 
     try:
-        with open(HISTORY_JSON, "r", encoding="utf-8") as f:
-            history_data = json.load(f)
-        
         # Sort by timestamp descending
         sorted_keys = sorted(history_data.keys(), reverse=True)
         
@@ -89,12 +94,17 @@ def get_recent_context(theme_name: str, limit: int = 2) -> str:
     return ""
 
 def load_full_history() -> Dict:
-    """Load the full history for the Wiki page."""
+    """Load the full history with in-memory caching."""
+    global _history_cache
+    if _history_cache is not None:
+        return _history_cache
+
     if not HISTORY_JSON.exists():
         return {}
     try:
         with open(HISTORY_JSON, "r", encoding="utf-8") as f:
-            return json.load(f)
+            _history_cache = json.load(f)
+            return _history_cache
     except Exception:
         return {}
 

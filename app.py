@@ -91,13 +91,19 @@ def load_data() -> bool:
     """Load and process all data with content-based caching and 6-hour persistence optimization."""
     from core.bg_refresher import BackgroundRefresher
 
+    print("\n" + "="*60, flush=True)
+    print("⚡ [AI Pulse] Initializing News Intelligence Loader...", flush=True)
+    print("="*60, flush=True)
+
     # 1. Try to load from persistence cache FIRST (even if expired!)
+    print("[CACHE] Checking for historical run in persistence layer...", flush=True)
     last_run = get_last_run()
     if last_run and 'full_articles' in last_run['data']:
         last_run_time = get_last_run_time()
         hours_since = (datetime.now() - last_run_time).total_seconds() / 3600 if last_run_time else 999
         
         # Load the cache immediately into session state
+        print(f"📦 [CACHE] SUCCESS: Loaded past run from history.json (Created {hours_since:.1f} hours ago at {last_run['timestamp']})", flush=True)
         logger.info("Restoring state from persistence cache (last run was %0.1f hours ago)", hours_since)
         st.session_state.articles = last_run['data']['full_articles']
         st.session_state.themed_articles = last_run['data']['themed_articles']
@@ -107,36 +113,47 @@ def load_data() -> bool:
         
         # If the cache is expired (>= 6 hours) or we are forced to refresh, trigger the background update
         if hours_since >= 6 or st.session_state.get('force_refresh', False):
+            print("⏳ [CACHE] EXPIRED: Persistence data is older than 6 hours. Launching background refresher thread...", flush=True)
             st.session_state.force_refresh = False
             BackgroundRefresher.start()
             st.toast("🔄 Cache is older than 6 hours. Fetching fresh insights in the background...", icon="ℹ️")
         else:
+            print("✅ [CACHE] VALID: Loaded current data from persistence cache without background thread trigger.", flush=True)
             st.toast(f"✅ Loaded from cache ({int(hours_since)}h ago)")
         
+        print("="*60 + "\n", flush=True)
         return True
 
+    print("[CACHE] No historical persistence cache found. Initiating fresh synchronous execution pipeline...", flush=True)
     # 2. No cache exists at all (fresh start). Run the pipeline synchronously.
     # Check if Ollama Cloud is available
     if not _llm_client.is_available():
+        print("❌ [LLM] ERROR: Unable to connect to Ollama Cloud API. Pipeline aborted.", flush=True)
         st.error("⚠️ Unable to connect to Ollama Cloud. Please check your API key and internet connection.")
         return False
 
+    print("📡 [FETCH] Requesting latest articles from RSS and web sources...", flush=True)
     with st.spinner("📥 Fetching AI news from sources... (Initial run, please wait)"):
         articles = cache_fetch_news()
         
     if not articles:
+        print("⚠️ [FETCH] WARNING: Feed ingestion completed but no articles were found.", flush=True)
         st.warning("No articles found in the last 14 days.")
         return False
+    print(f"✅ [FETCH] SUCCESS: Ingested {len(articles)} articles from news sources.", flush=True)
 
     # Generate hash for token optimization
     articles_hash = get_articles_hash(articles)
     logger.info("Signal processed with hash: %s", articles_hash[:8])
 
+    print(f"🏷️ [CLASSIFY] Categorizing articles into themes using content hash {articles_hash[:8]}...", flush=True)
     with st.spinner("🏷️ Classifying articles into themes..."):
         themed_articles = cache_classify_articles(articles, articles_hash)
 
+    print(f"🤖 [LLM] Requesting theme summaries & persona briefs from Ollama Cloud...", flush=True)
     with st.spinner("📝 Generating theme summaries (token optimized)..."):
         summaries = cache_generate_summaries(themed_articles, articles, articles_hash)
+    print("✅ [LLM] SUCCESS: Theme summaries successfully generated and stored.", flush=True)
 
     st.session_state.articles = articles
     st.session_state.themed_articles = themed_articles
@@ -146,10 +163,13 @@ def load_data() -> bool:
     st.session_state.force_refresh = False
 
     # Save to history immediately
+    print("[CACHE] Saving synchronous pipeline run to persistent history cache...", flush=True)
     from core.history_manager import save_run_to_history
     from core.classifier import get_theme_counts
     save_run_to_history(summaries, get_theme_counts(themed_articles), articles, themed_articles)
+    print("✅ [CACHE] Run successfully written to persistence layer.", flush=True)
 
+    print("="*60 + "\n", flush=True)
     return True
 
 

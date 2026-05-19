@@ -69,7 +69,7 @@ class BackgroundRefresher:
     @classmethod
     def _run_pipeline(cls) -> None:
         try:
-            cls.update_progress("Starting news intelligence engine...")
+            cls.update_progress("[ENGINE] Starting background news intelligence engine...")
             
             # Direct imports of the core logic to bypass Streamlit's @st.cache_data
             from core.fetcher import fetch_all_news
@@ -78,27 +78,27 @@ class BackgroundRefresher:
             from core.history_manager import save_run_to_history
             
             # 1. Fetch news
-            cls.update_progress("Ingesting and fetching AI news from RSS and web sources...")
+            cls.update_progress("[FETCH] Ingesting and fetching AI news from RSS and web sources...")
             articles = fetch_all_news()
             if not articles:
                 with cls._lock:
                     cls._status = "failed"
                     cls._error = "No articles found in the last 14 days."
-                cls.update_progress("Failed: No articles found.")
+                cls.update_progress("[FETCH] Failed: No articles found.")
                 logger.warning("BG Pipeline failed: No articles found.")
                 return
 
             # 2. Classify
-            cls.update_progress(f"Classifying {len(articles)} articles into new persona-aligned themes...")
+            cls.update_progress(f"[CLASSIFY] Classifying {len(articles)} articles into new persona-aligned themes...")
             themed_articles = classify_articles(articles)
 
             # 3. Summarize
-            cls.update_progress("Generating targeted Engineering Blueprint & Product Feasibility briefs...")
+            cls.update_progress("[LLM] Generating targeted Engineering Blueprint & Product Feasibility briefs...")
             theme_counts = {theme: len(themed_articles.get(theme, [])) for theme in themed_articles}
             summaries = generate_all_summaries(themed_articles, articles)
 
             # 4. Save to history
-            cls.update_progress("Saving intelligence run to persistent cache and Memory Wiki...")
+            cls.update_progress("[CACHE] Saving intelligence run to persistent cache and Memory Wiki...")
             save_run_to_history(summaries, theme_counts, articles, themed_articles)
 
             # Clear Streamlit cache so that subsequent normal loads get the fresh data
@@ -111,17 +111,17 @@ class BackgroundRefresher:
 
             with cls._lock:
                 cls._status = "completed"
-                cls._progress = "Pipeline completed successfully."
+                cls._progress = "[CACHE] Pipeline completed successfully."
                 cls._completed_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print("✅ [AI Pulse BG Refresher] Pipeline execution successfully finished.", flush=True)
+            print("✅ [CACHE] BG Pipeline execution successfully finished.", flush=True)
             
         except Exception as e:
             with cls._lock:
                 cls._status = "failed"
-                cls._progress = f"Failed with error: {e}"
+                cls._progress = f"[ERROR] Failed with error: {e}"
                 cls._error = str(e)
             logger.error("Background pipeline failed: %s", e, exc_info=True)
-            print(f"❌ [AI Pulse BG Refresher] Pipeline execution failed: {e}", flush=True)
+            print(f"❌ [ERROR] BG Pipeline execution failed: {e}", flush=True)
 
 
 def check_and_show_bg_status() -> None:
