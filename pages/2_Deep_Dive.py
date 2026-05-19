@@ -44,6 +44,7 @@ def main() -> None:
         st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
         st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
         st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
+        st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
         
         # Background status tracker inside the sidebar
         render_sidebar_info()
@@ -88,16 +89,29 @@ def main() -> None:
 
     with col1:
         st.subheader("🎯 Why it matters")
-        if theme_summary.get('why_it_matters'):
-            st.markdown(theme_summary['why_it_matters'])
+        
+        has_eng = bool(theme_summary.get('engineering_tradeoffs') and theme_summary['engineering_tradeoffs'] != "No engineering tradeoffs analyzed.")
+        has_prod = bool(theme_summary.get('product_impact') and theme_summary['product_impact'] != "No product impact analyzed.")
+        
+        if has_eng or has_prod:
+            subcol1, subcol2 = st.columns(2)
+            with subcol1:
+                st.markdown("##### 🛠️ Engineering Blueprint")
+                st.info(theme_summary.get('engineering_tradeoffs', 'No engineering tradeoffs analyzed.'))
+            with subcol2:
+                st.markdown("##### 💼 Product Feasibility")
+                st.success(theme_summary.get('product_impact', 'No product impact analyzed.'))
         else:
-            st.info("No analysis available.")
+            if theme_summary.get('why_it_matters'):
+                st.markdown(theme_summary['why_it_matters'])
+            else:
+                st.info("No analysis available.")
 
     with col2:
         st.markdown(f"""
-        <div style="text-align: center; padding: 20px; background-color: #f0f2f6; border-radius: 10px;">
+        <div style="text-align: center; padding: 20px; background-color: #1e2130; border: 1px solid #333; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
             <div style="font-size: 36px; font-weight: bold; color: {theme_color};">{len(theme_articles)}</div>
-            <div style="font-size: 14px; color: #666;">Articles</div>
+            <div style="font-size: 14px; color: #aaa;">Articles Tracked</div>
         </div>
         """, unsafe_allow_html=True)
 

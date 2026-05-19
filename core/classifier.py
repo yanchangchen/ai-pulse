@@ -56,11 +56,11 @@ def classify_with_ollama(title: str, summary: str) -> Optional[str]:
     """Use the LLM client to classify a single article."""
     prompt = (
         "You are an AI news classifier. Classify this AI news item into exactly one of these five themes:\n"
-        "- AI Applications & Architecture\n"
-        "- AI Models\n"
-        "- AI Infrastructure\n"
-        "- AI Companies & Business\n"
-        "- AI in Government & Policy\n\n"
+        "- Agentic Systems & DevTools\n"
+        "- Frontier Models & Benchmarks\n"
+        "- Hardware, Compute & LLMOps\n"
+        "- Enterprise Strategy & ROI\n"
+        "- Governance, Safety & Policy\n\n"
         "CRITICAL INSTRUCTION: You must choose the single closest and most relevant category from the list above. "
         "Under no circumstances should you return anything other than the exact theme name (e.g. do not say 'ambiguous', 'other', or 'none').\n\n"
         "Return only the theme name, nothing else.\n\n"
@@ -113,7 +113,7 @@ def find_closest_theme(title: str, summary: str) -> str:
         return max(scores, key=scores.get)
         
     # Ultimate default if no keywords or theme words are found in the title/summary
-    return "AI Applications & Architecture"
+    return "Agentic Systems & DevTools"
 
 
 def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
@@ -155,16 +155,16 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
 
             system_prompt = (
                 "You are an AI news classifier. You must categorize articles into exactly one of these themes:\n"
-                "- AI Applications & Architecture\n"
-                "- AI Models\n"
-                "- AI Infrastructure\n"
-                "- AI Companies & Business\n"
-                "- AI in Government & Policy\n\n"
+                "- Agentic Systems & DevTools\n"
+                "- Frontier Models & Benchmarks\n"
+                "- Hardware, Compute & LLMOps\n"
+                "- Enterprise Strategy & ROI\n"
+                "- Governance, Safety & Policy\n\n"
                 "CRITICAL INSTRUCTIONS:\n"
                 "1. You must categorize every single article provided. Do not skip or omit any article.\n"
                 "2. If an article does not fit a category perfectly or is ambiguous, choose the closest and most relevant one from the 5 themes above. Under no circumstances should you return 'Other', 'Unknown', or omit it.\n"
                 "3. You must return a valid JSON object mapping every single provided ID to its theme name.\n"
-                "Example: {\"ID 0\": \"AI Models\", \"ID 1\": \"AI Infrastructure\"}"
+                "Example: {\"ID 0\": \"Frontier Models & Benchmarks\", \"ID 1\": \"Hardware, Compute & LLMOps\"}"
             )
 
             prompt = f"Classify these articles:\n\n{items_text}"
@@ -206,7 +206,7 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
     themed_articles: Dict[str, List[Dict]] = {theme: [] for theme in THEMES.keys()}
 
     for article in keyword_classified:
-        theme = article.get('theme', 'AI Applications & Architecture')
+        theme = article.get('theme', 'Agentic Systems & DevTools')
         if theme in themed_articles:
             themed_articles[theme].append(article)
 

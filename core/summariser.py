@@ -65,6 +65,8 @@ def generate_theme_summary(
     if len(articles) < 3:
         return {
             "what_is_happening": f"Limited coverage this week with only {len(articles)} articles found. {past_context}",
+            "engineering_tradeoffs": "Limited news signal this week.",
+            "product_impact": "Limited news signal this week.",
             "why_it_matters": "This theme has fewer articles this week, possibly indicating lower activity or a quiet period.",
             "what_to_watch": "Monitor for upcoming announcements and developments.",
             "further_reading": ""
@@ -79,18 +81,20 @@ def generate_theme_summary(
 
 {past_context if past_context else ""}
 
-Provide:
+Provide a rigorous, technical intelligence brief. Avoid vague generalizations, marketing fluff, and hype. 
+
+Provide exactly this structure:
 1. WHAT IS HAPPENING: [3-5 sentence factual summary of the key developments. If there is past context provided, highlight what is NEW or what has EVOLVED since then.]
-2. WHY IT MATTERS: [2-5 sentence explanation of significance and implications]
-3. WHAT TO WATCH: [2-5 specific things worth investigating deeper, as bullet points]
-4. FURTHER READING: [5 most insightful articles with one-sentence explanation each, formatted as:
-   - Article Title | Source | URL | Why read this]
+2. ENGINEERING TRADEOFFS & BLUEPRINT: [3-5 sentences specifically for AI Engineers. Detail the architectural patterns, APIs, performance parameters (latency/memory/cost), open-weight licenses, or framework upgrades introduced here. What technical challenges do they solve?]
+3. PRODUCT IMPACT & FEASIBILITY: [3-5 sentences specifically for Product Managers. How does this impact speed-to-market, pricing margins, integration overhead, safety/compliance risks, or competitor capabilities? Is it ready for enterprise production?]
+4. ACTIONABLE WATCHLIST: [3-5 specific, bulleted items highlighting upcoming API changes, benchmark reviews, regulatory deadlines, or open research papers to track immediately.]
+5. STRATEGIC FURTHER READING: [5 most insightful articles with one-sentence explanation each, formatted exactly as:
+   - Article Title | Source | URL | Why read this (concrete technical/product takeaway)]
 
 Be precise, avoid hype. Focus on signal over noise. Write in clear, direct language for a technically sophisticated audience."""
 
-    system_prompt = """You are an expert AI analyst writing for a technically sophisticated audience
-(intermediate to advanced). Be precise, avoid hype. Focus on signal over noise.
-Write in clear, direct language."""
+    system_prompt = """You are an expert AI engineering analyst and product strategist writing for tech leaders. 
+Be highly precise, avoid hype and buzzwords. Focus on real architectural shifts, API stability, performance tradeoffs, and product feasibility."""
 
     try:
         llm = _get_llm()
@@ -110,19 +114,31 @@ Write in clear, direct language."""
             line = line.strip()
 
             if 'WHAT IS HAPPENING' in line.upper():
+                if current_section:
+                    sections[current_section] = ' '.join(current_content)
                 current_section = 'what_is_happening'
+                current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
+            elif 'ENGINEERING TRADEOFFS' in line.upper() or 'ENGINEERING BLUEPRINT' in line.upper():
+                if current_section:
+                    sections[current_section] = ' '.join(current_content)
+                current_section = 'engineering_tradeoffs'
+                current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
+            elif 'PRODUCT IMPACT' in line.upper() or 'PRODUCT FEASIBILITY' in line.upper():
+                if current_section:
+                    sections[current_section] = ' '.join(current_content)
+                current_section = 'product_impact'
                 current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
             elif 'WHY IT MATTERS' in line.upper():
                 if current_section:
                     sections[current_section] = ' '.join(current_content)
                 current_section = 'why_it_matters'
                 current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-            elif 'WHAT TO WATCH' in line.upper():
+            elif 'ACTIONABLE WATCHLIST' in line.upper() or 'WHAT TO WATCH' in line.upper():
                 if current_section:
                     sections[current_section] = ' '.join(current_content)
                 current_section = 'what_to_watch'
                 current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-            elif 'FURTHER READING' in line.upper():
+            elif 'STRATEGIC FURTHER READING' in line.upper() or 'FURTHER READING' in line.upper():
                 if current_section:
                     sections[current_section] = ' '.join(current_content)
                 current_section = 'further_reading'
@@ -134,9 +150,27 @@ Write in clear, direct language."""
         if current_section:
             sections[current_section] = ' '.join(current_content)
 
+        # Build composite why_it_matters if it wasn't explicitly produced but tradeoffs/product impact were
+        engineering_txt = sections.get('engineering_tradeoffs', '').strip()
+        product_txt = sections.get('product_impact', '').strip()
+        
+        why_it_matters_composite = sections.get('why_it_matters', '').strip()
+        if not why_it_matters_composite and (engineering_txt or product_txt):
+            parts = []
+            if engineering_txt:
+                parts.append(f"**Engineering Blueprint:** {engineering_txt}")
+            if product_txt:
+                parts.append(f"**Product Feasibility:** {product_txt}")
+            why_it_matters_composite = "\n\n".join(parts)
+
+        if not why_it_matters_composite:
+            why_it_matters_composite = "Unable to generate significance analysis."
+
         return {
             "what_is_happening": sections.get('what_is_happening', 'Unable to generate summary.'),
-            "why_it_matters": sections.get('why_it_matters', 'Unable to generate analysis.'),
+            "engineering_tradeoffs": engineering_txt if engineering_txt else "No engineering tradeoffs analyzed.",
+            "product_impact": product_txt if product_txt else "No product impact analyzed.",
+            "why_it_matters": why_it_matters_composite,
             "what_to_watch": sections.get('what_to_watch', 'No specific items to watch.'),
             "further_reading": sections.get('further_reading', '')
         }
@@ -145,6 +179,8 @@ Write in clear, direct language."""
         logger.error("Error generating summary for %s: %s", theme_name, exc)
         return {
             "what_is_happening": f"Error generating summary: {exc}",
+            "engineering_tradeoffs": "Unable to analyze due to error.",
+            "product_impact": "Unable to analyze due to error.",
             "why_it_matters": "Unable to analyze at this time.",
             "what_to_watch": "Please try again later.",
             "further_reading": ""

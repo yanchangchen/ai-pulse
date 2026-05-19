@@ -188,6 +188,7 @@ def main() -> None:
         st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
         st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
         st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
+        st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
 
         st.divider()
 
