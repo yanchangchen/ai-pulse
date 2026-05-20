@@ -191,7 +191,8 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
                                     keyword_classified.append(article)
                                     break
                 else:
-                    logger.warning("LLM response did not contain JSON: %s", result)
+                    truncated_result = result[:200] + "..." if len(result) > 200 else result
+                    logger.warning("LLM response did not contain JSON: %s", truncated_result)
 
             except Exception as exc:
                 logger.error("Batch JSON Ollama classification error: %s", exc)

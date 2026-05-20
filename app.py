@@ -19,6 +19,8 @@ from core.cache import (
 from core.history_manager import get_last_run, get_last_run_time
 from core.llm_client import LLMClient
 from core.logger import setup_logger
+from core.bg_refresher import BackgroundRefresher
+
 
 # Initialize logger
 logger = setup_logger(__name__)
@@ -86,17 +88,19 @@ def init_session_state() -> None:
     if 'force_refresh' not in st.session_state:
         st.session_state.force_refresh = False
 
+    # Try to load the data from persistence cache into session state
+    if not st.session_state.data_loaded:
+        load_data()
+
 
 def load_data() -> bool:
-    """Load and process all data with content-based caching and 6-hour persistence optimization."""
-    from core.bg_refresher import BackgroundRefresher
+    """Load data from historical run cache or trigger background refresher."""
 
     print("\n" + "="*60, flush=True)
     print("⚡ [AI Pulse] Initializing News Intelligence Loader...", flush=True)
     print("="*60, flush=True)
 
-    # 1. Try to load from persistence cache FIRST (even if expired!)
-    print("[CACHE] Checking for historical run in persistence layer...", flush=True)
+    # Check for historical run in persistence layer
     last_run = get_last_run()
     if last_run and 'full_articles' in last_run['data']:
         last_run_time = get_last_run_time()
@@ -124,53 +128,11 @@ def load_data() -> bool:
         print("="*60 + "\n", flush=True)
         return True
 
-    print("[CACHE] No historical persistence cache found. Initiating fresh synchronous execution pipeline...", flush=True)
-    # 2. No cache exists at all (fresh start). Run the pipeline synchronously.
-    # Check if Ollama Cloud is available
-    if not _llm_client.is_available():
-        print("❌ [LLM] ERROR: Unable to connect to Ollama Cloud API. Pipeline aborted.", flush=True)
-        st.error("⚠️ Unable to connect to Ollama Cloud. Please check your API key and internet connection.")
-        return False
-
-    print("📡 [FETCH] Requesting latest articles from RSS and web sources...", flush=True)
-    with st.spinner("📥 Fetching AI news from sources... (Initial run, please wait)"):
-        articles = cache_fetch_news()
-        
-    if not articles:
-        print("⚠️ [FETCH] WARNING: Feed ingestion completed but no articles were found.", flush=True)
-        st.warning("No articles found in the last 14 days.")
-        return False
-    print(f"✅ [FETCH] SUCCESS: Ingested {len(articles)} articles from news sources.", flush=True)
-
-    # Generate hash for token optimization
-    articles_hash = get_articles_hash(articles)
-    logger.info("Signal processed with hash: %s", articles_hash[:8])
-
-    print(f"🏷️ [CLASSIFY] Categorizing articles into themes using content hash {articles_hash[:8]}...", flush=True)
-    with st.spinner("🏷️ Classifying articles into themes..."):
-        themed_articles = cache_classify_articles(articles, articles_hash)
-
-    print(f"🤖 [LLM] Requesting theme summaries & persona briefs from Ollama Cloud...", flush=True)
-    with st.spinner("📝 Generating theme summaries (token optimized)..."):
-        summaries = cache_generate_summaries(themed_articles, articles, articles_hash)
-    print("✅ [LLM] SUCCESS: Theme summaries successfully generated and stored.", flush=True)
-
-    st.session_state.articles = articles
-    st.session_state.themed_articles = themed_articles
-    st.session_state.summaries = summaries
-    st.session_state.data_loaded = True
-    st.session_state.loaded_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state.force_refresh = False
-
-    # Save to history immediately
-    print("[CACHE] Saving synchronous pipeline run to persistent history cache...", flush=True)
-    from core.history_manager import save_run_to_history
-    from core.classifier import get_theme_counts
-    save_run_to_history(summaries, get_theme_counts(themed_articles), articles, themed_articles)
-    print("✅ [CACHE] Run successfully written to persistence layer.", flush=True)
-
+    # No historical cache found. Trigger background refresher thread automatically!
+    print("⏳ [CACHE] ABSENT: No historical persistence cache found. Launching background refresher thread...", flush=True)
+    BackgroundRefresher.start()
     print("="*60 + "\n", flush=True)
-    return True
+    return False
 
 
 def main() -> None:
@@ -252,9 +214,44 @@ def main() -> None:
 
     # Main content
     if not st.session_state.data_loaded:
-        success = load_data()
-        if not success:
+        # Check background refresher status
+        from core.bg_refresher import BackgroundRefresher
+        import time
+        status_info = BackgroundRefresher.get_status()
+        
+        # Check if the cache was generated while we were waiting or before
+        last_run = get_last_run()
+        if last_run and 'full_articles' in last_run['data']:
+            load_data()
+            st.rerun()
             return
+
+        # Render premium glassmorphic/card-based first-load ingestion screen
+        st.markdown("""
+        <div style="padding: 40px; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); border-radius: 16px; color: white; margin-bottom: 30px; box-shadow: 0 10px 25px rgba(0,0,0,0.15);">
+            <h2 style="color: white; margin-top: 0; font-family: 'Outfit', sans-serif;">⚡ AI Pulse - First-Time Ingestion</h2>
+            <p style="font-size: 16px; opacity: 0.9; line-height: 1.6;">Welcome to your AI News Intelligence Dashboard! Since this is your first time launching the application, we are currently setting up your persistent Memory Wiki and fetching high-signal news from our registered engineering blogs and sources.</p>
+            <p style="font-size: 14px; opacity: 0.8; font-style: italic;">This intelligence compilation uses advanced content-based filtering, theme classification, and LLM-synthesized context, which usually takes 15–30 seconds. Thank you for your patience!</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Progress card
+        progress_text = status_info.get("progress", "Initializing background news intelligence engine...")
+        
+        if status_info["status"] == "failed":
+            st.error(f"❌ Ingestion Failed: {status_info['error']}")
+            if st.button("⚡ Retry Ingestion Pipeline", key="loading_retry_btn", use_container_width=True):
+                BackgroundRefresher.start()
+                st.rerun()
+        else:
+            # Display real-time progress in a neat and premium alert/info card
+            st.info(f"⏳ **Current Ingestion Step:**\n\n```\n{progress_text}\n```")
+            
+            # Show a beautiful spinner and sleep/rerun
+            with st.spinner("Compiling intelligence briefs and building Memory Wiki..."):
+                time.sleep(2)
+                st.rerun()
+        return
 
     # Navigation links
     st.markdown("### 🚀 Quick Navigation")

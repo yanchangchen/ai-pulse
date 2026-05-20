@@ -1,47 +1,57 @@
-"""
-Background Refresher for AI Pulse.
-Runs the data ingestion and intelligence pipeline in a background thread
-to avoid blocking the main Streamlit UI.
-"""
-
+import sys
 import threading
 import logging
 from datetime import datetime
 from typing import Optional
 
 from core.logger import setup_logger
+import streamlit as st
+from core.history_manager import get_last_run
 
 logger = setup_logger(__name__)
 
+# To survive module reloads in Streamlit, persist state in sys
+if not hasattr(sys, "_aipulse_bg_refresher_state"):
+    sys._aipulse_bg_refresher_state = {
+        "status": "idle",
+        "error": None,
+        "completed_timestamp": None,
+        "progress": "Ready",
+        "thread": None
+    }
+
 class BackgroundRefresher:
-    _thread: Optional[threading.Thread] = None
-    _status: str = "idle"  # idle, running, completed, failed
-    _error: Optional[str] = None
-    _lock = threading.Lock()
-    _completed_timestamp: Optional[str] = None
-    _progress: str = "Initializing background thread..."
+    _lock = threading.RLock()
+
+    @classmethod
+    def _get_state(cls) -> dict:
+        return sys._aipulse_bg_refresher_state
 
     @classmethod
     def is_running(cls) -> bool:
         with cls._lock:
-            return cls._thread is not None and cls._thread.is_alive()
+            state = cls._get_state()
+            thread = state["thread"]
+            return thread is not None and thread.is_alive()
 
     @classmethod
     def get_status(cls) -> dict:
         with cls._lock:
+            state = cls._get_state()
             return {
-                "status": cls._status,
-                "error": cls._error,
-                "completed_timestamp": cls._completed_timestamp,
+                "status": state["status"],
+                "error": state["error"],
+                "completed_timestamp": state["completed_timestamp"],
                 "is_running": cls.is_running(),
-                "progress": cls._progress
+                "progress": state["progress"]
             }
 
     @classmethod
     def update_progress(cls, msg: str) -> None:
         """Update progress string and output to console for instant visibility."""
         with cls._lock:
-            cls._progress = msg
+            state = cls._get_state()
+            state["progress"] = msg
         logger.info("[BG Refresher Progress] %s", msg)
         print(f"🔄 [AI Pulse BG Refresher] Current Step: {msg}", flush=True)
 
@@ -52,16 +62,19 @@ class BackgroundRefresher:
                 logger.info("Background refresh is already running.")
                 return False
             
-            cls._status = "running"
-            cls._error = None
-            cls._progress = "Initializing pipeline thread..."
+            state = cls._get_state()
+            state["status"] = "running"
+            state["error"] = None
+            state["progress"] = "Initializing pipeline thread..."
+            
             # Start the background thread
-            cls._thread = threading.Thread(
+            thread = threading.Thread(
                 target=cls._run_pipeline, 
                 name="AI-Pulse-BG-Refresher", 
                 daemon=True
             )
-            cls._thread.start()
+            state["thread"] = thread
+            thread.start()
             logger.info("Started background refresh thread.")
             print("⚡ [AI Pulse BG Refresher] Started background pipeline execution thread.", flush=True)
             return True
@@ -82,8 +95,9 @@ class BackgroundRefresher:
             articles = fetch_all_news()
             if not articles:
                 with cls._lock:
-                    cls._status = "failed"
-                    cls._error = "No articles found in the last 14 days."
+                    state = cls._get_state()
+                    state["status"] = "failed"
+                    state["error"] = "No articles found in the last 14 days."
                 cls.update_progress("[FETCH] Failed: No articles found.")
                 logger.warning("BG Pipeline failed: No articles found.")
                 return
@@ -110,26 +124,26 @@ class BackgroundRefresher:
                 logger.debug("BG Pipeline: Failed to clear streamlit cache (expected if run outside main thread): %s", cache_err)
 
             with cls._lock:
-                cls._status = "completed"
-                cls._progress = "[CACHE] Pipeline completed successfully."
-                cls._completed_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                state = cls._get_state()
+                state["status"] = "completed"
+                state["progress"] = "[CACHE] Pipeline completed successfully."
+                state["completed_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print("✅ [CACHE] BG Pipeline execution successfully finished.", flush=True)
             
         except Exception as e:
             with cls._lock:
-                cls._status = "failed"
-                cls._progress = f"[ERROR] Failed with error: {e}"
-                cls._error = str(e)
+                state = cls._get_state()
+                state["status"] = "failed"
+                state["progress"] = f"[ERROR] Failed with error: {e}"
+                state["error"] = str(e)
             logger.error("Background pipeline failed: %s", e, exc_info=True)
             print(f"❌ [ERROR] BG Pipeline execution failed: {e}", flush=True)
 
 
+
 def check_and_show_bg_status() -> None:
     """Helper to check background refresh status, display banners, and render control elements."""
-    import streamlit as st
-    from core.bg_refresher import BackgroundRefresher
-    from core.history_manager import get_last_run
-    
+        
     # 1. Top-of-page alert banner if new data is available in the persistence layer
     if st.session_state.get('data_loaded') and st.session_state.get('loaded_timestamp'):
         last_run = get_last_run()

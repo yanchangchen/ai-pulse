@@ -98,7 +98,7 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
     url = source["url"]
 
     try:
-        logger.info("Fetching RSS feed: %s", source_name)
+        logger.debug("Fetching RSS feed: %s", source_name)
         feed = feedparser.parse(url)
 
         if feed.bozo and not feed.entries:
@@ -145,7 +145,7 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
             }
             items.append(item)
 
-        logger.info("Fetched %d items from %s", len(items), source_name)
+        logger.debug("Fetched %d items from %s", len(items), source_name)
 
     except Exception as e:
         logger.error("Error fetching %s: %s", source_name, e)
@@ -173,7 +173,7 @@ def scrape_web_source(source: Dict) -> List[Dict]:
     url = source["url"]
 
     try:
-        logger.info("Scraping web source: %s", source_name)
+        logger.debug("Scraping web source: %s", source_name)
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -273,7 +273,7 @@ def scrape_web_source(source: Dict) -> List[Dict]:
                     'source_name': source_name,
                 })
 
-        logger.info("Scraped %d items from %s", len(items), source_name)
+        logger.debug("Scraped %d items from %s", len(items), source_name)
 
     except Exception as e:
         logger.error("Error scraping %s: %s", source_name, e)
