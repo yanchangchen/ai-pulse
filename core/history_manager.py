@@ -1,14 +1,17 @@
-"""
-History and memory manager for AI Pulse.
-Handles persisting summaries to JSON (for parsing) and memory.md (for context/wiki).
+"""History and memory manager for AI Pulse.
+Handles persisting summaries to JSON (for parsing), memory.md (for context/wiki), and Supabase (cloud).
 """
 
 import json
 import os
+import logging
 import streamlit as st
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -68,6 +71,9 @@ def save_run_to_history(
 
     with open(MEMORY_MD, "a", encoding="utf-8") as f:
         f.write(new_entry)
+    
+    # 3. Persist to Supabase (graceful degradation if unavailable)
+    _save_to_supabase(timestamp, date_key, summaries, article_counts, full_articles, themed_articles)
 
 def get_recent_context(theme_name: str, limit: int = 2) -> str:
     """Retrieve the most recent summaries for a theme to provide context to the LLM."""
@@ -130,3 +136,62 @@ def get_last_run_time() -> Optional[datetime]:
         return datetime.strptime(last_run["timestamp"], "%Y-%m-%d %H:%M:%S")
     except Exception:
         return None
+
+
+def _save_to_supabase(
+    timestamp: str,
+    date_key: str,
+    summaries: Dict[str, Dict[str, str]],
+    article_counts: Dict[str, int],
+    full_articles: List[Dict],
+    themed_articles: Dict[str, List[Dict]]
+) -> None:
+    """Save run data to Supabase with graceful error handling."""
+    try:
+        from core.supabase_client import get_supabase_manager
+        supabase = get_supabase_manager()
+        
+        if not supabase.is_available():
+            logger.debug("Supabase not available, skipping cloud persistence")
+            return
+        
+        # 1. Create trend run record
+        run_record = supabase.save_trend_run(
+            run_timestamp=timestamp,
+            run_date=date_key,
+            total_articles=len(full_articles)
+        )
+        
+        if not run_record:
+            logger.warning("Failed to create trend run record in Supabase")
+            return
+        
+        run_id = run_record["id"]
+        logger.info(f"Created trend run in Supabase: {run_id}")
+        
+        # 2. Save theme summaries
+        for theme, summary in summaries.items():
+            supabase.save_theme_summary(
+                run_id=run_id,
+                theme_name=theme,
+                summary=summary,
+                article_count=article_counts.get(theme, 0)
+            )
+        
+        # 3. Save articles by theme
+        for theme, articles in themed_articles.items():
+            if articles:
+                supabase.save_articles(run_id, theme, articles)
+        
+        # 4. Update sync metadata
+        supabase.update_sync_metadata("last_sync_time", timestamp)
+        supabase.update_sync_metadata("last_run_id", run_id)
+        supabase.update_sync_metadata("sync_status", "success")
+        
+        logger.info(f"Successfully persisted run {run_id} to Supabase")
+        
+    except ImportError:
+        logger.debug("supabase package not installed, skipping cloud persistence")
+    except Exception as e:
+        logger.error(f"Failed to persist to Supabase: {e}")
+        # Gracefully degrade - file-based persistence already succeeded
