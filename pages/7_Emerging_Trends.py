@@ -14,8 +14,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import shared components
-from components.screen_container import ScreenContainer
+# Import Supabase client
 from core.supabase_client import get_supabase_manager
 
 st.set_page_config(page_title="Emerging Trends", page_icon="🚀", layout="wide")
