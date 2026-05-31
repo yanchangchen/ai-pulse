@@ -187,20 +187,77 @@ Be highly precise, avoid hype and buzzwords. Focus on real architectural shifts,
         }
 
 
+def _get_existing_article_hashes(theme_name: str) -> set:
+    """
+    Get set of content_hash values for articles already summarized in this theme.
+    Uses Supabase to check for existing articles.
+    
+    Args:
+        theme_name: Name of the theme
+    
+    Returns:
+        Set of content_hash strings for existing articles
+    """
+    try:
+        from core.supabase_client import get_supabase_manager
+        supabase = get_supabase_manager()
+        if not supabase.is_available():
+            return set()
+        
+        response = supabase.client.table("articles").select("content_hash").eq(
+            "theme_name", theme_name
+        ).execute()
+        
+        if response.data:
+            return {row["content_hash"] for row in response.data if row.get("content_hash")}
+        return set()
+    except Exception as e:
+        logger.debug(f"Could not fetch existing article hashes for {theme_name}: {e}")
+        return set()
+
+
 def generate_all_summaries(
     themed_articles: Dict[str, List[Dict]],
     full_articles: List[Dict]
 ) -> Dict[str, Dict[str, str]]:
-    """Generate summaries for all themes and persist to history."""
+    """Generate summaries for all themes and persist to history.
+    
+    Optimization: Only generates summaries for themes that have NEW articles
+    (articles not already summarized in Supabase).
+    """
     summaries: Dict[str, Dict[str, str]] = {}
     article_counts = {}
 
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
         article_counts[theme] = len(articles)
-        logger.info("Generating summary for %s (%d articles)", theme, len(articles))
-
-        summary = generate_theme_summary(theme, articles)
+        
+        # NEW: Check if articles are already summarized
+        existing_hashes = _get_existing_article_hashes(theme)
+        new_articles = [
+            a for a in articles 
+            if not a.get("content_hash") or a.get("content_hash") not in existing_hashes
+        ]
+        
+        if not new_articles and articles:
+            logger.info("Skipping LLM summary for %s: all %d articles already summarized", 
+                       theme, len(articles))
+            # Use a cached summary indicating no new articles
+            summaries[theme] = {
+                "what_is_happening": f"No new articles this period. ({len(articles)} existing articles in database)",
+                "engineering_tradeoffs": "Refer to previous summaries.",
+                "product_impact": "Refer to previous summaries.",
+                "why_it_matters": "No new developments to report.",
+                "what_to_watch": "Monitor for new articles.",
+                "further_reading": ""
+            }
+            continue
+        
+        logger.info("Generating summary for %s (%d new articles out of %d total)", 
+                   theme, len(new_articles), len(articles))
+        
+        # Generate summary using new articles only (for better signal)
+        summary = generate_theme_summary(theme, new_articles if new_articles else articles)
         summaries[theme] = summary
 
     # Save to memory/wiki
