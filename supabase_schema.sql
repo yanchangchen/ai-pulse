@@ -131,18 +131,20 @@ LIMIT 1;
 
 -- View: Theme evolution (last 5 runs per theme)
 CREATE OR REPLACE VIEW theme_evolution AS
-SELECT
-  ts.theme_name,
-  ts.run_id,
-  tr.run_timestamp,
-  ts.what_is_happening,
-  ts.why_it_matters,
-  ts.what_to_watch,
-  ts.article_count,
-  ROW_NUMBER() OVER (PARTITION BY ts.theme_name ORDER BY tr.run_timestamp DESC) as run_number
-FROM theme_summaries ts
-JOIN trend_runs tr ON ts.run_id = tr.id
-WHERE ROW_NUMBER() OVER (PARTITION BY ts.theme_name ORDER BY tr.run_timestamp DESC) <= 5;
+WITH ranked_summaries AS (
+  SELECT
+    ts.theme_name,
+    ts.run_id,
+    tr.run_timestamp,
+    ts.what_is_happening,
+    ts.why_it_matters,
+    ts.what_to_watch,
+    ts.article_count,
+    ROW_NUMBER() OVER (PARTITION BY ts.theme_name ORDER BY tr.run_timestamp DESC) as run_number
+  FROM theme_summaries ts
+  JOIN trend_runs tr ON ts.run_id = tr.id
+)
+SELECT * FROM ranked_summaries WHERE run_number <= 5;
 
 -- View: Article statistics by theme
 CREATE OR REPLACE VIEW article_stats_by_theme AS

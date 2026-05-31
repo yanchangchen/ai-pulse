@@ -121,7 +121,8 @@ class SupabaseManager:
     def save_articles(self, run_id: str, theme_name: str, 
                      articles: List[Dict]) -> Optional[List[Dict]]:
         """
-        Save articles for a theme in a run.
+        Save articles for a theme in a run with deduplication.
+        Uses UPSERT to avoid duplicate articles by content_hash.
         
         Args:
             run_id: UUID of the trend run
@@ -135,8 +136,21 @@ class SupabaseManager:
             return None
         
         try:
+            # Deduplicate within the batch by content_hash first
+            seen_hashes = set()
             rows = []
+            
             for article in articles:
+                content_hash = article.get("content_hash")
+                
+                # Skip if we've already seen this hash in this batch
+                if content_hash and content_hash in seen_hashes:
+                    logger.debug(f"Skipping duplicate article with hash {content_hash} in batch")
+                    continue
+                
+                if content_hash:
+                    seen_hashes.add(content_hash)
+                
                 rows.append({
                     "run_id": run_id,
                     "theme_name": theme_name,
@@ -145,15 +159,23 @@ class SupabaseManager:
                     "source_name": article.get("source_name", ""),
                     "link": article.get("link", ""),
                     "published_at": article.get("published_at"),
-                    "content_hash": article.get("content_hash")
+                    "content_hash": content_hash
                 })
             
-            response = self.client.table("articles").insert(rows).execute()
+            if not rows:
+                logger.info(f"No unique articles to save for {theme_name}")
+                return []
+            
+            # Use UPSERT to handle duplicates across runs: on conflict with (content_hash, theme_name), do nothing
+            response = self.client.table("articles").upsert(
+                rows,
+                on_conflict="content_hash,theme_name"
+            ).execute()
             
             if response.data:
-                logger.info(f"Saved {len(response.data)} articles for {theme_name}")
+                logger.info(f"Saved/deduplicated {len(response.data)} articles for {theme_name}")
                 return response.data
-            return None
+            return []
         except Exception as e:
             logger.error(f"Failed to save articles for {theme_name}: {e}")
             return None
