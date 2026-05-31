@@ -194,6 +194,7 @@ def main() -> None:
         st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
         st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
         st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
+        st.page_link("pages/7_Emerging_Trends.py", label="Emerging Trends", icon="🚀")
 
         st.divider()
 
@@ -284,7 +285,10 @@ def main() -> None:
     with col3: st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
     with col4: st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
     st.markdown("<br>", unsafe_allow_html=True)
-    st.page_link("pages/5_History.py", label="Memory Wiki (Past Developments)", icon="🧠")
+    col1, col2, col3 = st.columns(3)
+    with col1: st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
+    with col2: st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
+    with col3: st.page_link("pages/7_Emerging_Trends.py", label="Emerging Trends", icon="🚀")
 
     st.markdown("---")
 
