@@ -87,6 +87,29 @@ def init_session_state() -> None:
         st.session_state.summaries = {}
     if 'force_refresh' not in st.session_state:
         st.session_state.force_refresh = False
+    if 'backfill_attempted' not in st.session_state:
+        st.session_state.backfill_attempted = False
+
+    # NEW: Backfill Supabase with historical data on first load
+    if not st.session_state.backfill_attempted:
+        st.session_state.backfill_attempted = True
+        try:
+            from core.supabase_client import get_supabase_manager
+            from core.history_manager import load_full_history
+            
+            supabase = get_supabase_manager()
+            if supabase.is_available():
+                history = load_full_history()
+                if history and len(history) > 0:
+                    logger.info("Attempting to backfill historical data to Supabase...")
+                    stats = supabase.backfill_from_history(history)
+                    if stats["inserted_runs"] > 0:
+                        logger.info(f"Backfilled {stats['inserted_runs']} historical runs to Supabase")
+                        st.toast(f"✅ Backfilled {stats['inserted_runs']} historical runs to Supabase", icon="ℹ️")
+                    if stats["errors"]:
+                        logger.warning(f"Backfill had {len(stats['errors'])} errors")
+        except Exception as e:
+            logger.debug(f"Backfill attempt failed (may be normal): {e}")
 
     # Try to load the data from persistence cache into session state
     if not st.session_state.data_loaded:

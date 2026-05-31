@@ -380,3 +380,98 @@ def get_supabase_manager() -> SupabaseManager:
     if _manager is None:
         _manager = SupabaseManager()
     return _manager
+    
+    def backfill_from_history(self, history_data: Dict) -> Dict:
+        """
+        Backfill Supabase with historical data from history.json.
+        Skips runs that already exist in Supabase.
+        
+        Args:
+            history_data: Dict from load_full_history() with format:
+                         {timestamp: {date, summaries, counts, full_articles, themed_articles}}
+        
+        Returns:
+            Dict with stats: {total_runs, inserted_runs, skipped_runs, inserted_articles, errors}
+        """
+        if not self.available:
+            logger.warning("Supabase not available, skipping backfill")
+            return {"total_runs": 0, "inserted_runs": 0, "skipped_runs": 0, "inserted_articles": 0, "errors": []}
+        
+        stats = {
+            "total_runs": len(history_data),
+            "inserted_runs": 0,
+            "skipped_runs": 0,
+            "inserted_articles": 0,
+            "errors": []
+        }
+        
+        try:
+            for timestamp, entry in history_data.items():
+                # 1. Check if this run already exists
+                try:
+                    existing = self.client.table("trend_runs").select("id").eq(
+                        "run_timestamp", timestamp
+                    ).execute()
+                    
+                    if existing.data:
+                        logger.debug(f"Run {timestamp} already in Supabase, skipping")
+                        stats["skipped_runs"] += 1
+                        continue
+                except Exception as e:
+                    logger.debug(f"Could not check existing run {timestamp}: {e}")
+                
+                # 2. Create trend run record
+                date = entry.get("date", timestamp[:10])
+                full_articles = entry.get("full_articles", [])
+                
+                try:
+                    run_response = self.client.table("trend_runs").insert({
+                        "run_timestamp": timestamp,
+                        "run_date": date,
+                        "total_articles": len(full_articles)
+                    }).execute()
+                    
+                    if not run_response.data:
+                        stats["errors"].append(f"Failed to insert run {timestamp}")
+                        continue
+                    
+                    run_id = run_response.data[0]["id"]
+                except Exception as e:
+                    stats["errors"].append(f"Failed to insert run {timestamp}: {e}")
+                    continue
+                
+                # 3. Insert theme summaries
+                summaries = entry.get("summaries", {})
+                counts = entry.get("counts", {})
+                
+                for theme_name, summary in summaries.items():
+                    try:
+                        self.client.table("theme_summaries").insert({
+                            "run_id": run_id,
+                            "theme_name": theme_name,
+                            "what_is_happening": summary.get("what_is_happening", ""),
+                            "why_it_matters": summary.get("why_it_matters", ""),
+                            "what_to_watch": summary.get("what_to_watch", ""),
+                            "article_count": counts.get(theme_name, 0)
+                        }).execute()
+                    except Exception as e:
+                        stats["errors"].append(f"Failed to insert summary for {theme_name} in run {timestamp}: {e}")
+                
+                # 4. Insert articles by theme
+                themed_articles = entry.get("themed_articles", {})
+                for theme_name, articles in themed_articles.items():
+                    if articles:
+                        try:
+                            self.save_articles(run_id, theme_name, articles)
+                            stats["inserted_articles"] += len(articles)
+                        except Exception as e:
+                            stats["errors"].append(f"Failed to insert articles for {theme_name} in run {timestamp}: {e}")
+                
+                stats["inserted_runs"] += 1
+                logger.info(f"Backfilled run {timestamp} with {len(full_articles)} articles")
+        
+        except Exception as e:
+            logger.error(f"Backfill failed: {e}")
+            stats["errors"].append(str(e))
+        
+        return stats
