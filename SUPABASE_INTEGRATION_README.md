@@ -231,28 +231,58 @@ Common issues:
 - **"Connection refused"** → Check internet, verify Supabase URL
 - **"No data appearing"** → Check schema was created, verify permissions
 
+## Recent Improvements (Steps 1-4) ✅
+
+The following enhancements have been successfully implemented:
+
+### Step 1: Deduplication ✅
+- Added unique constraint on `articles(content_hash, theme_name)` in Supabase
+- Batch-level deduplication in `save_articles()`
+- Uses UPSERT to prevent duplicates across runs
+
+### Step 2: Historical Data Backfill ✅
+- `backfill_from_history()` method automatically migrates existing `history.json` to Supabase
+- Runs on first app startup
+- Idempotent - skips runs that already exist
+
+### Step 3: LLM Optimization ✅
+- `_get_existing_article_hashes()` queries Supabase for existing articles
+- `generate_all_summaries()` skips LLM calls for already-summarized articles
+- Only processes new articles (better signal, faster execution)
+
+### Step 4: Emerging Trends Visualization ✅
+- New `pages/7_Emerging_Trends.py` page with 4 visualizations
+- Emergence Timeline, Acceleration Index, Novelty Score, Novel Articles
+- Helps identify and track emerging trends in real-time
+
 ## Future Enhancements
 
 Possible next steps:
 1. **Async persistence** - Use `asyncio` for non-blocking saves
 2. **Real-time subscriptions** - Use Supabase Realtime for live updates
 3. **Mobile app** - Query Supabase directly from React Native app
-4. **Analytics dashboard** - Advanced SQL queries on trend data
-5. **Data export** - Export trends to CSV/JSON
-6. **Webhooks** - Trigger actions on new trends
+4. **Advanced analytics dashboard** - Complex SQL queries on trend data
+5. **Data export** - Export trends to CSV/JSON for external analysis
+6. **Webhooks** - Trigger actions on new trends or acceleration events
 
 ## Files Summary
 
 | File | Lines | Purpose |
-|------|-------|---------|
-| `core/supabase_client.py` | 280+ | Main Supabase integration |
-| `core/supabase_ui.py` | 35 | Streamlit UI components |
-| `supabase_schema.sql` | 120+ | Database schema |
-| `SUPABASE_SETUP_GUIDE.md` | 200+ | Setup instructions |
-| `SUPABASE_INTEGRATION_README.md` | 250+ | This file |
-| **Modified:** `core/history_manager.py` | +60 | Supabase persistence |
+|------|-------|----------|
+| `core/supabase_client.py` | 360+ | Main Supabase integration with deduplication & backfill |
+| `core/supabase_ui.py` | 37 | Streamlit UI components |
+| `supabase_schema.sql` | 160+ | Database schema with deduplication constraints |
+| `pages/7_Emerging_Trends.py` | 362 | Emerging trends visualization page |
+| `SUPABASE_SETUP_GUIDE.md` | 330+ | Setup instructions with improvements guide |
+| `SUPABASE_INTEGRATION_README.md` | 280+ | This file |
+| `test_supabase.py` | 68 | Integration test |
+| `test_backfill.py` | 45 | Backfill test |
+| `test_llm_optimization.py` | 65 | LLM optimization test |
+| **Modified:** `core/history_manager.py` | +71 | Supabase persistence + backfill |
+| **Modified:** `core/summariser.py` | +60 | LLM optimization |
 | **Modified:** `requirements.txt` | +2 | Dependencies |
-| **Modified:** `.env.example` | +5 | Configuration template |
+| **Modified:** `.env.example` | +9 | Configuration template |
+| **Modified:** `app.py` | +3 | Backfill initialization |
 
 ## Questions?
 

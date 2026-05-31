@@ -11,6 +11,9 @@ Your ai-pulse application now supports **cloud persistence to Supabase**. This m
 ✅ Build mobile apps that query the same trend data  
 ✅ Enable real-time updates with Supabase Realtime  
 ✅ Run SQL queries for advanced trend analytics  
+✅ Emerging trends visualization with novelty scoring and acceleration metrics  
+✅ Automatic deduplication of articles across runs  
+✅ LLM optimization to skip already-summarized articles  
 
 **Important:** File-based persistence (local `history.json` and `memory.md`) continues to work as a fallback. Supabase is optional and gracefully degrades if unavailable.
 
@@ -274,18 +277,53 @@ Now that your data is in Supabase, you can:
 
 ---
 
+## Recent Improvements (Steps 1-4)
+
+The following enhancements have been implemented:
+
+### Step 1: Deduplication ✅
+- Added unique constraint on `articles(content_hash, theme_name)` in Supabase
+- Batch-level deduplication in `save_articles()`
+- Uses UPSERT to prevent duplicates across runs
+- Prevents data corruption from repeated saves
+
+### Step 2: Historical Data Backfill ✅
+- `backfill_from_history()` method automatically migrates existing `history.json` to Supabase
+- Runs on first app startup
+- Idempotent - skips runs that already exist
+- Preserves all historical trend data
+
+### Step 3: LLM Optimization ✅
+- `_get_existing_article_hashes()` queries Supabase for existing articles
+- `generate_all_summaries()` skips LLM calls for already-summarized articles
+- Only processes new articles (better signal, faster execution)
+- Reduces API costs and improves performance
+
+### Step 4: Emerging Trends Visualization ✅
+- New `pages/7_Emerging_Trends.py` page with 4 visualizations:
+  - 🗓️ **Emergence Timeline**: When did each trend first appear?
+  - 📈 **Acceleration Index**: Week-over-week growth % for each theme
+  - ⭐ **Novelty Score**: 0-100 score based on how recent the trend is
+  - 🆕 **Novel Articles**: Articles published in the last 7 days
+
 ## Files Changed
 
 New files added:
-- `core/supabase_client.py` - Supabase manager class
-- `core/supabase_ui.py` - Streamlit UI components
-- `supabase_schema.sql` - Database schema
-- `SUPABASE_SETUP_GUIDE.md` - This file
+- `core/supabase_client.py` - Supabase manager class (360+ lines)
+- `core/supabase_ui.py` - Streamlit UI components (37 lines)
+- `supabase_schema.sql` - Database schema (160+ lines)
+- `pages/7_Emerging_Trends.py` - Emerging trends visualization (362 lines)
+- `SUPABASE_SETUP_GUIDE.md` - This file (292 lines)
+- `test_supabase.py` - Integration test (68 lines)
+- `test_backfill.py` - Backfill test (45 lines)
+- `test_llm_optimization.py` - LLM optimization test (65 lines)
 
 Modified files:
-- `core/history_manager.py` - Added Supabase persistence
-- `requirements.txt` - Added supabase and python-dotenv
-- `.env.example` - Added Supabase configuration template
+- `core/history_manager.py` - Added Supabase persistence (+71 lines)
+- `core/summariser.py` - Added LLM optimization (+60 lines)
+- `requirements.txt` - Added supabase and python-dotenv (+2 lines)
+- `.env.example` - Added Supabase configuration template (+9 lines)
+- `app.py` - Added backfill call to init_session_state (+3 lines)
 
 ---
 
