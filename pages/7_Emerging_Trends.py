@@ -330,6 +330,26 @@ def render_new_articles_detection():
 
 
 def main():
+    from core.bg_refresher import check_and_show_bg_status, render_sidebar_info
+
+    # 1. Top of page alert if background update finished
+    check_and_show_bg_status()
+
+    # Sidebar Navigation
+    with st.sidebar:
+        st.header("🧭 Navigation")
+        st.page_link("app.py", label="Home", icon="🏠")
+        st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
+        st.page_link("pages/2_Deep_Dive.py", label="Deep Dive", icon="🔍")
+        st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
+        st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
+        st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
+        st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
+        st.page_link("pages/7_Emerging_Trends.py", label="Emerging Trends", icon="🚀")
+
+        # Background status tracker inside the sidebar
+        render_sidebar_info()
+
     st.title("🚀 Emerging Trends Analysis")
     
     st.markdown("""
