@@ -17,7 +17,7 @@ from core.logger import setup_logger
 logger = setup_logger(__name__)
 
 # Retry configuration
-MAX_RETRIES = 3
+MAX_RETRIES = 2
 INITIAL_BACKOFF_SECONDS = 2.0
 
 
