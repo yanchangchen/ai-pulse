@@ -61,24 +61,14 @@ def main() -> None:
     """Main overview page."""
     themed_articles, summaries = get_session_data()
 
-    from core.bg_refresher import check_and_show_bg_status, render_sidebar_info
+    from core.bg_refresher import check_and_show_bg_status
+    from core.shared_sidebar import render_sidebar_nav
 
     # 1. Top of page alert if background update finished
     check_and_show_bg_status()
 
     # Sidebar Navigation
-    with st.sidebar:
-        st.header("🧭 Navigation")
-        st.page_link("app.py", label="Home", icon="🏠")
-        st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
-        st.page_link("pages/2_Deep_Dive.py", label="Deep Dive", icon="🔍")
-        st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
-        st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
-        st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
-        st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
-        
-        # Background status tracker inside the sidebar
-        render_sidebar_info()
+    render_sidebar_nav()
 
     # Header
     st.title("📋 Theme Overview")

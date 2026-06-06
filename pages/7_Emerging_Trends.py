@@ -1,6 +1,6 @@
 """
-Emerging Trends Visualization Page
-Tracks and visualizes emerging trends with novelty scoring, acceleration detection, and timeline.
+AI Pulse - Emerging Trends Visualization Page
+Tracks and visualizes emerging trends with composite novelty scoring, acceleration detection, and timeline.
 """
 
 import streamlit as st
@@ -8,91 +8,169 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
 import logging
+import re
+from collections import Counter
+
+from config.themes import THEME_ORDER, THEME_COLORS
+from core.supabase_client import get_supabase_manager
+from core.history_manager import load_full_history
+from core.shared_sidebar import render_sidebar_nav
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import Supabase client
-from core.supabase_client import get_supabase_manager
+st.set_page_config(page_title="Emerging Trends - AI Pulse", page_icon="🚀", layout="wide")
 
-st.set_page_config(page_title="Emerging Trends", page_icon="🚀", layout="wide")
+# Stop words for keyword extraction
+STOP_WORDS = {
+    "the", "a", "an", "and", "or", "but", "if", "then", "else", "when", "at", "by", "for", "with",
+    "about", "against", "between", "into", "through", "during", "before", "after", "above", "below",
+    "to", "from", "up", "down", "in", "out", "on", "off", "over", "under", "again", "further", "then",
+    "once", "here", "there", "all", "any", "both", "each", "few", "more", "most", "other", "some",
+    "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "s", "t", "can",
+    "will", "just", "don", "should", "now", "of", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "having", "do", "does", "did", "doing", "this", "that", "these", "those",
+    "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her", "its", "our", "their",
+    "ai", "artificial", "intelligence", "new", "using", "use", "used", "technology", "development",
+    "developments", "system", "systems", "model", "models", "data", "analysis", "report", "reports"
+}
 
-def get_trend_runs_data() -> pd.DataFrame:
-    """Fetch all trend runs from Supabase."""
-    try:
-        supabase = get_supabase_manager()
-        if not supabase.is_available():
-            return pd.DataFrame()
-        
-        response = supabase.client.table("trend_runs").select(
-            "id, run_timestamp, run_date, total_articles"
-        ).order("run_timestamp", desc=False).execute()
-        
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df["run_timestamp"] = pd.to_datetime(df["run_timestamp"])
-            df["run_date"] = pd.to_datetime(df["run_date"])
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Failed to fetch trend runs: {e}")
-        return pd.DataFrame()
+def extract_top_keywords(articles_df, limit=5):
+    """Extract top frequent terms from article titles and summaries."""
+    words = []
+    for _, row in articles_df.iterrows():
+        text = f"{row['title']} {row.get('summary', '')}".lower()
+        found = re.findall(r"\b[a-zA-Z]{3,}\b", text)
+        for w in found:
+            if w not in STOP_WORDS:
+                words.append(w)
+    counter = Counter(words)
+    return [item[0] for item in counter.most_common(limit)]
 
+def load_all_articles_data(supabase, start_date=None, end_date=None) -> pd.DataFrame:
+    """Load all articles in a single batch query with fallback to local history."""
+    if supabase.is_available():
+        try:
+            response = supabase.client.table("articles").select(
+                "id, theme_name, run_id, published_at, title, source_name, summary, link"
+            ).execute()
+            if response.data:
+                df = pd.DataFrame(response.data)
+                df["published_at"] = pd.to_datetime(df["published_at"])
+                if start_date:
+                    df = df[df["published_at"].dt.date >= start_date]
+                if end_date:
+                    df = df[df["published_at"].dt.date <= end_date]
+                return df
+        except Exception as e:
+            logger.error(f"Failed to batch load articles from Supabase: {e}")
+            
+    # Fallback to local history
+    history = load_full_history()
+    all_articles = []
+    for ts, entry in history.items():
+        for article in entry.get("full_articles", []):
+            # Try to get theme name from themed_articles mapping
+            theme_name = "Other"
+            for t_name, t_arts in entry.get("themed_articles", {}).items():
+                if any(a.get("content_hash") == article.get("content_hash") or a.get("title") == article.get("title") for a in t_arts):
+                    theme_name = t_name
+                    break
+            
+            pub_at = article.get("published_at") or ts
+            all_articles.append({
+                "id": article.get("id", ""),
+                "theme_name": theme_name,
+                "published_at": pub_at,
+                "title": article.get("title", ""),
+                "source_name": article.get("source_name", "Unknown"),
+                "summary": article.get("summary", ""),
+                "link": article.get("link", "")
+            })
+            
+    if all_articles:
+        df = pd.DataFrame(all_articles)
+        df["published_at"] = pd.to_datetime(df["published_at"])
+        if start_date:
+            df = df[df["published_at"].dt.date >= start_date]
+        if end_date:
+            df = df[df["published_at"].dt.date <= end_date]
+        return df
+        
+    return pd.DataFrame()
 
-def get_theme_articles_by_date(theme_name: str) -> pd.DataFrame:
-    """Get articles for a theme grouped by run date."""
-    try:
-        supabase = get_supabase_manager()
-        if not supabase.is_available():
-            return pd.DataFrame()
-        
-        response = supabase.client.table("articles").select(
-            "id, theme_name, run_id, published_at, title, source_name"
-        ).eq("theme_name", theme_name).execute()
-        
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df["published_at"] = pd.to_datetime(df["published_at"])
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Failed to fetch articles for {theme_name}: {e}")
-        return pd.DataFrame()
+def render_sparkline(counts_series, theme_color):
+    """Render a clean sparkline using Plotly."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=list(range(len(counts_series))),
+        y=list(counts_series),
+        mode="lines",
+        line=dict(color=theme_color, width=2.5),
+        fill="tozeroy",
+        fillcolor=f"{theme_color}22"
+    ))
+    fig.update_layout(
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=35,
+        width=120,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False
+    )
+    return fig
 
-
-def calculate_emergence_metrics(theme_name: str, runs_df: pd.DataFrame) -> Dict:
-    """
-    Calculate emergence metrics for a theme:
-    - First appearance date
-    - Acceleration (week-over-week growth %)
-    - Novelty score (0-100)
-    """
-    try:
-        articles_df = get_theme_articles_by_date(theme_name)
+def main():
+    # Render shared sidebar navigation
+    render_sidebar_nav()
+    
+    # Sidebar filters
+    st.sidebar.subheader("📅 Scope Analysis")
+    start_date = st.sidebar.date_input("Start Date", value=datetime.now().date() - timedelta(days=90))
+    end_date = st.sidebar.date_input("End Date", value=datetime.now().date())
+    
+    st.title("🚀 Emerging Trends Analysis")
+    st.markdown("""
+    Advanced tracking of thematic momentum and newly emerging patterns in the AI landscape.
+    *Calculations are performed in real-time on all historical records.*
+    """)
+    st.divider()
+    
+    supabase = get_supabase_manager()
+    
+    with st.spinner("Batch loading intelligence data..."):
+        df_articles = load_all_articles_data(supabase, start_date, end_date)
         
-        if articles_df.empty:
-            return {
-                "first_seen": None,
-                "days_old": None,
-                "acceleration": 0,
-                "novelty_score": 0,
-                "current_count": 0,
-                "trend": "stable"
-            }
+    if df_articles.empty:
+        st.warning("⚠️ No article data found within the selected dates. Please check your date filters or run a data refresh.")
+        return
         
-        # Get first appearance
-        first_article = articles_df["published_at"].min()
-        days_old = (datetime.now() - first_article).days if first_article else None
+    # Calculate Emergence Metrics in Python
+    theme_metrics = []
+    theme_scores_radar = {}
+    
+    for theme in THEME_ORDER:
+        theme_arts = df_articles[df_articles["theme_name"] == theme]
         
-        # Count articles by week
-        articles_df["week"] = articles_df["published_at"].dt.isocalendar().week
-        articles_df["year"] = articles_df["published_at"].dt.isocalendar().year
+        if theme_arts.empty:
+            continue
+            
+        # 1. Recency / First appearance
+        first_seen = theme_arts["published_at"].min()
+        days_old = (datetime.now() - first_seen).days
         
-        weekly_counts = articles_df.groupby(["year", "week"]).size()
+        # Recency score (0-100)
+        recency_score = 100 if days_old <= 7 else 85 if days_old <= 14 else 60 if days_old <= 30 else max(0, 100 - (days_old - 30) * 1.5)
         
-        # Calculate acceleration (week-over-week growth)
+        # 2. Acceleration: WoW Growth rate
+        theme_arts_sorted = theme_arts.sort_values("published_at")
+        theme_arts_sorted["week"] = theme_arts_sorted["published_at"].dt.isocalendar().week
+        theme_arts_sorted["year"] = theme_arts_sorted["published_at"].dt.isocalendar().year
+        weekly_counts = theme_arts_sorted.groupby(["year", "week"]).size()
+        
         acceleration = 0
         trend = "stable"
         if len(weekly_counts) >= 2:
@@ -104,258 +182,177 @@ def calculate_emergence_metrics(theme_name: str, runs_df: pd.DataFrame) -> Dict:
                     trend = "accelerating"
                 elif acceleration < -20:
                     trend = "declining"
+                    
+        # Acceleration Score (0-100)
+        accel_score = min(100, max(0, 50 + acceleration * 0.5))
         
-        # Novelty score: based on how recent the trend is
-        # Recent trends (< 7 days) get higher scores
-        if days_old is not None:
-            if days_old <= 7:
-                novelty_score = 100
-            elif days_old <= 14:
-                novelty_score = 80
-            elif days_old <= 30:
-                novelty_score = 60
-            else:
-                novelty_score = max(0, 100 - (days_old - 30) * 2)
-        else:
-            novelty_score = 0
+        # 3. Source Diversity
+        unique_sources = theme_arts["source_name"].nunique()
+        source_div_score = min(100, unique_sources * 10)
         
-        return {
-            "first_seen": first_article,
-            "days_old": days_old,
-            "acceleration": acceleration,
-            "novelty_score": int(novelty_score),
-            "current_count": len(articles_df),
-            "trend": trend
-        }
-    except Exception as e:
-        logger.error(f"Failed to calculate emergence metrics for {theme_name}: {e}")
-        return {
-            "first_seen": None,
-            "days_old": None,
-            "acceleration": 0,
-            "novelty_score": 0,
-            "current_count": 0,
-            "trend": "stable"
-        }
-
-
-def render_emergence_timeline():
-    """Render timeline of theme emergence."""
-    st.subheader("🗓️ Theme Emergence Timeline")
-    
-    runs_df = get_trend_runs_data()
-    if runs_df.empty:
-        st.info("No trend data available yet.")
-        return
-    
-    # Get all themes
-    from config.themes import THEME_ORDER
-    
-    timeline_data = []
-    for theme in THEME_ORDER:
-        metrics = calculate_emergence_metrics(theme, runs_df)
-        if metrics["first_seen"]:
-            timeline_data.append({
-                "Theme": theme,
-                "First Seen": metrics["first_seen"],
-                "Days Old": metrics["days_old"],
-                "Novelty Score": metrics["novelty_score"],
-                "Trend": metrics["trend"],
-                "Article Count": metrics["current_count"]
-            })
-    
-    if timeline_data:
-        timeline_df = pd.DataFrame(timeline_data).sort_values("First Seen", ascending=False)
+        # 4. Volume Score
+        vol_score = min(100, len(theme_arts) * 3)
         
-        # Create timeline visualization
-        fig = px.scatter(
-            timeline_df,
-            x="First Seen",
-            y="Theme",
-            size="Article Count",
-            color="Novelty Score",
-            hover_data=["Days Old", "Trend", "Article Count"],
-            color_continuous_scale="YlOrRd",
-            title="Theme Emergence Timeline (Bubble size = Article count)"
-        )
+        # Composite Novelty / Emergence Score (0-100)
+        composite_score = int(recency_score * 0.4 + accel_score * 0.3 + source_div_score * 0.3)
         
-        fig.update_layout(height=400, hovermode="closest")
-        st.plotly_chart(fig, use_container_width=True)
+        # Extract weekly counts for sparkline
+        # Fill missing weeks in timeline to ensure line is correct
+        all_weeks = pd.date_range(start=df_articles["published_at"].min(), end=df_articles["published_at"].max(), freq='W')
+        full_week_counts = []
+        for wk in all_weeks:
+            wk_num = wk.isocalendar().week
+            yr_num = wk.isocalendar().year
+            full_week_counts.append(weekly_counts.get((yr_num, wk_num), 0))
+            
+        top_kws = extract_top_keywords(theme_arts, limit=5)
         
-        # Show table
-        st.dataframe(timeline_df, use_container_width=True)
-    else:
-        st.info("No emergence data available yet.")
-
-
-def render_acceleration_index():
-    """Render acceleration index for themes."""
-    st.subheader("📈 Acceleration Index (Week-over-Week Growth %)")
-    
-    from config.themes import THEME_ORDER
-    
-    runs_df = get_trend_runs_data()
-    if runs_df.empty:
-        st.info("No trend data available yet.")
-        return
-    
-    acceleration_data = []
-    for theme in THEME_ORDER:
-        metrics = calculate_emergence_metrics(theme, runs_df)
-        acceleration_data.append({
+        theme_metrics.append({
             "Theme": theme,
-            "Acceleration %": metrics["acceleration"],
-            "Trend": metrics["trend"],
-            "Current Articles": metrics["current_count"]
+            "First Seen": first_seen,
+            "Days Old": days_old,
+            "Total Articles": len(theme_arts),
+            "Growth WoW %": round(acceleration, 1),
+            "Unique Sources": unique_sources,
+            "Composite Score": composite_score,
+            "Trend": trend,
+            "Weekly Counts": full_week_counts[-10:] if len(full_week_counts) >= 10 else full_week_counts,
+            "Keywords": top_kws
         })
+        
+        theme_scores_radar[theme] = {
+            "Volume": vol_score,
+            "Acceleration": accel_score,
+            "Source Diversity": source_div_score,
+            "Recency": recency_score
+        }
+        
+    df_metrics = pd.DataFrame(theme_metrics).sort_values("Composite Score", ascending=False)
     
-    accel_df = pd.DataFrame(acceleration_data).sort_values("Acceleration %", ascending=True)
-    
-    # Create bar chart
-    colors = ["#d62728" if x < -20 else "#ff7f0e" if x > 20 else "#1f77b4" 
-              for x in accel_df["Acceleration %"]]
-    
-    fig = go.Figure(data=[
-        go.Bar(
-            y=accel_df["Theme"],
-            x=accel_df["Acceleration %"],
-            orientation="h",
-            marker=dict(color=colors),
-            text=accel_df["Acceleration %"].round(1),
-            textposition="outside",
-            hovertemplate="<b>%{y}</b><br>Growth: %{x:.1f}%<extra></extra>"
-        )
-    ])
-    
-    fig.update_layout(
-        title="Week-over-Week Growth Rate by Theme",
-        xaxis_title="Growth %",
-        yaxis_title="Theme",
-        height=400,
-        showlegend=False
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Show table
-    st.dataframe(accel_df, use_container_width=True)
-
-
-def render_novelty_scoring():
-    """Render novelty scoring visualization."""
-    st.subheader("⭐ Novelty Score (How New is This Trend?)")
-    
-    from config.themes import THEME_ORDER
-    
-    runs_df = get_trend_runs_data()
-    if runs_df.empty:
-        st.info("No trend data available yet.")
-        return
-    
-    novelty_data = []
-    for theme in THEME_ORDER:
-        metrics = calculate_emergence_metrics(theme, runs_df)
-        novelty_data.append({
-            "Theme": theme,
-            "Novelty Score": metrics["novelty_score"],
-            "Days Old": metrics["days_old"],
-            "First Seen": metrics["first_seen"]
-        })
-    
-    novelty_df = pd.DataFrame(novelty_data).sort_values("Novelty Score", ascending=False)
-    
-    # Create gauge chart
-    col1, col2 = st.columns(2)
+    # Render layout
+    col1, col2 = st.columns([3, 2])
     
     with col1:
-        # Top emerging themes
-        st.write("**Top Emerging Themes**")
-        top_themes = novelty_df.head(5)
-        for idx, row in top_themes.iterrows():
-            score = row["Novelty Score"]
-            days = row["Days Old"]
-            emoji = "🔥" if score >= 80 else "📈" if score >= 60 else "📊"
-            st.write(f"{emoji} **{row['Theme']}**: {score}/100 (Seen {days} days ago)")
-    
-    with col2:
-        # Novelty distribution
-        fig = px.histogram(
-            novelty_df,
-            x="Novelty Score",
-            nbins=10,
-            title="Distribution of Novelty Scores",
-            labels={"Novelty Score": "Novelty Score", "count": "Number of Themes"}
+        st.subheader("📊 Composite Emergence Table")
+        st.caption("Overall rank based on Recency, Acceleration, and Source Diversity")
+        
+        # Format table for display
+        df_display = df_metrics.copy()
+        df_display["First Seen"] = df_display["First Seen"].dt.strftime("%Y-%m-%d")
+        df_display["Trend"] = df_display["Trend"].apply(
+            lambda x: "🔥 Accelerating" if x == "accelerating" else "📉 Declining" if x == "declining" else "➡️ Stable"
         )
-        st.plotly_chart(fig, use_container_width=True)
-
-
-def render_new_articles_detection():
-    """Render detection of new/novel articles in the last 7 days."""
-    st.subheader("🆕 Novel Articles (Last 7 Days)")
-    
-    try:
-        supabase = get_supabase_manager()
-        if not supabase.is_available():
-            st.info("Supabase not available.")
-            return
+        st.dataframe(
+            df_display[["Theme", "First Seen", "Total Articles", "Growth WoW %", "Unique Sources", "Trend", "Composite Score"]],
+            use_container_width=True,
+            hide_index=True
+        )
         
-        # Get articles from last 7 days
-        seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    with col2:
+        st.subheader("🕸️ Momentum Profile Radar")
+        st.caption("Theme strengths across Volume, Acceleration, Source Diversity, and Recency")
         
-        response = supabase.client.table("articles").select(
-            "id, theme_name, title, source_name, published_at, link"
-        ).gte("published_at", seven_days_ago).order("published_at", desc=True).execute()
-        
-        if response.data:
-            articles_df = pd.DataFrame(response.data)
-            articles_df["published_at"] = pd.to_datetime(articles_df["published_at"])
+        fig_radar = go.Figure()
+        for theme_name, score_dict in theme_scores_radar.items():
+            fig_radar.add_trace(go.Scatterpolar(
+                r=[
+                    score_dict["Volume"],
+                    score_dict["Acceleration"],
+                    score_dict["Source Diversity"],
+                    score_dict["Recency"]
+                ],
+                theta=["Volume", "Acceleration", "Source Diversity", "Recency"],
+                fill="toself",
+                name=theme_name,
+                line=dict(color=THEME_COLORS.get(theme_name, "#1f77b4"))
+            ))
             
-            # Group by theme
-            for theme in articles_df["theme_name"].unique():
-                theme_articles = articles_df[articles_df["theme_name"] == theme]
+        fig_radar.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 100]
+                )
+            ),
+            showlegend=True,
+            template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=40, r=40, t=10, b=10)
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+        
+    st.divider()
+    
+    # Emerging Trend Cards
+    st.subheader("💡 Per-Theme Trend Cards")
+    st.caption("Detailed overview of emerging trends, keyword frequency, and weekly article count trajectory.")
+    
+    # Render cards in 2-column grid
+    card_cols = st.columns(2)
+    for idx, row in df_metrics.iterrows():
+        col_to_use = card_cols[idx % 2]
+        
+        with col_to_use:
+            theme_color = THEME_COLORS.get(row["Theme"], "#1f77b4")
+            
+            # Custom container styling using standard st components
+            with st.container(border=True):
+                c_title, c_badge = st.columns([3, 1])
+                with c_title:
+                    st.markdown(f"### {row['Theme']}")
+                with c_badge:
+                    badge_emoji = "🔥" if row["Composite Score"] >= 75 else "📈" if row["Composite Score"] >= 50 else "➡️"
+                    st.markdown(f"**Score: {row['Composite Score']}** {badge_emoji}")
+                    
+                col_left, col_right = st.columns([2, 1])
+                with col_left:
+                    st.write(f"📅 **First Seen**: {row['First Seen'].strftime('%Y-%m-%d')} ({row['Days Old']} days ago)")
+                    st.write(f"📰 **Total Articles**: {row['Total Articles']} across **{row['Unique Sources']}** sources")
+                    
+                    # Keywords display
+                    kw_tags = " ".join([f"`{kw}`" for kw in row["Keywords"]])
+                    st.write(f"🏷️ **Top Keywords**: {kw_tags}")
                 
-                with st.expander(f"**{theme}** ({len(theme_articles)} new articles)"):
-                    for idx, row in theme_articles.iterrows():
-                        pub_date = row["published_at"].strftime("%Y-%m-%d")
-                        st.write(f"📰 **{row['title']}**")
-                        st.write(f"   Source: {row['source_name']} | Published: {pub_date}")
-                        if row.get("link"):
-                            st.write(f"   [Read more →]({row['link']})")
-                        st.divider()
-        else:
-            st.info("No new articles in the last 7 days.")
-    except Exception as e:
-        logger.error(f"Failed to fetch novel articles: {e}")
-        st.error(f"Error fetching novel articles: {e}")
-
-
-def main():
-    st.title("🚀 Emerging Trends Analysis")
-    
-    st.markdown("""
-    Track and analyze emerging trends in AI & Engineering.
-    
-    **Metrics:**
-    - **Emergence Timeline**: When did each trend first appear?
-    - **Acceleration Index**: Which trends are growing fastest?
-    - **Novelty Score**: How new/recent is each trend? (0-100)
-    - **Novel Articles**: New articles published in the last 7 days
-    """)
-    
+                with col_right:
+                    # Sparkline rendering
+                    if row["Weekly Counts"]:
+                        st.caption("Weekly Volume")
+                        spark_fig = render_sparkline(row["Weekly Counts"], theme_color)
+                        st.plotly_chart(spark_fig, use_container_width=True, config={'displayModeBar': False})
+                        
+                st.divider()
+                
+                # Show latest article from this theme
+                theme_arts = df_articles[df_articles["theme_name"] == row["Theme"]].sort_values("published_at", ascending=False)
+                if not theme_arts.empty:
+                    latest_art = theme_arts.iloc[0]
+                    st.markdown(f"**Latest Highlight**: *{latest_art['title']}*")
+                    if latest_art.get("link"):
+                        st.markdown(f"[Read article →]({latest_art['link']})")
+                        
     st.divider()
     
-    # Render visualizations
-    render_emergence_timeline()
-    st.divider()
-    
-    render_acceleration_index()
-    st.divider()
-    
-    render_novelty_scoring()
-    st.divider()
-    
-    render_new_articles_detection()
-
+    # Timeline
+    st.subheader("🗓️ Timeline of Theme Emergence")
+    fig_timeline = px.scatter(
+        df_metrics,
+        x="First Seen",
+        y="Theme",
+        size="Total Articles",
+        color="Composite Score",
+        hover_data=["Days Old", "Trend", "Total Articles"],
+        color_continuous_scale="Viridis",
+        title="Chronological Emergence (Bubble size represents volume)"
+    )
+    fig_timeline.update_layout(
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        height=400,
+        margin=dict(l=0, r=0, t=30, b=0)
+    )
+    st.plotly_chart(fig_timeline, use_container_width=True)
 
 if __name__ == "__main__":
     main()

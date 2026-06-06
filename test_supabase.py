@@ -12,6 +12,27 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
+# Fallback: load from streamlit secrets.toml
+if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
+    secrets_path = Path(__file__).parent / ".streamlit" / "secrets.toml"
+    if secrets_path.exists():
+        try:
+            import tomllib
+            with open(secrets_path, "rb") as f:
+                secrets = tomllib.load(f)
+            for k, v in secrets.items():
+                os.environ[k] = str(v)
+        except Exception:
+            # Fallback simple line parser
+            try:
+                with open(secrets_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            os.environ[k.strip()] = v.strip().strip('"').strip("'")
+            except Exception:
+                pass
+
 print("=" * 60)
 print("Testing Supabase Integration")
 print("=" * 60)
@@ -21,48 +42,48 @@ supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
 
 if not supabase_url or not supabase_key:
-    print("\n✗ Missing SUPABASE_URL or SUPABASE_KEY in .env")
+    print("\n[ERROR] Missing SUPABASE_URL or SUPABASE_KEY in .env")
     sys.exit(1)
 
-print(f"\n✓ SUPABASE_URL: {supabase_url[:30]}...")
-print(f"✓ SUPABASE_KEY: {supabase_key[:20]}...")
+print(f"\n[OK] SUPABASE_URL: {supabase_url[:30]}...")
+print(f"[OK] SUPABASE_KEY: {supabase_key[:20]}...")
 
 # Test importing the client
 try:
     from core.supabase_client import get_supabase_manager
-    print("\n✓ Successfully imported supabase_client module")
+    print("\n[OK] Successfully imported supabase_client module")
 except ImportError as e:
-    print(f"\n✗ Failed to import supabase_client: {e}")
+    print(f"\n[ERROR] Failed to import supabase_client: {e}")
     sys.exit(1)
 
 # Test initializing the manager
 try:
     supabase = get_supabase_manager()
-    print("✓ Successfully initialized SupabaseManager")
+    print("[OK] Successfully initialized SupabaseManager")
 except Exception as e:
-    print(f"✗ Failed to initialize SupabaseManager: {e}")
+    print("[ERROR] Failed to initialize SupabaseManager: {e}")
     sys.exit(1)
 
 # Test connection
 try:
     if supabase.is_available():
-        print("✓ Supabase client is available")
+        print("[OK] Supabase client is available")
         
         # Try to get latest run
         latest = supabase.get_latest_run()
         if latest:
-            print(f"✓ Latest run found: {latest['run_timestamp']}")
+            print(f"[OK] Latest run found: {latest['run_timestamp']}")
         else:
-            print("✓ No runs yet (this is expected on first setup)")
+            print("[OK] No runs yet (this is expected on first setup)")
     else:
-        print("✗ Supabase client is not available")
+        print("[ERROR] Supabase client is not available")
         sys.exit(1)
 except Exception as e:
-    print(f"✗ Connection test failed: {e}")
+    print(f"[ERROR] Connection test failed: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)
 
 print("\n" + "=" * 60)
-print("✅ All tests passed! Supabase integration is working.")
+print("[SUCCESS] All tests passed! Supabase integration is working.")
 print("=" * 60)

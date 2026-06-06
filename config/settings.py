@@ -74,3 +74,4 @@ CACHE_TTL_SECONDS: int = 6 * 3600  # 6 hours
 
 # Maximum concurrent fetch workers
 FETCH_WORKERS: int = 8
+
