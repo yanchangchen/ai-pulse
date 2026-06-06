@@ -369,18 +369,225 @@ class SupabaseManager:
             logger.error(f"Failed to get sync metadata {key}: {e}")
             return None
 
+    # ------------------------------------------------------------------
+    # New query helpers for analytics, trends, and wiki pages
+    # ------------------------------------------------------------------
 
-# Singleton instance
-_manager: Optional[SupabaseManager] = None
+    def get_all_runs(self, limit: int = 5, offset: int = 0) -> Optional[List[Dict]]:
+        """
+        Retrieve paginated trend runs (newest first).
 
+        Args:
+            limit: Number of runs to return per page.
+            offset: Offset for pagination.
 
-def get_supabase_manager() -> SupabaseManager:
-    """Get or create the Supabase manager singleton."""
-    global _manager
-    if _manager is None:
-        _manager = SupabaseManager()
-    return _manager
-    
+        Returns:
+            List of run records, or None if failed.
+        """
+        if not self.available:
+            return None
+
+        try:
+            response = self.client.table("trend_runs")\
+                .select("*")\
+                .order("run_timestamp", desc=True)\
+                .range(offset, offset + limit - 1)\
+                .execute()
+
+            return response.data if response.data else []
+        except Exception as e:
+            logger.error(f"Failed to get paginated runs: {e}")
+            return None
+
+    def get_total_run_count(self) -> int:
+        """Return the total number of trend runs in the database."""
+        if not self.available:
+            return 0
+
+        try:
+            response = self.client.table("trend_runs")\
+                .select("id", count="exact")\
+                .execute()
+            return response.count if response.count is not None else 0
+        except Exception as e:
+            logger.error(f"Failed to get total run count: {e}")
+            return 0
+
+    def get_theme_article_counts_by_run(self) -> Optional[List[Dict]]:
+        """
+        Return article counts grouped by run and theme.
+        Used by Trend Analytics for the heatmap and momentum charts.
+
+        Returns:
+            List of dicts: [{run_id, run_timestamp, run_date, theme_name, count}, ...]
+        """
+        if not self.available:
+            return None
+
+        try:
+            # Get all runs
+            runs_resp = self.client.table("trend_runs")\
+                .select("id, run_timestamp, run_date")\
+                .order("run_timestamp", desc=False)\
+                .execute()
+
+            if not runs_resp.data:
+                return []
+
+            # Get all theme summaries (which contain article_count)
+            summaries_resp = self.client.table("theme_summaries")\
+                .select("run_id, theme_name, article_count")\
+                .execute()
+
+            if not summaries_resp.data:
+                return []
+
+            # Build a lookup: run_id -> run metadata
+            run_lookup = {r["id"]: r for r in runs_resp.data}
+
+            results = []
+            for s in summaries_resp.data:
+                run = run_lookup.get(s["run_id"])
+                if run:
+                    results.append({
+                        "run_id": s["run_id"],
+                        "run_timestamp": run["run_timestamp"],
+                        "run_date": run["run_date"],
+                        "theme_name": s["theme_name"],
+                        "count": s["article_count"]
+                    })
+
+            return results
+        except Exception as e:
+            logger.error(f"Failed to get theme article counts by run: {e}")
+            return None
+
+    def search_articles(self, query: str = "", theme_filter: Optional[str] = None,
+                       date_from: Optional[str] = None, date_to: Optional[str] = None,
+                       source_filter: Optional[str] = None,
+                       limit: int = 50) -> Optional[List[Dict]]:
+        """
+        Search articles with optional filters.
+
+        Args:
+            query: Free-text search string (matched against title).
+            theme_filter: Optional theme name to filter by.
+            date_from: ISO date string lower bound on published_at.
+            date_to: ISO date string upper bound on published_at.
+            source_filter: Optional source name to filter by.
+            limit: Max articles to return.
+
+        Returns:
+            List of article dicts, or None on failure.
+        """
+        if not self.available:
+            return None
+
+        try:
+            q = self.client.table("articles")\
+                .select("id, run_id, theme_name, title, summary, source_name, link, published_at")\
+                .order("published_at", desc=True)\
+                .limit(limit)
+
+            if query:
+                q = q.ilike("title", f"%{query}%")
+
+            if theme_filter:
+                q = q.eq("theme_name", theme_filter)
+
+            if date_from:
+                q = q.gte("published_at", date_from)
+
+            if date_to:
+                q = q.lte("published_at", date_to)
+
+            if source_filter:
+                q = q.eq("source_name", source_filter)
+
+            response = q.execute()
+            return response.data if response.data else []
+        except Exception as e:
+            logger.error(f"Failed to search articles: {e}")
+            return None
+
+    def get_keyword_velocity(self, keywords: List[str], limit: int = 30) -> Optional[List[Dict]]:
+        """
+        Count keyword mentions per run across article titles and summaries.
+
+        Args:
+            keywords: List of keywords to track.
+            limit: Max number of runs to scan (most recent first).
+
+        Returns:
+            List of dicts: [{run_timestamp, run_date, keyword, count}, ...]
+        """
+        if not self.available:
+            return None
+
+        try:
+            # Get recent runs
+            runs_resp = self.client.table("trend_runs")\
+                .select("id, run_timestamp, run_date")\
+                .order("run_timestamp", desc=True)\
+                .limit(limit)\
+                .execute()
+
+            if not runs_resp.data:
+                return []
+
+            run_ids = [r["id"] for r in runs_resp.data]
+            run_lookup = {r["id"]: r for r in runs_resp.data}
+
+            results = []
+
+            # Process each run
+            for run_id in run_ids:
+                articles_resp = self.client.table("articles")\
+                    .select("title, summary")\
+                    .eq("run_id", run_id)\
+                    .execute()
+
+                if not articles_resp.data:
+                    continue
+
+                # Combine all text for this run
+                full_text = ""
+                for a in articles_resp.data:
+                    full_text += f" {a.get('title', '')} {a.get('summary', '')}"
+                full_text = full_text.lower()
+
+                run_meta = run_lookup[run_id]
+                for kw in keywords:
+                    count = full_text.count(kw.lower())
+                    results.append({
+                        "run_timestamp": run_meta["run_timestamp"],
+                        "run_date": run_meta["run_date"],
+                        "keyword": kw,
+                        "count": count
+                    })
+
+            return results
+        except Exception as e:
+            logger.error(f"Failed to get keyword velocity: {e}")
+            return None
+
+    def get_unique_sources(self) -> List[str]:
+        """Return a sorted list of unique source names across all articles."""
+        if not self.available:
+            return []
+
+        try:
+            response = self.client.table("articles")\
+                .select("source_name")\
+                .execute()
+
+            if response.data:
+                return sorted({r["source_name"] for r in response.data if r.get("source_name")})
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get unique sources: {e}")
+            return []
+
     def backfill_from_history(self, history_data: Dict) -> Dict:
         """
         Backfill Supabase with historical data from history.json.
@@ -475,3 +682,15 @@ def get_supabase_manager() -> SupabaseManager:
             stats["errors"].append(str(e))
         
         return stats
+
+
+# Singleton instance
+_manager: Optional[SupabaseManager] = None
+
+
+def get_supabase_manager() -> SupabaseManager:
+    """Get or create the Supabase manager singleton."""
+    global _manager
+    if _manager is None:
+        _manager = SupabaseManager()
+    return _manager
