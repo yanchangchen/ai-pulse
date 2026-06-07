@@ -100,6 +100,15 @@ def load_all_articles_data(supabase, start_date=None, end_date=None) -> pd.DataF
         
     return pd.DataFrame()
 
+
+def hex_to_rgba(hex_color: str, alpha: float = 0.13) -> str:
+    """Convert #RRGGBB to rgba(r,g,b,alpha)."""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) == 3:
+        hex_color = "".join(c*2 for c in hex_color)
+    r, g, b = (int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
 def render_sparkline(counts_series, theme_color):
     """Render a clean sparkline using Plotly."""
     fig = go.Figure()
@@ -109,7 +118,8 @@ def render_sparkline(counts_series, theme_color):
         mode="lines",
         line=dict(color=theme_color, width=2.5),
         fill="tozeroy",
-        fillcolor=f"{theme_color}22"
+        hex_to_rgba(theme_color, alpha=0.13)
+        #fillcolor=f"{theme_color}22"
     ))
     fig.update_layout(
         xaxis=dict(visible=False),
