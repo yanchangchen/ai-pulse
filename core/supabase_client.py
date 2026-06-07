@@ -332,8 +332,7 @@ class SupabaseManager:
         
         try:
             response = self.client.table("sync_metadata")\
-                .upsert({"key": key, "value": value})\
-                .execute()
+                .upsert({"key": key, "value": value}, on_conflict="key").execute()
             
             if response.data:
                 logger.info(f"Updated sync metadata: {key}")

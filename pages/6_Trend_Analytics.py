@@ -256,8 +256,15 @@ def main():
     st.caption("At-a-glance visualization of theme activity and trends across all runs")
     
     df_melted_all = df_themes.melt(id_vars=["date"], value_vars=THEME_ORDER, var_name="Theme", value_name="Articles")
-    df_pivot = df_melted_all.pivot(index="Theme", columns="date", values="Articles").fillna(0)
-    
+    #df_pivot = df_melted_all.pivot(index="Theme", columns="date", values="Articles").fillna(0)
+    df_pivot = df_melted_all.pivot_table(
+        index="Theme",
+        columns="date",
+        values="count",
+        aggfunc="sum",
+        fill_value=0
+    )
+
     fig_heatmap = px.imshow(
         df_pivot,
         labels=dict(x="Run Date", y="Theme", color="Articles"),
