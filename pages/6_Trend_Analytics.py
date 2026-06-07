@@ -260,7 +260,7 @@ def main():
     df_pivot = df_melted_all.pivot_table(
         index="Theme",
         columns="date",
-        values="count",
+        values="value",
         aggfunc="sum",
         fill_value=0
     )
