@@ -32,21 +32,16 @@ def save_run_to_history(
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date_key = datetime.now().strftime("%Y-%m-%d")
 
-    # 1. Update JSON History
-    history_data = {}
-    if HISTORY_JSON.exists():
-        try:
-            with open(HISTORY_JSON, "r", encoding="utf-8") as f:
-                history_data = json.load(f)
-        except Exception:
-            history_data = {}
-
-    history_data[timestamp] = {
-        "date": date_key,
-        "summaries": summaries,
-        "counts": article_counts,
-        "full_articles": full_articles,
-        "themed_articles": themed_articles
+    # 1. Update JSON History — store only the latest run for fast cold-boot
+    # Full historical data lives in Supabase; history.json is just a local cache.
+    history_data = {
+        timestamp: {
+            "date": date_key,
+            "summaries": summaries,
+            "counts": article_counts,
+            "full_articles": full_articles,
+            "themed_articles": themed_articles
+        }
     }
 
     with open(HISTORY_JSON, "w", encoding="utf-8") as f:

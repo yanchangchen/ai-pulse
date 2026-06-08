@@ -63,7 +63,7 @@ def _get_secret(key: str, default: str = "") -> str:
 # Ollama Cloud configuration
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL: str = _get_secret("OLLAMA_BASE_URL", "https://api.ollama.com")
-OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "qwen3.5:cloud")
+OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "minimax-m3:cloud")
 OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
 
 # ---------------------------------------------------------------------------
@@ -74,3 +74,4 @@ CACHE_TTL_SECONDS: int = 6 * 3600  # 6 hours
 
 # Maximum concurrent fetch workers
 FETCH_WORKERS: int = 8
+
