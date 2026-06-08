@@ -146,6 +146,138 @@ SOURCES = [
         "type": "rss",
         "category": "newsletter"
     },
+    # AI Labs (Tier 1 — Appendix C1)
+    {
+        "name": "OpenAI Blog",
+        "url": "https://openai.com/blog/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Google DeepMind Blog",
+        "url": "https://deepmind.google/blog/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Hugging Face Blog",
+        "url": "https://huggingface.co/blog/feed.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Mistral AI News",
+        "url": "https://mistral.ai/news/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Cohere Blog",
+        "url": "https://cohere.com/blog/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Meta AI Blog",
+        "url": "https://ai.meta.com/blog/rss/",
+        "type": "rss",
+        "category": "blog"
+    },
+    # Agent & Framework Engineering (Tier 1 — Appendix C2)
+    {
+        "name": "LlamaIndex Blog",
+        "url": "https://www.llamaindex.ai/blog/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Weights & Biases Fully Connected",
+        "url": "https://wandb.ai/fully-connected/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Langfuse Blog",
+        "url": "https://langfuse.com/blog/rss",
+        "type": "rss",
+        "category": "blog"
+    },
+    # Big Tech Cloud (Tier 1 — Appendix C3)
+    {
+        "name": "AWS Machine Learning Blog",
+        "url": "https://aws.amazon.com/blogs/machine-learning/feed/",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Google Cloud AI Blog",
+        "url": "https://blog.google/products/google-cloud/rss/",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Microsoft AI Blog",
+        "url": "https://blogs.microsoft.com/ai/feed/",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Databricks Blog",
+        "url": "https://www.databricks.com/feed.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    # Inference & Hardware (Tier 2 — Appendix C5)
+    {
+        "name": "Modal Blog",
+        "url": "https://modal.com/blog/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Together AI Blog",
+        "url": "https://www.together.ai/blog/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "vLLM Blog",
+        "url": "https://blog.vllm.ai/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Hugging Face Security",
+        "url": "https://huggingface.co/blog/security/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    # AI Security & Trust (Tier 2 — Appendix C6; new theme destination)
+    {
+        "name": "Trail of Bits Blog",
+        "url": "https://blog.trailofbits.com/feed/",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Lakera Blog",
+        "url": "https://www.lakera.ai/blog/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Protect AI Blog",
+        "url": "https://www.protectai.com/blog/rss.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    # Simon Willison (A3 — independent, high signal on LLM tooling & security)
+    {
+        "name": "Simon Willison",
+        "url": "https://simonwillison.net/atom/everything/",
+        "type": "rss",
+        "category": "blog"
+    },
     # Web sources (require scraping)
     {
         "name": "Ethan Mollick",

@@ -284,15 +284,17 @@ def main():
     
     # 3. Macro engineering-to-hype index
     st.subheader("⚖️ Hype vs. Engineering Signal Index")
-    st.caption("Comparing Deep Tech (Agentic Systems, Frontier Models, Hardware) against Market Hype and Regulatory Policy (Strategy, Governance)")
+    st.caption("Comparing Deep Tech (Agentic Systems, Frontier Models, Hardware, Security, AI-Assisted SE) against Market Hype and Regulatory Policy (Strategy, Governance)")
     
     df_themes["Engineering"] = (
-        df_themes.get("Agentic Systems & DevTools", 0) + 
-        df_themes.get("Frontier Models & Benchmarks", 0) + 
-        df_themes.get("Hardware, Compute & LLMOps", 0)
+        df_themes.get("Agentic Systems & DevTools", 0) +
+        df_themes.get("Frontier Models & Benchmarks", 0) +
+        df_themes.get("Hardware, Compute & LLMOps", 0) +
+        df_themes.get("AI Security & Trust", 0) +
+        df_themes.get("AI-Assisted Software Engineering", 0)
     )
     df_themes["Business & Governance"] = (
-        df_themes.get("Enterprise Strategy & ROI", 0) + 
+        df_themes.get("Enterprise Strategy & ROI", 0) +
         df_themes.get("Governance, Safety & Policy", 0)
     )
     

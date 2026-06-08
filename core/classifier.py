@@ -55,12 +55,14 @@ def keyword_classify(title: str, summary: str) -> Optional[str]:
 def classify_with_ollama(title: str, summary: str) -> Optional[str]:
     """Use the LLM client to classify a single article."""
     prompt = (
-        "You are an AI news classifier. Classify this AI news item into exactly one of these five themes:\n"
+        "You are an AI news classifier. Classify this AI news item into exactly one of these seven themes:\n"
         "- Agentic Systems & DevTools\n"
         "- Frontier Models & Benchmarks\n"
         "- Hardware, Compute & LLMOps\n"
         "- Enterprise Strategy & ROI\n"
-        "- Governance, Safety & Policy\n\n"
+        "- Governance, Safety & Policy\n"
+        "- AI Security & Trust\n"
+        "- AI-Assisted Software Engineering\n\n"
         "CRITICAL INSTRUCTION: You must choose the single closest and most relevant category from the list above. "
         "Under no circumstances should you return anything other than the exact theme name (e.g. do not say 'ambiguous', 'other', or 'none').\n\n"
         "Return only the theme name, nothing else.\n\n"
@@ -154,17 +156,19 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
             items_text = "\n".join(batch_items)
 
             system_prompt = (
-                "You are an AI news classifier. You must categorize articles into exactly one of these themes:\n"
+                "You are an AI news classifier. You must categorize articles into exactly one of these seven themes:\n"
                 "- Agentic Systems & DevTools\n"
                 "- Frontier Models & Benchmarks\n"
                 "- Hardware, Compute & LLMOps\n"
                 "- Enterprise Strategy & ROI\n"
-                "- Governance, Safety & Policy\n\n"
+                "- Governance, Safety & Policy\n"
+                "- AI Security & Trust\n"
+                "- AI-Assisted Software Engineering\n\n"
                 "CRITICAL INSTRUCTIONS:\n"
                 "1. You must categorize every single article provided. Do not skip or omit any article.\n"
-                "2. If an article does not fit a category perfectly or is ambiguous, choose the closest and most relevant one from the 5 themes above. Under no circumstances should you return 'Other', 'Unknown', or omit it.\n"
+                "2. If an article does not fit a category perfectly or is ambiguous, choose the closest and most relevant one from the 7 themes above. Under no circumstances should you return 'Other', 'Unknown', or omit it.\n"
                 "3. You must return a valid JSON object mapping every single provided ID to its theme name.\n"
-                "Example: {\"ID 0\": \"Frontier Models & Benchmarks\", \"ID 1\": \"Hardware, Compute & LLMOps\"}"
+                "Example: {\"ID 0\": \"Frontier Models & Benchmarks\", \"ID 1\": \"AI Security & Trust\"}"
             )
 
             prompt = f"Classify these articles:\n\n{items_text}"

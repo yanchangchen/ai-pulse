@@ -66,15 +66,62 @@ THEMES = {
             "export controls": 3, "copyright indemnity": 3
         },
         "color": "red"
+    },
+    "AI Security & Trust": {
+        "keywords": {
+            "prompt injection": 3, "indirect prompt injection": 3, "jailbreak": 3,
+            "red-teaming": 3, "red team": 2, "red teaming": 3, "guardrails": 3,
+            "adversarial": 2, "adversarial attack": 3, "poisoning": 3,
+            "data poisoning": 3, "model poisoning": 3, "backdoor": 3,
+            "evasion attack": 3, "exfiltration": 3, "data exfiltration": 3,
+            "prompt leak": 3, "system prompt leak": 3, "prompt extraction": 3,
+            "insecure output": 2, "insecure output handling": 3,
+            "excessive agency": 3, "rogue agent": 3, "agent hijack": 3,
+            "model theft": 3, "weight extraction": 3, "membership inference": 3,
+            "model inversion": 3, "differential privacy": 2,
+            "homomorphic encryption": 2, "federated learning": 2,
+            "confidential computing": 2, "secure enclaves": 2,
+            "vulnerability disclosure": 3, "CVE": 2, "supply chain": 2,
+            "SBOM": 2, "model card": 2, "provenance": 2,
+            "sandboxing": 2, "isolation": 1, "TrojAI": 3,
+            "MLSec": 3, "AI security": 3, "LLM security": 3,
+            "agent security": 3, "secure MCP": 3
+        },
+        "color": "crimson"
+    },
+    "AI-Assisted Software Engineering": {
+        "keywords": {
+            "AI-assisted coding": 3, "AI pair programming": 3, "Copilot": 2,
+            "Cursor": 2, "Claude Code": 2, "Cody": 2, "Codeium": 2,
+            "Tabnine": 2, "Continue": 2, "Aider": 2, "Devin": 3,
+            "agentic coding": 3, "AI code review": 3, "AI refactoring": 3,
+            "vibe coding": 3, "prompt-driven development": 3,
+            "spec-driven development": 3, "AI-generated tests": 3,
+            "AI test generation": 3, "AI-assisted debugging": 3,
+            "code generation": 2, "code completion": 2,
+            "developer productivity": 2, "developer experience": 2,
+            "DX": 1, "engineering velocity": 2,
+            "AI-native SDLC": 3, "agentic SDLC": 3,
+            "autonomous software engineer": 3, "SWE-Agent": 3,
+            "SWE-bench": 2, "humanEval": 2,
+            "inner loop": 2, "outer loop": 2,
+            "test-time compute": 2, "AI in IDE": 3, "AI for testing": 3,
+            "AI for code migration": 3, "code modernization": 2,
+            "legacy modernization": 2, "documentation generation": 2,
+            "AI documentation": 2, "lint": 1, "static analysis": 1
+        },
+        "color": "teal"
     }
 }
 
 THEME_COLORS = {
-    "Agentic Systems & DevTools": "#1f77b4",  # Blues
-    "Frontier Models & Benchmarks": "#9467bd",  # Purples
-    "Hardware, Compute & LLMOps": "#ff7f0e",  # Oranges
-    "Enterprise Strategy & ROI": "#2ca02c",  # Greens
-    "Governance, Safety & Policy": "#d62728"  # Reds
+    "Agentic Systems & DevTools": "#1f77b4",          # Blues
+    "Frontier Models & Benchmarks": "#9467bd",         # Purples
+    "Hardware, Compute & LLMOps": "#ff7f0e",           # Oranges
+    "Enterprise Strategy & ROI": "#2ca02c",            # Greens
+    "Governance, Safety & Policy": "#d62728",          # Reds
+    "AI Security & Trust": "#8c564b",                  # Crimsons
+    "AI-Assisted Software Engineering": "#17becf",     # Teals
 }
 
 # Theme order for display

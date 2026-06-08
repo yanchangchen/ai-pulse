@@ -1,28 +1,22 @@
-# AI Pulse - Intelligence Dashboard
+# AI Pulse — Intelligence Dashboard
 
-An advanced AI news intelligence dashboard that aggregates, analyzes, and persists AI industry developments into a longitudinal memory system.
+An advanced AI news intelligence dashboard that aggregates, analyses, and persists AI industry developments into a longitudinal memory system. Aggregates 30+ engineering blogs and newsletters, classifies them into 5 strategic themes, and produces context-aware LLM summaries that track the **evolution** of trends across runs.
 
 ## 🚀 Key Features
 
-- **Thematic Intelligence**: Aggregates from 30+ engineering blogs and newsletters, classifying them into 5 core strategic themes.
-- **Persistent Memory**: Tracks every run in a machine-readable `history.json` and a human-readable `memory.md` (Wiki).
-- **Cloud Persistence**: Automatically saves all trends to Supabase for cross-device access and mobile app integration.
-- **Emerging Trends Detection**: Visualizes trend emergence timeline, acceleration metrics, novelty scoring, and novel articles from the past 7 days.
-- **Temporal Context**: The LLM analyzes the current news in the context of the last two runs, allowing it to report on **evolutions** and **trends** rather than just static updates.
-- **Memory Wiki**: A dedicated timeline interface to browse past runs, filter by theme, and track the history of AI developments.
-- **Token Optimized**: 
-  - **Content Hashing**: Skips LLM calls if the fetched articles are identical to the previous run.
-  - **Deduplication**: Prevents duplicate articles across runs using content-based hashing and UPSERT logic.
-  - **JSON Batching**: Classifies unknown articles in large batches (20+) using structured JSON for 10x-20x efficiency gains.
-- **Premium UI**: Modern, card-based interface with custom CSS tokens, smooth transitions, and a dark-mode optimized design.
+- **7 strategic themes** — weighted keyword classification, with batched LLM fallback for ambiguous articles (20 articles per JSON request, 10–20× token savings).
+- **Background ingestion** — first load and 6-hour-expiry refreshes run in a daemon thread (`core/bg_refresher.py`); the UI stays responsive while the pipeline runs.
+- **Persistent memory** — every run is appended to `history.json` (machine-readable), `memory.md` (human-readable wiki), and optionally Supabase (cloud). The last 2 runs' summaries are injected into the next LLM prompt so the model reports on **evolutions**, not static snapshots.
+- **Token optimisation** — content-based SHA-256 hashing skips redundant LLM calls when fetched articles are unchanged; `articles` table uses `(content_hash, theme_name)` UPSERT to deduplicate across runs.
+- **Longitudinal analytics** — Trend Analytics, Emerging Trends, and Memory Wiki pages query Supabase directly for cross-run metrics (momentum, novelty, keyword velocity).
+- **Graceful degradation** — Supabase is fully optional. Missing env vars short-circuit cloud writes; the app keeps working from local files.
 
-## 🧠 The Memory System
+## 🧠 How the Memory System Works
 
-AI Pulse now functions as an "evolving brain" for your intelligence tracking:
-1. **Fresh Signal**: Fetches the latest articles from sources.
-2. **Historical Context**: Injects the summaries of previous runs into the LLM prompt.
-3. **Synthesis**: The LLM generates a summary that notes what has changed since the last update.
-4. **Persistence**: Saves the analysis to the **Memory Wiki** and **Supabase**, creating a permanent record of industry shifts.
+1. **Fresh signal** — fetch latest articles from RSS + web sources (`core/fetcher.py`, `config/sources.py`).
+2. **Historical context** — pull the last 2 runs' theme summaries from `history.json` / Supabase.
+3. **Synthesis** — the LLM generates a summary that notes what has changed since the last update.
+4. **Persistence** — write to `memory.md`, `history.json`, and Supabase, creating a permanent record of industry shifts.
 
 ## 🛠️ Architecture
 
@@ -30,31 +24,32 @@ AI Pulse now functions as an "evolving brain" for your intelligence tracking:
 ┌─────────────────────────────────────────────────────────────────┐
 │                        AI Pulse App                              │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │   Overview   │  │  Memory Wiki │  │ Emerging     │          │
-│  │    (Latest)  │  │   (History)  │  │ Trends       │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                   Core Intelligence Layer                 │  │
-│  ├──────────────────────────────────────────────────────────┤  │
-│  │ • Fetcher (concurrent RSS + Web)                         │  │
-│  │ • Classifier (Weighted Keywords + JSON Batching LLM)     │  │
-│  │ • Summariser (Context-Aware Summaries + Memory)          │  │
-│  │ • History Manager (JSON/Markdown + Supabase Persistence) │  │
-│  │ • Cache (Content-Based Hashing + 6-hour TTL)             │  │
-│  │ • Logger (Centralized app.log audit trail)               │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │               Cloud & Configuration Layer                │  │
-│  ├──────────────────────────────────────────────────────────┤  │
-│  │ • Supabase (PostgreSQL database for cloud persistence)   │  │
-│  │ • watch.md (User Intelligence Watchlist)                 │  │
-│  │ • themes.py (Deep Signal Keyword Mapping)                │  │
-│  │ • sources.py (Engineering Blog & Newsletter Registry)    │  │
-│  └──────────────────────────────────────────────────────────┘  │
+│  Pages                                                           │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐│
+│  │ Overview │ │ Deep Dive│ │  Word    │ │ Sources  │ │ Memory ││
+│  │  (Home)  │ │          │ │  Clouds  │ │          │ │  Wiki  ││
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └────────┘│
+│  ┌──────────────────┐ ┌──────────────────────────────────────┐ │
+│  │  Trend Analytics │ │       Emerging Trends                │ │
+│  │  (cross-run)     │ │  (novelty / acceleration / timeline)  │ │
+│  └──────────────────┘ └──────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────┤
+│  Core Intelligence Layer                                         │
+│  • Fetcher       (concurrent RSS + web scraping)                 │
+│  • Classifier    (weighted keywords → batched LLM → fallback)    │
+│  • Summariser    (context-aware, memory-injected)                │
+│  • History Mgr   (JSON + Markdown + Supabase persistence)        │
+│  • Cache         (st.cache_data 6h TTL + .cache/ disk JSON)      │
+│  • BG Refresher  (daemon thread, non-blocking pipeline)          │
+│  • Shared Sidebar (consistency across all 7 pages)               │
+│  • LLM Client    (Ollama Cloud, exponential-backoff retries)     │
+├─────────────────────────────────────────────────────────────────┤
+│  Configuration Layer                                             │
+│  • config/settings.py   (Ollama endpoint, model, lookback, TTL)  │
+│  • config/themes.py     (5 weighted-keyword theme dicts)         │
+│  • config/sources.py    (RSS feeds + web-scrape registry)        │
+│  • config/Appendix_*.md (experts, blogs, papers watchlists)      │
+│  • watch.md             (user's keyword / engineering blog list) │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,8 +63,9 @@ pip install -r requirements.txt
 ### 2. Configure Secrets
 Create `.streamlit/secrets.toml`:
 ```toml
-OLLAMA_API_KEY = "your-api-key"
-OLLAMA_MODEL = "qwen3.5:cloud"
+OLLAMA_BASE_URL = "https://api.ollama.com"
+OLLAMA_MODEL    = "qwen3.5:cloud"
+OLLAMA_API_KEY  = "your-api-key"
 ```
 
 ### 3. Configure Supabase (Optional)
@@ -79,50 +75,93 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-anon-key
 ```
 
-See [SUPABASE_SETUP_GUIDE.md](./SUPABASE_SETUP_GUIDE.md) for detailed setup instructions.
+See [`SUPABASE_SETUP_GUIDE.md`](./SUPABASE_SETUP_GUIDE.md) for the full schema (4 tables, RLS, UPSERT migration) and [`SUPABASE_INTEGRATION_README.md`](./SUPABASE_INTEGRATION_README.md) for the integration overview.
 
 ### 4. Run the App
 ```bash
 streamlit run app.py
 ```
 
-## 🔍 The 5 Strategic Themes
+The first load triggers a background ingestion. Subsequent loads restore from `history.json` and only refresh in the background if the cache is older than 6 hours.
 
-1. **AI Applications & Architecture**: Agentic workflows (ReAct, Plan-and-Execute), RAG production, MCP, tool integration.
-2. **AI Models**: LLM releases, context windows, MoE, KV cache optimization, PhD-level benchmarks (GPQA, ARC-AGI).
-3. **AI Infrastructure**: NVIDIA Blackwell, CoreWeave, compute clusters, latency, and inference hardware.
-4. **AI Companies & Business**: Funding rounds, enterprise partnerships (NVIDIA/SAP/ServiceNow), and M&A.
-5. **AI in Government & Policy**: EU AI Act, export controls, safety alignment, and sovereign AI initiatives.
+## 🧭 Pages
+
+| # | Page | Purpose |
+|---|------|---------|
+| — | Home (`app.py`) | Dashboard with theme metrics and live ingestion status |
+| 1 | Overview | Theme summary cards with key takeaways |
+| 2 | Deep Dive | Per-theme article list, full summaries, and further reading |
+| 3 | Word Clouds | Trending topic visualisation per theme |
+| 4 | Sources | All RSS feeds and web sources with article counts |
+| 5 | Memory Wiki | Browse past runs and per-theme summary history |
+| 6 | Trend Analytics | Cross-run momentum heatmap, keyword velocity, hype-vs-engineering index, theme drilldown |
+| 7 | Emerging Trends | Emergence timeline, acceleration index, novelty score, novel articles from the last 7 days |
+
+All pages share a sidebar nav (`core/shared_sidebar.py`) and live background-status panel.
+
+## 🎯 The 7 Strategic Themes
+
+Defined in `config/themes.py` with **weighted keywords** (1–3 — higher weight = stronger signal):
+
+1. **Agentic Systems & DevTools** — agentic workflows, RAG, MCP, LangChain/LangGraph, multi-agent orchestration, harness design, context engineering.
+2. **Frontier Models & Benchmarks** — model releases, context windows, MoE, KV cache, speculative decoding, GPQA/SWE-bench/ARC-AGI, RLHF/GRPO.
+3. **Hardware, Compute & LLMOps** — NVIDIA Blackwell, CoreWeave, TPU, GPU, Kubernetes, edge inference, unit economics, power demand.
+4. **Enterprise Strategy & ROI** — funding, acquisitions, partnerships, IPO, enterprise revenue, time-to-market, pricing models, ROI.
+5. **Governance, Safety & Policy** — EU AI Act, executive orders, export controls, sovereign AI, model signing, supply chain security, NIST.
+6. **AI Security & Trust** — prompt injection, jailbreaks, red-teaming, guardrails, model poisoning, exfiltration, secure MCP, agent hijack, model theft, MLSec.
+7. **AI-Assisted Software Engineering** — Cursor, Claude Code, Copilot, AI code review, agentic SDLC, spec-driven development, AI-generated tests, dev velocity.
+
+The classifier tries `keyword_classify()` first, then batches unmatched articles to the LLM in groups of 20 (JSON-formatted), then a final `find_closest_theme()` relaxed match.
+
+## 🧪 Tests
+
+```bash
+pytest tests/                                  # main test suite (fetcher, classifier, summariser, visualiser)
+python test_supabase.py                        # Supabase connection + write/read smoke test
+python test_backfill.py                        # history.json → Supabase backfill
+python test_deduplication.py                   # UPSERT dedup of (content_hash, theme_name)
+python test_llm_optimization.py                # skip-summarise-when-unchanged logic
+```
 
 ## 📈 Performance & Monitoring
 
-- **Logs**: Detailed app activity and LLM retry logic are stored in `logs/app.log`.
-- **Cache**: Data is cached for 6 hours. Manual refreshes use content hashing to prevent redundant LLM spending.
-- **Tests**: Run `pytest tests/` to verify classifier, fetcher, and summarizer logic.
-- **Cloud Sync**: Monitor Supabase sync status in the sidebar. All runs are persisted to Supabase for historical analysis.
+- **Logs** — `logs/app.log` (console + file handler via `core/logger.py`).
+- **Cache** — `st.cache_data` with 6-hour TTL + `.cache/*.json` disk persistence; `get_articles_hash()` short-circuits LLM calls when content is unchanged.
+- **Cloud sync** — Supabase sync status shown in the sidebar; all runs persisted automatically once env vars are set; first load backfills `history.json` → Supabase.
 
-## 🌐 Cloud Persistence with Supabase
+## 📁 Project Structure
 
-AI Pulse now supports cloud persistence via Supabase:
-
-- **Automatic Syncing**: All trends are automatically saved to Supabase after each run
-- **Cross-Device Access**: Query your trends from any device or application
-- **Mobile Integration**: Build mobile apps that query the same trend data
-- **SQL Analytics**: Run advanced queries on your trend history
-- **Real-Time Updates**: Subscribe to real-time trend updates (Supabase Realtime)
-
-For setup instructions, see [SUPABASE_SETUP_GUIDE.md](./SUPABASE_SETUP_GUIDE.md).
-
-## 🚀 Emerging Trends Analysis
-
-New `Emerging Trends` page provides:
-
-- **Emergence Timeline**: Track when each trend first appeared
-- **Acceleration Index**: Week-over-week growth % for each theme
-- **Novelty Score**: 0-100 score indicating how recent each trend is
-- **Novel Articles**: Articles published in the last 7 days
-
-Access via the Streamlit sidebar under "Emerging Trends".
+```
+ai-pulse/
+├── app.py                       # Streamlit entry point + sidebar + ingestion state machine
+├── pages/                       # 7 Streamlit pages (Home, Overview … Emerging Trends)
+├── core/
+│   ├── fetcher.py               # Concurrent RSS + BeautifulSoup web scraping
+│   ├── classifier.py            # Weighted keywords + batched LLM classification
+│   ├── summariser.py            # LLM summarisation with memory-injection
+│   ├── visualiser.py            # Word cloud generation
+│   ├── history_manager.py       # JSON / Markdown / Supabase persistence
+│   ├── cache.py                 # st.cache_data + disk cache + content hashing
+│   ├── bg_refresher.py          # BackgroundRefresher thread (singleton)
+│   ├── llm_client.py            # Ollama Cloud wrapper (retries, auth)
+│   ├── shared_sidebar.py        # Consistent nav + status across pages
+│   ├── supabase_client.py       # All DB ops, graceful degradation
+│   ├── supabase_ui.py           # Sidebar sync status widget
+│   └── logger.py                # Centralised logging setup
+├── config/
+│   ├── settings.py              # Days lookback, cache TTL, fetch workers
+│   ├── themes.py                # 5 themes with weighted keywords
+│   ├── sources.py               # RSS feeds + web-scrape registry
+│   └── Appendix_*.md            # Watchlists: experts, blogs, papers
+├── tests/                       # pytest suite (fetcher/classifier/summariser/visualiser)
+├── .streamlit/                  # secrets.toml.example
+├── supabase_schema.sql          # 4 tables, RLS, indexes
+├── supabase_migration_dedup.sql # Adds (content_hash, theme_name) unique constraint
+├── SUPABASE_SETUP_GUIDE.md
+├── SUPABASE_INTEGRATION_README.md
+├── CLAUDE.md
+└── requirements.txt
+```
 
 ---
 

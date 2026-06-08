@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project: AI Pulse
 
-AI News Intelligence Dashboard — a Streamlit application that aggregates, classifies, and summarises AI industry developments from engineering blogs and newsletters into 5 strategic themes, with a persistent memory system (local JSON + Markdown Wiki + Supabase cloud sync).
+AI News Intelligence Dashboard — a Streamlit application that aggregates, classifies, and summarises AI industry developments from engineering blogs and newsletters into 7 strategic themes, with a persistent memory system (local JSON + Markdown Wiki + Supabase cloud sync).
 
 ## Running the Application
 
@@ -48,7 +48,7 @@ Core constants are in `config/settings.py` — source of truth for `DAYS_LOOKBAC
 The app runs an intelligence pipeline: `fetcher` → `classifier` → `summariser` → `history_manager` → (optional) `supabase_client`. It can execute synchronously on first run or in a background thread via `core/bg_refresher.py` (singleton `BackgroundRefresher`) for non-blocking UI.
 
 ### Theme Classification
-Articles are classified into 5 themes (defined in `config/themes.py`) using **weighted keyword matching**: each keyword has an integer weight (1–3), the highest-scoring theme wins. Unmatched articles fall back to **LLM batch classification** — articles are sent in batches of 20 with a system prompt requesting JSON output mapping `"ID N"` → theme name. A final `find_closest_theme()` relaxed match catches anything the LLM misses.
+Articles are classified into 7 themes (defined in `config/themes.py`) using **weighted keyword matching**: each keyword has an integer weight (1–3), the highest-scoring theme wins. Unmatched articles fall back to **LLM batch classification** — articles are sent in batches of 20 with a system prompt requesting JSON output mapping `"ID N"` → theme name. A final `find_closest_theme()` relaxed match catches anything the LLM misses. The 7 themes: Agentic Systems & DevTools, Frontier Models & Benchmarks, Hardware/Compute/LLMOps, Enterprise Strategy & ROI, Governance/Safety/Policy, AI Security & Trust, AI-Assisted Software Engineering.
 
 ### Caching Strategy
 Two-layer cache in `core/cache.py`:

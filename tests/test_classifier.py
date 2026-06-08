@@ -32,6 +32,22 @@ class TestKeywordClassify:
         result = keyword_classify("EU AI Act enters enforcement phase", "New legislation requires compliance from all AI companies.")
         assert result == "Governance, Safety & Policy"
 
+    def test_security_prompt_injection(self):
+        """Prompt-injection and red-teaming keywords should classify as AI Security & Trust."""
+        result = keyword_classify(
+            "New prompt injection bypasses LLM guardrails",
+            "Researchers demonstrate indirect prompt injection and exfiltration of the system prompt via a poisoned document."
+        )
+        assert result == "AI Security & Trust"
+
+    def test_ai_assisted_coding(self):
+        """AI-assisted coding keywords should classify as AI-Assisted Software Engineering."""
+        result = keyword_classify(
+            "Cursor and Claude Code reshape the inner loop",
+            "Engineering teams report higher developer velocity with AI pair programming and AI code review."
+        )
+        assert result == "AI-Assisted Software Engineering"
+
     def test_no_match_returns_none(self):
         """Completely unrelated text should return None."""
         result = keyword_classify("Weather forecast for today", "It will be sunny and warm.")
