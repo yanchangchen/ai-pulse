@@ -88,7 +88,7 @@ def main() -> None:
                 "Link": st.column_config.LinkColumn("Link to Feed", width="small", display_text="🔗")
             },
             hide_index=True,
-            use_container_width=True
+            width="stretch"
         )
 
     st.markdown("---")
@@ -186,7 +186,7 @@ def main() -> None:
                 "URL": st.column_config.LinkColumn("Link", display_text="🔗")
             },
             hide_index=True,
-            use_container_width=True
+            width="stretch"
         )
 
     st.markdown("---")

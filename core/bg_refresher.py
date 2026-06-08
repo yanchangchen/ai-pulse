@@ -153,7 +153,7 @@ def check_and_show_bg_status() -> None:
             
             if last_ts > loaded_ts:
                 st.info(f"📢 **New intelligence insights are ready!** (Generated at {last_ts})")
-                if st.button("💡 Load New Insights Now", key="bg_refresher_load_btn", use_container_width=True):
+                if st.button("💡 Load New Insights Now", key="bg_refresher_load_btn", width="stretch"):
                     # Load the new data directly into session state
                     st.session_state.articles = last_run['data']['full_articles']
                     st.session_state.themed_articles = last_run['data']['themed_articles']
@@ -196,13 +196,13 @@ def render_sidebar_info() -> None:
             else:
                 st.sidebar.warning(f"⚠️ Cache expired ({int(hours_since)}h old)")
                 # If cache is expired and not running, allow manual trigger
-                if st.sidebar.button("⚡ Force Refresh Now", key="bg_refresher_trigger_btn", use_container_width=True):
+                if st.sidebar.button("⚡ Force Refresh Now", key="bg_refresher_trigger_btn", width="stretch"):
                     st.session_state.force_refresh = True
                     BackgroundRefresher.start()
                     st.rerun()
         else:
             st.sidebar.info("No cached data found.")
-            if st.sidebar.button("⚡ Trigger Initial Load", key="bg_refresher_trigger_btn", use_container_width=True):
+            if st.sidebar.button("⚡ Trigger Initial Load", key="bg_refresher_trigger_btn", width="stretch"):
                 BackgroundRefresher.start()
                 st.rerun()
                 

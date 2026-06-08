@@ -264,7 +264,7 @@ def main() -> None:
         
         if status_info["status"] == "failed":
             st.error(f"❌ Ingestion Failed: {status_info['error']}")
-            if st.button("⚡ Retry Ingestion Pipeline", key="loading_retry_btn", use_container_width=True):
+            if st.button("⚡ Retry Ingestion Pipeline", key="loading_retry_btn", width="stretch"):
                 BackgroundRefresher.start()
                 st.rerun()
         else:

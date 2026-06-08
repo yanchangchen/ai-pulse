@@ -159,7 +159,7 @@ def main() -> None:
                 "URL": st.column_config.LinkColumn("URL", width="small", display_text="🔗 Link")
             },
             hide_index=True,
-            use_container_width=True
+            width="stretch"
         )
 
         # Export option

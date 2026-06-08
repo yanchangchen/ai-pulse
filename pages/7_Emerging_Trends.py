@@ -255,7 +255,7 @@ def main():
         )
         st.dataframe(
             df_display[["Theme", "First Seen", "Total Articles", "Growth WoW %", "Unique Sources", "Trend", "Composite Score"]],
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
         
@@ -291,7 +291,7 @@ def main():
             plot_bgcolor='rgba(0,0,0,0)',
             margin=dict(l=40, r=40, t=10, b=10)
         )
-        st.plotly_chart(fig_radar, use_container_width=True)
+        st.plotly_chart(fig_radar, width="stretch")
         
     st.divider()
     
@@ -330,7 +330,7 @@ def main():
                     if row["Weekly Counts"]:
                         st.caption("Weekly Volume")
                         spark_fig = render_sparkline(row["Weekly Counts"], theme_color)
-                        st.plotly_chart(spark_fig, use_container_width=True, config={'displayModeBar': False})
+                        st.plotly_chart(spark_fig, width="stretch", config={'displayModeBar': False})
                         
                 st.divider()
                 
@@ -363,7 +363,7 @@ def main():
         height=400,
         margin=dict(l=0, r=0, t=30, b=0)
     )
-    st.plotly_chart(fig_timeline, use_container_width=True)
+    st.plotly_chart(fig_timeline, width="stretch")
 
 if __name__ == "__main__":
     main()

@@ -191,7 +191,7 @@ def main():
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=0, r=0, t=30, b=0)
         )
-        st.plotly_chart(fig_themes, use_container_width=True)
+        st.plotly_chart(fig_themes, width="stretch")
         
     with col2:
         st.subheader("🚀 Keyword Velocity Analytics")
@@ -243,7 +243,7 @@ def main():
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                     margin=dict(l=0, r=0, t=30, b=0)
                 )
-                st.plotly_chart(fig_kw, use_container_width=True)
+                st.plotly_chart(fig_kw, width="stretch")
             else:
                 st.info("No matching mentions found for the selected keywords.")
         else:
@@ -256,13 +256,12 @@ def main():
     st.caption("At-a-glance visualization of theme activity and trends across all runs")
     
     df_melted_all = df_themes.melt(id_vars=["date"], value_vars=THEME_ORDER, var_name="Theme", value_name="Articles")
-    #df_pivot = df_melted_all.pivot(index="Theme", columns="date", values="Articles").fillna(0)
     df_pivot = df_melted_all.pivot_table(
         index="Theme",
         columns="date",
-        values="value",
+        values="Articles",
         aggfunc="sum",
-        fill_value=0
+        fill_value=0,
     )
 
     fig_heatmap = px.imshow(
@@ -279,7 +278,7 @@ def main():
         plot_bgcolor='rgba(0,0,0,0)',
         margin=dict(l=0, r=0, t=10, b=0)
     )
-    st.plotly_chart(fig_heatmap, use_container_width=True)
+    st.plotly_chart(fig_heatmap, width="stretch")
     
     st.markdown("---")
     
@@ -323,7 +322,7 @@ def main():
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=0, r=0, t=10, b=0)
     )
-    st.plotly_chart(fig_idx, use_container_width=True)
+    st.plotly_chart(fig_idx, width="stretch")
     
     # 4. Detailed Theme Drilldown
     st.markdown("---")
@@ -358,7 +357,7 @@ def main():
                     height=200,
                     margin=dict(l=0, r=0, t=40, b=0)
                 )
-                st.plotly_chart(fig_spark, use_container_width=True)
+                st.plotly_chart(fig_spark, width="stretch")
                 
                 # Show chronological summaries
                 st.markdown("### Chronological Summaries (Newest First)")

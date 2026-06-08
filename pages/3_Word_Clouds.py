@@ -72,7 +72,7 @@ def main() -> None:
             st.markdown(f"### {selected_theme}")
             img = generate_wordcloud(selected_theme, articles)
             if img:
-                st.image(img, use_container_width=True)
+                st.image(img, width="stretch")
             else:
                 st.warning("Unable to generate word cloud for this theme.")
 
@@ -85,7 +85,7 @@ def main() -> None:
                 st.subheader(f"Top 20 Trending Words: {selected_theme}")
                 chart_img = create_word_frequency_chart(top_words, selected_theme)
                 if chart_img:
-                    st.image(chart_img, use_container_width=True)
+                    st.image(chart_img, width="stretch")
             else:
                 st.info("No trending words found.")
 
@@ -105,7 +105,7 @@ def main() -> None:
                 if articles1:
                     img1 = generate_wordcloud(theme1, articles1)
                     if img1:
-                        st.image(img1, use_container_width=True)
+                        st.image(img1, width="stretch")
                 else:
                     st.info("No articles")
 
@@ -119,7 +119,7 @@ def main() -> None:
                     if articles2:
                         img2 = generate_wordcloud(theme2, articles2)
                         if img2:
-                            st.image(img2, use_container_width=True)
+                            st.image(img2, width="stretch")
                     else:
                         st.info("No articles")
 
@@ -139,7 +139,7 @@ def main() -> None:
         if top_words:
             chart_img = create_word_frequency_chart(top_words, theme_selector)
             if chart_img:
-                st.image(chart_img, use_container_width=True)
+                st.image(chart_img, width="stretch")
 
             # Also show as table
             st.markdown("#### Top Keywords Table")
@@ -151,7 +151,7 @@ def main() -> None:
                     "Frequency": st.column_config.ProgressColumn("Frequency", format="%d", min_value=0, max_value=top_words[0][1])
                 },
                 hide_index=True,
-                use_container_width=True
+                width="stretch"
             )
         else:
             st.info("No keywords found.")
