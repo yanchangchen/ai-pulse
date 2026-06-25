@@ -30,7 +30,7 @@ Single test file: `pytest tests/test_classifier.py`
 API keys and settings in `.streamlit/secrets.toml`:
 ```toml
 OLLAMA_BASE_URL = "https://api.ollama.com"
-OLLAMA_MODEL = "qwen3.5:cloud"
+OLLAMA_MODEL = "minimax-m3:cloud"
 OLLAMA_API_KEY = "your-api-key"
 ```
 

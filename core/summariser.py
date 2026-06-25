@@ -75,26 +75,54 @@ def generate_theme_summary(
     # Format articles for the prompt
     formatted_articles = format_articles_for_prompt(articles[:15])  # Limit to 15 articles
 
-    user_prompt = f"""Here are AI news summaries from the past two weeks, all related to {theme_name}:
+    user_prompt = f"""You are analyzing AI news summaries from the past two weeks, focused on the theme: {theme_name}
 
+--- SOURCE ARTICLES ---
 {formatted_articles}
 
-{past_context if past_context else ""}
+{f"--- PRIOR CONTEXT ---\n{past_context}" if past_context else ""}
+--- END OF SOURCES ---
 
-Provide a rigorous, technical intelligence brief. Avoid vague generalizations, marketing fluff, and hype. 
+Produce a rigorous technical intelligence brief using the exact structure below.
 
-Provide exactly this structure:
-1. WHAT IS HAPPENING: [3-5 sentence factual summary of the key developments. If there is past context provided, highlight what is NEW or what has EVOLVED since then.]
-2. ENGINEERING TRADEOFFS & BLUEPRINT: [3-5 sentences specifically for AI Engineers. Detail the architectural patterns, APIs, performance parameters (latency/memory/cost), open-weight licenses, or framework upgrades introduced here. What technical challenges do they solve?]
-3. PRODUCT IMPACT & FEASIBILITY: [3-5 sentences specifically for Product Managers. How does this impact speed-to-market, pricing margins, integration overhead, safety/compliance risks, or competitor capabilities? Is it ready for enterprise production?]
-4. ACTIONABLE WATCHLIST: [3-5 specific, bulleted items highlighting upcoming API changes, benchmark reviews, regulatory deadlines, or open research papers to track immediately.]
-5. STRATEGIC FURTHER READING: [5 most insightful articles with one-sentence explanation each, formatted exactly as:
-   - Article Title | Source | URL | Why read this (concrete technical/product takeaway)]
+---
 
-Be precise, avoid hype. Focus on signal over noise. Write in clear, direct language for a technically sophisticated audience."""
+## 1. WHAT IS HAPPENING
+Write 3–5 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. End with a sentence on the broader directional shift this signals.
+{"Explicitly call out what is NEW or EVOLVED since the prior brief." if past_context else ""}
 
-    system_prompt = """You are an expert AI engineering analyst and product strategist writing for tech leaders. 
-Be highly precise, avoid hype and buzzwords. Focus on real architectural shifts, API stability, performance tradeoffs, and product feasibility."""
+## 2. ENGINEERING TRADEOFFS & BLUEPRINT
+*Audience: AI Engineers*
+Write 3–5 sentences as flowing prose. Cover: architectural patterns, API changes, performance parameters (latency / memory / cost), open-weight licenses, or framework upgrades. Close with the core technical tradeoff a practitioner must weigh.
+
+## 3. PRODUCT IMPACT & FEASIBILITY
+*Audience: Product Managers*
+Write 3–5 sentences as flowing prose. Address: speed-to-market, pricing margins, integration overhead, safety/compliance risks, and competitor capability shifts. Close with a direct verdict: is this production-ready for enterprise use, and under what conditions?
+
+## 4. ACTIONABLE WATCHLIST
+List exactly 3–5 items. Each item must follow this format:
+  - **[Item]** — one sentence explaining why it matters and when to act.
+
+Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers.
+
+## 5. STRATEGIC FURTHER READING
+List exactly 5 articles from the sources above. Format each entry as:
+  - **[Article Title]** | [Source] | [URL]
+    *Why read this:* one sentence stating the concrete technical or product takeaway.
+"""
+
+    system_prompt = """You are an expert AI engineering analyst and product strategist writing for senior tech leaders.
+
+Your role is to cut through noise and surface what actually matters — architectural shifts, API stability, performance tradeoffs, and product feasibility.
+
+Writing style rules:
+- Be precise, direct, and technically rigorous
+- No hype, buzzwords, or vague generalizations
+- Use short paragraphs (3–5 sentences max per section)
+- Use bullet points only in sections 4 and 5
+- Bold key terms, model names, and company names on first mention
+- Never start two consecutive sentences with the same word
+"""
 
     try:
         llm = _get_llm()
