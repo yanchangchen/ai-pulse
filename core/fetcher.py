@@ -16,7 +16,12 @@ import requests
 from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
-from config.settings import DAYS_LOOKBACK, FETCH_WORKERS
+from config.settings import (
+    DAYS_LOOKBACK,
+    FETCH_WORKERS,
+    RSS_FETCH_RETRIES,
+    RSS_FETCH_TIMEOUT,
+)
 from config.sources import SOURCES, WEB_SCRAPE_SOURCES
 
 logging.basicConfig(level=logging.INFO)
@@ -92,64 +97,87 @@ def _try_extract_date_from_html(soup: BeautifulSoup) -> Optional[datetime]:
 
 
 def fetch_rss_feed(source: Dict) -> List[Dict]:
-    """Fetch and parse an RSS feed."""
+    """Fetch and parse an RSS feed, with timeout and retry on transient errors."""
     items: List[Dict] = []
     source_name = source["name"]
     url = source["url"]
 
-    try:
-        logger.debug("Fetching RSS feed: %s", source_name)
-        feed = feedparser.parse(url)
-
-        if feed.bozo and not feed.entries:
-            logger.warning("Feed may be malformed: %s", source_name)
+    # Retry transient failures (network blips, slow feeds) up to RSS_FETCH_RETRIES
+    # times.  feedparser raises on hard transport errors and we re-parse on retries.
+    feed = None
+    last_error: Optional[Exception] = None
+    for attempt in range(1, RSS_FETCH_RETRIES + 2):  # 1 initial + N retries
+        try:
+            logger.debug(
+                "Fetching RSS feed: %s (attempt %d/%d)",
+                source_name, attempt, RSS_FETCH_RETRIES + 1,
+            )
+            feed = feedparser.parse(url, request_timeout=RSS_FETCH_TIMEOUT)
+            if feed.bozo and not feed.entries:
+                # Malformed feed — not a transient error, give up immediately.
+                logger.warning("Feed may be malformed: %s", source_name)
+                return items
+            last_error = None
+            break
+        except Exception as e:
+            last_error = e
+            if attempt <= RSS_FETCH_RETRIES:
+                # Exponential-ish backoff: 0.5s, 1.0s, 1.5s ...
+                time.sleep(0.5 * attempt)
+                continue
+            logger.error(
+                "Error fetching %s after %d attempts: %s",
+                source_name, attempt, e,
+            )
             return items
 
-        for entry in feed.entries:
-            # Extract date
-            dt = extract_date_from_entry(entry)
+    if feed is None:
+        # Should not reach here, but be defensive.
+        if last_error:
+            logger.error("Error fetching %s: %s", source_name, last_error)
+        return items
 
-            if dt and not is_within_range(dt):
-                continue
+    for entry in feed.entries:
+        # Extract date
+        dt = extract_date_from_entry(entry)
 
-            # Extract title
-            title = getattr(entry, 'title', '') or ''
+        if dt and not is_within_range(dt):
+            continue
 
-            # Extract summary/description
-            summary = ''
-            if hasattr(entry, 'summary'):
-                summary = entry.summary
-            elif hasattr(entry, 'description'):
-                summary = entry.description
-            # Clean HTML from summary
-            if summary:
-                soup = BeautifulSoup(summary, 'html.parser')
-                summary = soup.get_text(separator=' ', strip=True)
+        # Extract title
+        title = getattr(entry, 'title', '') or ''
 
-            # Extract link
-            link = getattr(entry, 'link', '') or ''
+        # Extract summary/description
+        summary = ''
+        if hasattr(entry, 'summary'):
+            summary = entry.summary
+        elif hasattr(entry, 'description'):
+            summary = entry.description
+        # Clean HTML from summary
+        if summary:
+            soup = BeautifulSoup(summary, 'html.parser')
+            summary = soup.get_text(separator=' ', strip=True)
 
-            if not title:
-                continue
+        # Extract link
+        link = getattr(entry, 'link', '') or ''
 
-            # Create unique ID for deduplication
-            item_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
+        if not title:
+            continue
 
-            item = {
-                'id': item_id,
-                'title': title,
-                'summary': summary[:500] if summary else '',
-                'link': link,
-                'published_date': dt.isoformat() if dt else None,
-                'source_name': source_name
-            }
-            items.append(item)
+        # Create unique ID for deduplication
+        item_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
 
-        logger.debug("Fetched %d items from %s", len(items), source_name)
+        item = {
+            'id': item_id,
+            'title': title,
+            'summary': summary[:500] if summary else '',
+            'link': link,
+            'published_date': dt.isoformat() if dt else None,
+            'source_name': source_name
+        }
+        items.append(item)
 
-    except Exception as e:
-        logger.error("Error fetching %s: %s", source_name, e)
-
+    logger.debug("Fetched %d items from %s", len(items), source_name)
     return items
 
 
@@ -211,6 +239,13 @@ def scrape_web_source(source: Dict) -> List[Dict]:
                     link = urljoin(url, link)
 
                 dt = page_date or datetime.now(timezone.utc)
+
+                # Apply the same freshness filter used in the heuristic branch
+                # below — keeps old items from leaking through when the page
+                # doesn't expose a parseable date.
+                if not is_within_range(dt):
+                    continue
+
                 item_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
 
                 items.append({

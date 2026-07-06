@@ -36,6 +36,16 @@ CREATE TABLE IF NOT EXISTS theme_summaries (
   UNIQUE(run_id, theme_name)
 );
 
+-- Add engineering_tradeoffs / product_impact columns for the Quality
+-- Evaluation faithfulness judge (core/evaluator.py).  Idempotent: safe to
+-- run on a fresh table or on an older deployment that pre-dates these
+-- columns.  Older rows will have NULL/empty, which the judge treats as
+-- perfectly faithful (no claims made).
+ALTER TABLE theme_summaries
+  ADD COLUMN IF NOT EXISTS engineering_tradeoffs TEXT NOT NULL DEFAULT '';
+ALTER TABLE theme_summaries
+  ADD COLUMN IF NOT EXISTS product_impact TEXT NOT NULL DEFAULT '';
+
 -- Indexes for theme_summaries
 CREATE INDEX IF NOT EXISTS idx_theme_summaries_run_id ON theme_summaries(run_id);
 CREATE INDEX IF NOT EXISTS idx_theme_summaries_theme_name ON theme_summaries(theme_name);
@@ -157,6 +167,34 @@ SELECT
 FROM articles
 GROUP BY theme_name
 ORDER BY total_articles DESC;
+
+-- Table 5: Quality Evaluations
+-- Persists weekly / on-demand evaluation results from core/evaluator.py.
+-- Three judge agents score (1) classifier correctness, (2) summary faithfulness,
+-- (3) summary uniqueness against source articles and across runs.
+CREATE TABLE IF NOT EXISTS quality_evaluations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lookback_days INT NOT NULL,
+    runs_evaluated JSONB NOT NULL,           -- list of run_ids included
+    threshold FLOAT NOT NULL,                -- 0..1, threshold used for this eval
+    classifier_score FLOAT NOT NULL,         -- 0..1
+    faithfulness_score FLOAT NOT NULL,       -- 0..1
+    uniqueness_score FLOAT NOT NULL,         -- 0..1
+    per_theme_classifier JSONB,              -- {theme_name: score}
+    recommendations JSONB,                   -- list of human-readable strings
+    raw_metrics JSONB                        -- full evaluation payload
+);
+
+CREATE INDEX IF NOT EXISTS idx_quality_evaluations_generated_at
+    ON quality_evaluations (generated_at DESC);
+
+-- Enable Row Level Security (read-only public access, same as other tables)
+ALTER TABLE quality_evaluations ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public read access for quality_evaluations"
+    ON quality_evaluations FOR SELECT
+    USING (true);
 
 -- End of schema setup
 -- You can now use the ai-pulse app with Supabase persistence!

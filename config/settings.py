@@ -70,8 +70,27 @@ OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
 # App-level constants
 # ---------------------------------------------------------------------------
 DAYS_LOOKBACK: int = 14
-CACHE_TTL_SECONDS: int = 6 * 3600  # 6 hours
+CACHE_TTL_SECONDS: int = 12 * 3600  # 12 hours
 
 # Maximum concurrent fetch workers
 FETCH_WORKERS: int = 8
+
+# Per-feed RSS fetch timeout (seconds).  Each feed gets up to 2 retries on
+# transient errors before being skipped.
+RSS_FETCH_TIMEOUT: int = 10
+RSS_FETCH_RETRIES: int = 2
+
+# ---------------------------------------------------------------------------
+# Weekly quality evaluation
+# ---------------------------------------------------------------------------
+# Default threshold (0..1).  The Quality Evaluation page exposes a slider that
+# can override this per-run; the chosen value is stored on the resulting row.
+QUALITY_THRESHOLD: float = 0.80
+# How many articles per run to send to the Categoriser judge LLM.
+EVALUATION_SAMPLE_SIZE: int = 20
+# Cap on the number of historical runs evaluated in a single weekly check.
+EVALUATION_MAX_RUNS: int = 7
+# How often the WeeklyEvaluator background thread wakes up to check whether
+# it should run (seconds).  1 hour is plenty — evaluations are weekly.
+EVALUATION_CHECK_INTERVAL_SECONDS: int = 3600
 

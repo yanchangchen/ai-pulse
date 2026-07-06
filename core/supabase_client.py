@@ -105,11 +105,13 @@ class SupabaseManager:
                 "run_id": run_id,
                 "theme_name": theme_name,
                 "what_is_happening": summary.get("what_is_happening", ""),
+                "engineering_tradeoffs": summary.get("engineering_tradeoffs", ""),
+                "product_impact": summary.get("product_impact", ""),
                 "why_it_matters": summary.get("why_it_matters", ""),
                 "what_to_watch": summary.get("what_to_watch", ""),
                 "article_count": article_count
             }).execute()
-            
+
             if response.data:
                 logger.info(f"Saved theme summary for {theme_name}")
                 return response.data[0]
@@ -656,6 +658,8 @@ class SupabaseManager:
                             "run_id": run_id,
                             "theme_name": theme_name,
                             "what_is_happening": summary.get("what_is_happening", ""),
+                            "engineering_tradeoffs": summary.get("engineering_tradeoffs", ""),
+                            "product_impact": summary.get("product_impact", ""),
                             "why_it_matters": summary.get("why_it_matters", ""),
                             "what_to_watch": summary.get("what_to_watch", ""),
                             "article_count": counts.get(theme_name, 0)

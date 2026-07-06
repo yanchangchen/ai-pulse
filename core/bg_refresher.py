@@ -123,6 +123,14 @@ class BackgroundRefresher:
             except Exception as cache_err:
                 logger.debug("BG Pipeline: Failed to clear streamlit cache (expected if run outside main thread): %s", cache_err)
 
+            # Kick off the weekly quality evaluator (idempotent — it will
+            # only run if no evaluation exists for the current ISO week).
+            try:
+                from core.weekly_evaluator import maybe_start_weekly_evaluator
+                maybe_start_weekly_evaluator()
+            except Exception as eval_err:
+                logger.debug("Could not start weekly evaluator: %s", eval_err)
+
             with cls._lock:
                 state = cls._get_state()
                 state["status"] = "completed"

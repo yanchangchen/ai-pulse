@@ -135,12 +135,6 @@ SOURCES = [
         "category": "blog"
     },
     {
-        "name": "Langfuse Blog",
-        "url": "https://langfuse.com/blog/rss",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
         "name": "Latent.Space",
         "url": "https://www.latent.space/feed",
         "type": "rss",
@@ -293,7 +287,13 @@ SOURCES = [
     }
 ]
 
-# Fallback web sources for when RSS fails or is unavailable
+# Fallback web sources for when RSS fails or is unavailable.
+#
+# NOTE: WEB_SCRAPE_SOURCES is a SELECTOR REGISTRY only — these entries are NOT
+# fetched as a separate source list.  The fetcher scrapes any source in SOURCES
+# whose `type` is "web" (e.g. Anthropic Research, Ethan Mollick) and looks up
+# matching CSS selectors here.  Adding a name only to WEB_SCRAPE_SOURCES without
+# a corresponding SOURCES entry will not fetch anything.
 WEB_SCRAPE_SOURCES = [
     {
         "name": "Ethan Mollick",
