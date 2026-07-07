@@ -210,6 +210,33 @@ def _extract_json(text: str) -> Optional[Dict]:
     return None
 
 
+# Common alternate keys the model may use instead of "score".  Picked from
+# observed drift across the Ollama Cloud model in use.
+_SCORE_KEY_ALIASES = ("score", "faithfulness", "rating", "value", "s", "n")
+
+
+def _coerce_score(parsed: Optional[Dict]) -> Optional[float]:
+    """Pull a 0..1 score out of a parsed JSON dict, trying common key
+    aliases.  Returns None if no plausible numeric value is present.
+    """
+    if not parsed or not isinstance(parsed, dict):
+        return None
+    for key in _SCORE_KEY_ALIASES:
+        if key in parsed:
+            try:
+                v = float(parsed[key])
+                return max(0.0, min(1.0, v))
+            except (TypeError, ValueError):
+                continue
+    # Nested: {"verdict": {"score": ...}} or similar
+    for v in parsed.values():
+        if isinstance(v, dict):
+            nested = _coerce_score(v)
+            if nested is not None:
+                return nested
+    return None
+
+
 def _match_theme(predicted: str) -> Optional[str]:
     """Fuzzy-match a free-form LLM theme name to one of the canonical THEMES."""
     if not predicted:
@@ -260,6 +287,18 @@ def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, s
         return (False, "")
 
     predicted = _match_theme(response)
+    if not predicted:
+        # Log the raw response so silent mismatches become diagnosable.
+        # Rate-limited by sampling: only log 1 in 5 to avoid log spam on
+        # bulk evaluations.
+        if not hasattr(_judge_single_classification, "_miss_counter"):
+            _judge_single_classification._miss_counter = 0
+        _judge_single_classification._miss_counter += 1
+        if _judge_single_classification._miss_counter % 5 == 1:
+            logger.debug(
+                "Categoriser judge: could not match theme in response: %r",
+                (response or "")[:200],
+            )
     correct = bool(predicted and predicted == article.get("theme_name"))
     return (correct, predicted or "")
 
@@ -374,13 +413,15 @@ def _judge_faithfulness_one(
         logger.warning("Faithfulness judge LLM error: %s", exc)
         return 0.0
     parsed = _extract_json(resp)
-    if not parsed:
+    score = _coerce_score(parsed)
+    if score is None:
+        # Log the raw response so silent zeros become diagnosable.
+        logger.warning(
+            "Faithfulness judge: no parseable score in response: %r",
+            (resp or "")[:300],
+        )
         return 0.0
-    try:
-        score = float(parsed.get("score", 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(1.0, score))
+    return score
 
 
 def faithfulness_judge(
@@ -459,13 +500,18 @@ def _judge_overlap(llm: LLMClient, a: str, b: str) -> float:
         logger.warning("Uniqueness judge LLM error: %s", exc)
         return 0.0
     parsed = _extract_json(resp)
-    if not parsed:
+    overlap = _coerce_score({"score": parsed.get("overlap") if parsed else None}) \
+        if parsed else None
+    if overlap is None:
+        # Try common alias keys directly.
+        overlap = _coerce_score(parsed)
+    if overlap is None:
+        logger.warning(
+            "Uniqueness judge: no parseable overlap in response: %r",
+            (resp or "")[:200],
+        )
         return 0.0
-    try:
-        score = float(parsed.get("overlap", 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(1.0, score))
+    return overlap
 
 
 def uniqueness_judge(

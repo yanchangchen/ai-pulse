@@ -23,6 +23,7 @@ from core.evaluator import (
     _safe_mean,
     _stratified_sample,
     _extract_json,
+    _coerce_score,
     _match_theme,
     generate_recommendations,
     run_weekly_evaluation,
@@ -191,6 +192,28 @@ class TestExtractJson:
 
     def test_empty_returns_none(self):
         assert _extract_json("") is None
+
+
+class TestCoerceScore:
+    def test_primary_key(self):
+        assert _coerce_score({"score": 0.7}) == 0.7
+
+    def test_alias_keys(self):
+        for key in ("faithfulness", "rating", "value", "s", "n"):
+            assert _coerce_score({key: 0.4}) == 0.4
+
+    def test_clamped_to_unit_interval(self):
+        assert _coerce_score({"score": 1.5}) == 1.0
+        assert _coerce_score({"score": -0.5}) == 0.0
+
+    def test_nested_dict(self):
+        assert _coerce_score({"verdict": {"score": 0.9}}) == 0.9
+
+    def test_non_numeric_returns_none(self):
+        assert _coerce_score({"score": "high"}) is None
+        assert _coerce_score({"notes": []}) is None
+        assert _coerce_score({}) is None
+        assert _coerce_score(None) is None
 
 
 # ---------------------------------------------------------------------------
