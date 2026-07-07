@@ -94,3 +94,22 @@ EVALUATION_MAX_RUNS: int = 7
 # it should run (seconds).  1 hour is plenty — evaluations are weekly.
 EVALUATION_CHECK_INTERVAL_SECONDS: int = 3600
 
+# ---------------------------------------------------------------------------
+# LLM context window
+# ---------------------------------------------------------------------------
+# num_ctx passed to Ollama on every generate() call.  4096 covers ~10
+# articles (each ~500 chars ≈ 150 tokens) + system prompt + ~1500 tokens
+# of output with headroom.  Bump if you increase MAX_ARTICLES_PER_SUMMARY
+# below or if you switch to a model with a larger native context.
+OLLAMA_NUM_CTX: int = 4096
+# Max articles fed into the theme summariser prompt.  Combined with the
+# per-article 300-char summary cap in format_articles_for_prompt(), this
+# keeps the input well inside OLLAMA_NUM_CTX.
+MAX_ARTICLES_PER_SUMMARY: int = 10
+# Rough chars-per-token ratio.  Used to budget the input side of num_ctx.
+# 3 chars/token is a conservative estimate that errs on the side of
+# truncation rather than overflow.
+CHARS_PER_TOKEN: int = 3
+# Fraction of num_ctx reserved for input (rest is for system + output).
+INPUT_BUDGET_FRACTION: float = 0.6
+

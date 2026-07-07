@@ -24,9 +24,18 @@ def _get_llm() -> LLMClient:
     return _llm
 
 
-def format_articles_for_prompt(articles: List[Dict]) -> str:
-    """Format articles for the summarisation prompt."""
-    formatted = []
+def format_articles_for_prompt(articles: List[Dict], char_budget: Optional[int] = None) -> str:
+    """Format articles for the summarisation prompt.
+
+    Each article is capped at ~500 chars (title + 300-char summary + source +
+    link).  If `char_budget` is provided, articles are appended in order
+    until the budget is reached — any tail articles are dropped so the
+    joined text stays inside the LLM's input window.
+
+    Callers should derive `char_budget` from the model's num_ctx
+    (see config.settings.CHARS_PER_TOKEN and INPUT_BUDGET_FRACTION).
+    """
+    formatted: List[str] = []
 
     for i, article in enumerate(articles, 1):
         title = article.get('title', 'Untitled')
@@ -34,13 +43,21 @@ def format_articles_for_prompt(articles: List[Dict]) -> str:
         source = article.get('source_name', 'Unknown')
         link = article.get('link', '')
 
-        formatted.append(f"{i}. {title}")
-        formatted.append(f"   Source: {source}")
+        block_parts = [f"{i}. {title}", f"   Source: {source}"]
         if summary:
-            formatted.append(f"   Summary: {summary}")
+            block_parts.append(f"   Summary: {summary}")
         if link:
-            formatted.append(f"   URL: {link}")
-        formatted.append("")
+            block_parts.append(f"   URL: {link}")
+        block_parts.append("")  # trailing blank line
+        block = "\n".join(block_parts)
+
+        if char_budget is not None:
+            # Reserve one extra char for the join-newline we'll add.
+            projected = sum(len(p) + 1 for p in formatted) + len(block)
+            if projected > char_budget:
+                break
+
+        formatted.append(block)
 
     return "\n".join(formatted)
 
@@ -72,8 +89,18 @@ def generate_theme_summary(
             "further_reading": ""
         }
 
-    # Format articles for the prompt
-    formatted_articles = format_articles_for_prompt(articles[:15])  # Limit to 15 articles
+    # Format articles for the prompt.  Cap at MAX_ARTICLES_PER_SUMMARY and
+    # then truncate further to stay inside the LLM's input budget.
+    from config.settings import (
+        MAX_ARTICLES_PER_SUMMARY,
+        OLLAMA_NUM_CTX,
+        CHARS_PER_TOKEN,
+        INPUT_BUDGET_FRACTION,
+    )
+    char_budget = int(OLLAMA_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
+    formatted_articles = format_articles_for_prompt(
+        articles[:MAX_ARTICLES_PER_SUMMARY], char_budget=char_budget,
+    )
 
     user_prompt = f"""You are analyzing AI news summaries from the past two weeks, focused on the theme: {theme_name}
 

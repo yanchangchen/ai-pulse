@@ -10,7 +10,7 @@ from typing import Optional
 
 import requests
 
-from config.settings import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_API_KEY
+from config.settings import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_API_KEY, OLLAMA_NUM_CTX
 
 from core.logger import setup_logger
 
@@ -75,6 +75,7 @@ class LLMClient:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "num_ctx": OLLAMA_NUM_CTX,
             },
         }
         headers = self._auth_headers()
