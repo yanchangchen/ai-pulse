@@ -81,6 +81,10 @@ class LLMClient:
 
         last_error: Optional[Exception] = None
         for attempt in range(1, MAX_RETRIES + 1):
+            # On the 2nd retry, nudge the temperature up to break the model
+            # out of a stuck/degenerate decoder state that produced an empty
+            # body.  Other settings stay the same.
+            payload["options"]["temperature"] = 0.5 if attempt == 2 else temperature
             try:
                 resp = requests.post(
                     f"{self.base_url}/api/generate",
