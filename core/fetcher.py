@@ -112,7 +112,16 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
                 "Fetching RSS feed: %s (attempt %d/%d)",
                 source_name, attempt, RSS_FETCH_RETRIES + 1,
             )
-            feed = feedparser.parse(url, request_timeout=RSS_FETCH_TIMEOUT)
+            # feedparser 6.x removed the `request_timeout` kwarg; use a
+            # socket-level timeout around the call instead.  Save and
+            # restore so we don't leak the timeout to other threads.
+            import socket
+            _prev_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(RSS_FETCH_TIMEOUT)
+            try:
+                feed = feedparser.parse(url)
+            finally:
+                socket.setdefaulttimeout(_prev_timeout)
             if feed.bozo and not feed.entries:
                 # Malformed feed — not a transient error, give up immediately.
                 logger.warning("Feed may be malformed: %s", source_name)
