@@ -4,7 +4,12 @@
 THEMES = {
     "Agentic Systems & DevTools": {
         "keywords": {
-            "RAG": 3, "agents": 3, "agentic": 3, "LangChain": 3, "LangGraph": 3,
+            # Generic "agent" terms are weighted LOWER than specialist
+            # themes' coding-/security-/hardware-specific terms so that an
+            # article about, say, "agentic coding in the IDE" still routes
+            # to AI-Assisted Software Engineering rather than landing here
+            # by default.
+            "RAG": 3, "agents": 2, "agentic": 2, "LangChain": 3, "LangGraph": 3,
             "vector database": 3, "Neo4j": 2, "MCP": 3, "tool use": 3,
             "multi-agent": 3, "orchestration": 3, "swarm": 3, "A2A": 2,
             "agentic token control": 3, "doom-loop": 3, "dreaming": 2,
@@ -91,9 +96,13 @@ THEMES = {
     },
     "AI-Assisted Software Engineering": {
         "keywords": {
-            "AI-assisted coding": 3, "AI pair programming": 3, "Copilot": 2,
-            "Cursor": 2, "Claude Code": 2, "Cody": 2, "Codeium": 2,
-            "Tabnine": 2, "Continue": 2, "Aider": 2, "Devin": 3,
+            # Specialist coding-agent signals are weighted 3 so that an
+            # article mentioning, say, "agentic coding" or "Cursor" strongly
+            # prefers this theme over the more generic Agentic bucket.
+            "AI-assisted coding": 3, "AI pair programming": 3,
+            "Copilot": 3, "Cursor": 3, "Claude Code": 3,
+            "Cody": 2, "Codeium": 2, "Tabnine": 2, "Continue": 2,
+            "Aider": 3, "Devin": 3,
             "agentic coding": 3, "AI code review": 3, "AI refactoring": 3,
             "vibe coding": 3, "prompt-driven development": 3,
             "spec-driven development": 3, "AI-generated tests": 3,

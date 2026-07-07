@@ -48,6 +48,20 @@ class TestKeywordClassify:
         )
         assert result == "AI-Assisted Software Engineering"
 
+    def test_agentic_coding_prefers_coding_theme(self):
+        """An article that mixes generic 'agentic' with a coding tool
+        should route to AI-Assisted Software Engineering, not the more
+        general Agentic Systems bucket.  The LLM judge was systematically
+        disagreeing with the keyword classifier on this boundary before
+        the weighting was tuned.
+        """
+        result = keyword_classify(
+            "Anthropic launches Claude Code for agentic coding workflows",
+            "The new IDE plugin enables agentic coding patterns including "
+            "autonomous refactoring and AI code review inside the editor."
+        )
+        assert result == "AI-Assisted Software Engineering"
+
     def test_no_match_returns_none(self):
         """Completely unrelated text should return None."""
         result = keyword_classify("Weather forecast for today", "It will be sunny and warm.")
