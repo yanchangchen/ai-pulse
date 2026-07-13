@@ -62,6 +62,20 @@ class TestKeywordClassify:
         )
         assert result == "AI-Assisted Software Engineering"
 
+    def test_agent_mention_with_bare_model_does_not_route_to_frontier(self):
+        """An article that mentions Claude/GPT as a tool used by an agent
+        framework is really about Agentic Systems, not Frontier Models.
+        Bare model names alone should not pull an article into Frontier
+        Models & Benchmarks.
+        """
+        result = keyword_classify(
+            "New agentic framework uses Claude and GPT for tool routing",
+            "The multi-agent orchestration layer supports Claude and GPT "
+            "as backend models, with vector database and RAG built in."
+        )
+        # Multi-agent + RAG + orchestration should win over bare model names.
+        assert result == "Agentic Systems & DevTools"
+
     def test_no_match_returns_none(self):
         """Completely unrelated text should return None."""
         result = keyword_classify("Weather forecast for today", "It will be sunny and warm.")

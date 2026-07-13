@@ -24,12 +24,19 @@ THEMES = {
     },
     "Frontier Models & Benchmarks": {
         "keywords": {
-            "model release": 3, "benchmark": 3, "GPT": 2, "Claude": 2,
-            "Gemini": 2, "Llama": 2, "Mistral": 2, "multimodal": 2,
-            "reasoning": 2, "context window": 3, "training": 1, "weights": 2,
-            "open source model": 3, "new model": 3, "frontier": 2,
+            # Bare model names (Claude, GPT, Gemini, Llama, Mistral) are
+            # weighted LOW (1) because they fire on virtually every AI
+            # article, not just frontier-model news.  The truly specific
+            # signals — benchmark names, model-release phrasings,
+            # architecture terms — are weighted 3 and dominate the score.
+            "model release": 3, "benchmark": 3,
+            "GPT": 1, "Claude": 1, "Gemini": 1, "Llama": 1, "Mistral": 1,
+            "multimodal": 2, "reasoning": 2,
+            "context window": 3, "training": 1, "weights": 2,
+            "open source model": 3, "new model": 3, "frontier": 3,
             "MoE": 3, "speculative decoding": 3, "KV cache": 3,
-            "MMLU": 2, "GPQA": 3, "SWE-bench": 3, "ARC-AGI": 3,
+            "MMLU": 3, "GPQA": 3, "SWE-bench": 3, "ARC-AGI": 3,
+            "HumanEval": 3, "LiveBench": 3, "Chatbot Arena": 3,
             "parameters": 2, "capabilities": 1, "LMSYS": 3,
             "RLHF": 2, "GRPO": 3, "alignment": 2, "contamination": 3
         },
