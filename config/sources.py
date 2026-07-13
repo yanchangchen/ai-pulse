@@ -187,6 +187,38 @@ SOURCES = [
         "type": "rss",
         "category": "blog"
     },
+    # Newsletters & independent voices (high-signal, weekly cadence)
+    {
+        "name": "Import AI (Jack Clark)",
+        "url": "https://import-ai.substack.com/feed",
+        "type": "rss",
+        "category": "newsletter"
+    },
+    {
+        "name": "Lil'Log (Lilian Weng)",
+        "url": "https://lilianweng.github.io/index.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Stratechery",
+        "url": "https://stratechery.com/feed/",
+        "type": "rss",
+        "category": "newsletter"
+    },
+    # Governance, Safety & Policy (fills the policy theme gap)
+    {
+        "name": "AI Now Institute",
+        "url": "https://ainowinstitute.org/feed/",
+        "type": "rss",
+        "category": "policy"
+    },
+    {
+        "name": "CSET Georgetown",
+        "url": "https://cset.georgetown.edu/feed/",
+        "type": "rss",
+        "category": "policy"
+    },
     {
         "name": "Lenny's Newsletter",
         "url": "https://www.lennysnewsletter.com/feed",
