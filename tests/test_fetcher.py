@@ -2,7 +2,14 @@
 
 import pytest
 from datetime import datetime, timezone, timedelta
-from core.fetcher import parse_date, is_within_range, extract_date_from_entry
+from unittest.mock import patch, MagicMock
+
+from core.fetcher import (
+    parse_date,
+    is_within_range,
+    extract_date_from_entry,
+    fetch_rss_feed,
+)
 
 
 class TestParseDate:
@@ -64,3 +71,58 @@ class TestIsWithinRange:
         """Naive datetimes should be handled gracefully (treated as UTC)."""
         recent_naive = datetime.now() - timedelta(days=1)
         assert is_within_range(recent_naive) is True
+
+
+class TestRssFetchTransport:
+    """Verify the RSS fetch path sends a User-Agent and follows redirects.
+
+    These don't hit the network — they patch requests.get and feedparser.parse
+    so the test runs offline in <1s.  They exist because several AI blog
+    feeds (OpenAI, DeepMind, Hugging Face) were silently 0-entrying in
+    production: feedparser.parse(url) doesn't follow 307 redirects and
+    sends a default python-urllib User-Agent that some sites block.
+    """
+
+    def test_sends_user_agent_and_follows_redirects(self):
+        # A redirect-following 200 with an Atom feed body
+        atom_body = (
+            b'<?xml version="1.0" encoding="utf-8"?>'
+            b'<feed xmlns="http://www.w3.org/2005/Atom">'
+            b'<entry><title>Hello</title><updated>2026-07-01T12:00:00Z</updated>'
+            b'<link href="https://example.com/hello"/></entry></feed>'
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = atom_body
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("core.fetcher.requests.get", return_value=mock_resp) as mock_get:
+            items = fetch_rss_feed({
+                "name": "Mocked Feed",
+                "url": "https://example.com/redirected",
+                "type": "rss",
+            })
+
+        # requests.get was called with allow_redirects=True and a UA.
+        kwargs = mock_get.call_args.kwargs
+        assert kwargs.get("allow_redirects") is True
+        assert "User-Agent" in kwargs.get("headers", {})
+        # We asked for the original URL, not the redirect target.
+        assert mock_get.call_args.args[0] == "https://example.com/redirected"
+        # The feed parsed (1 entry).
+        assert isinstance(items, list)
+
+    def test_propagates_http_error(self):
+        # A 4xx response should cause the fetcher to retry and then
+        # return an empty list (the same behaviour as a connection
+        # failure).
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.raise_for_status.side_effect = Exception("HTTP 404")
+        with patch("core.fetcher.requests.get", return_value=mock_resp):
+            items = fetch_rss_feed({
+                "name": "Broken Feed",
+                "url": "https://example.com/404",
+                "type": "rss",
+            })
+        assert items == []

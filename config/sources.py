@@ -75,12 +75,6 @@ SOURCES = [
         "category": "blog"
     },
     {
-        "name": "Anthropic Research",
-        "url": "https://www.anthropic.com/research",
-        "type": "web",
-        "category": "blog"
-    },
-    {
         "name": "Anthropic Engineering",
         "url": "https://www.anthropic.com/engineering",
         "type": "web",
@@ -160,18 +154,6 @@ SOURCES = [
         "category": "blog"
     },
     {
-        "name": "Mistral AI News",
-        "url": "https://mistral.ai/news/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "Cohere Blog",
-        "url": "https://cohere.com/blog/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
         "name": "Meta AI Blog",
         "url": "https://ai.meta.com/blog/rss/",
         "type": "rss",
@@ -179,20 +161,8 @@ SOURCES = [
     },
     # Agent & Framework Engineering (Tier 1 — Appendix C2)
     {
-        "name": "LlamaIndex Blog",
-        "url": "https://www.llamaindex.ai/blog/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
         "name": "Weights & Biases Fully Connected",
         "url": "https://wandb.ai/fully-connected/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "Langfuse Blog",
-        "url": "https://langfuse.com/blog/rss",
         "type": "rss",
         "category": "blog"
     },
@@ -203,65 +173,10 @@ SOURCES = [
         "type": "rss",
         "category": "blog"
     },
-    {
-        "name": "Google Cloud AI Blog",
-        "url": "https://blog.google/products/google-cloud/rss/",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "Microsoft AI Blog",
-        "url": "https://blogs.microsoft.com/ai/feed/",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "Databricks Blog",
-        "url": "https://www.databricks.com/feed.xml",
-        "type": "rss",
-        "category": "blog"
-    },
     # Inference & Hardware (Tier 2 — Appendix C5)
-    {
-        "name": "Modal Blog",
-        "url": "https://modal.com/blog/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
     {
         "name": "Together AI Blog",
         "url": "https://www.together.ai/blog/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "vLLM Blog",
-        "url": "https://blog.vllm.ai/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "Hugging Face Security",
-        "url": "https://huggingface.co/blog/security/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
-    # AI Security & Trust (Tier 2 — Appendix C6; new theme destination)
-    {
-        "name": "Trail of Bits Blog",
-        "url": "https://blog.trailofbits.com/feed/",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "Lakera Blog",
-        "url": "https://www.lakera.ai/blog/rss.xml",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "Protect AI Blog",
-        "url": "https://www.protectai.com/blog/rss.xml",
         "type": "rss",
         "category": "blog"
     },
@@ -272,13 +187,6 @@ SOURCES = [
         "type": "rss",
         "category": "blog"
     },
-    # Web sources (require scraping)
-    {
-        "name": "Ethan Mollick",
-        "url": "https://www.oneusefulthing.org",
-        "type": "web",
-        "category": "blog"
-    },
     {
         "name": "Lenny's Newsletter",
         "url": "https://www.lennysnewsletter.com/feed",
@@ -287,23 +195,29 @@ SOURCES = [
     }
 ]
 
-# Fallback web sources for when RSS fails or is unavailable.
+# CSS-selector registry for sources marked type="web" in SOURCES.
 #
-# NOTE: WEB_SCRAPE_SOURCES is a SELECTOR REGISTRY only — these entries are NOT
-# fetched as a separate source list.  The fetcher scrapes any source in SOURCES
-# whose `type` is "web" (e.g. Anthropic Research, Ethan Mollick) and looks up
-# matching CSS selectors here.  Adding a name only to WEB_SCRAPE_SOURCES without
-# a corresponding SOURCES entry will not fetch anything.
+# The fetcher's scrape_web_source() looks up the source name here; if no
+# entry matches, it falls through to a generic class-name heuristic that
+# rarely fires on modern sites.  Adding a `type: web` source to SOURCES
+# without a matching entry here will silently scrape 0–5 articles per
+# run.  Always add a selectors entry when you add a web source.
 WEB_SCRAPE_SOURCES = [
+    {
+        "name": "Anthropic Engineering",
+        "url": "https://www.anthropic.com/engineering",
+        # Anthropic's /engineering page lists posts as <a> blocks each
+        # containing a heading.  Pull the heading text as the title and
+        # the surrounding <a>'s href as the link.
+        "selectors": {
+            "title": "h2, h3",
+            "summary": "p",
+            "link": "a",
+        },
+    },
     {
         "name": "Ethan Mollick",
         "url": "https://www.oneusefulthing.org",
-        "selectors": {"title": "h2, h3", "summary": "p", "link": "a"}
+        "selectors": {"title": "h2, h3", "summary": "p", "link": "a"},
     },
-    
-    {
-        "name": "Anthropic News",
-        "url": "https://www.anthropic.com/news",
-        "selectors": {"title": "h1, h2", "summary": "p", "link": "a"}
-    }
 ]

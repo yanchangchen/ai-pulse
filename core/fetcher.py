@@ -112,16 +112,29 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
                 "Fetching RSS feed: %s (attempt %d/%d)",
                 source_name, attempt, RSS_FETCH_RETRIES + 1,
             )
-            # feedparser 6.x removed the `request_timeout` kwarg; use a
-            # socket-level timeout around the call instead.  Save and
-            # restore so we don't leak the timeout to other threads.
-            import socket
-            _prev_timeout = socket.getdefaulttimeout()
-            socket.setdefaulttimeout(RSS_FETCH_TIMEOUT)
-            try:
-                feed = feedparser.parse(url)
-            finally:
-                socket.setdefaulttimeout(_prev_timeout)
+            # feedparser 6.x doesn't follow 30x redirects on its own
+            # (the body's parsed as if it were the final response, which
+            # on some sites is an empty HTML stub), and it sends a default
+            # python-urllib User-Agent that several big AI sites block
+            # outright.  Use requests for the transport (so redirects
+            # actually follow and we send a real UA), then hand the
+            # response body to feedparser for XML/Atom parsing.
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; AIPulse/1.0; "
+                    "+https://github.com/yanchangchen/ai-pulse)"
+                ),
+                "Accept": "application/rss+xml, application/atom+xml, "
+                          "application/xml;q=0.9, */*;q=0.8",
+            }
+            resp = requests.get(
+                url,
+                headers=headers,
+                timeout=RSS_FETCH_TIMEOUT,
+                allow_redirects=True,
+            )
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
             if feed.bozo and not feed.entries:
                 # Malformed feed — not a transient error, give up immediately.
                 logger.warning("Feed may be malformed: %s", source_name)
