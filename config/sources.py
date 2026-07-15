@@ -3,10 +3,10 @@
 SOURCES = [
     # RSS Feeds
     {
-        "name": "DeepLearning.AI The Batch",
-        "url": "https://www.deeplearning.ai/the-batch/feed/",
+        "name": "Apple Machine Learning Research",
+        "url": "https://machinelearning.apple.com/rss.xml",
         "type": "rss",
-        "category": "newsletter"
+        "category": "blog"
     },
     {
         "name": "Last Week in AI",
@@ -15,14 +15,14 @@ SOURCES = [
         "category": "newsletter"
     },
     {
-        "name": "TLDR AI",
-        "url": "https://tldr.tech/ai/rss",
+        "name": "TLDR Newsletter",
+        "url": "https://tldr.tech/rss",
         "type": "rss",
         "category": "newsletter"
     },
     {
-        "name": "MarkTechPost",
-        "url": "https://www.marktechpost.com/feed/",
+        "name": "Databricks Engineering Blog",
+        "url": "https://www.databricks.com/feed",
         "type": "rss",
         "category": "blog"
     },
@@ -63,12 +63,6 @@ SOURCES = [
         "category": "blog"
     },
     {
-        "name": "LangChain Blog",
-        "url": "https://blog.langchain.dev/rss/",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
         "name": "Neo4j Blog",
         "url": "https://neo4j.com/blog/feed/",
         "type": "rss",
@@ -81,8 +75,8 @@ SOURCES = [
         "category": "blog"
     },
     {
-        "name": "Meta Engineering",
-        "url": "https://engineering.fb.com/category/ai/feed/",
+        "name": "Meta Research",
+        "url": "https://research.facebook.com/feed/",
         "type": "rss",
         "category": "blog"
     },
@@ -117,14 +111,8 @@ SOURCES = [
         "category": "blog"
     },
     {
-        "name": "ServiceNow Engineering",
-        "url": "https://www.servicenow.com/blog.category.engineering.rss",
-        "type": "rss",
-        "category": "blog"
-    },
-    {
-        "name": "Scale AI Blog",
-        "url": "https://scale.com/blog/rss",
+        "name": "Elastic Blog",
+        "url": "https://www.elastic.co/blog/feed",
         "type": "rss",
         "category": "blog"
     },
