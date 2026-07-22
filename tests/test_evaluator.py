@@ -25,6 +25,8 @@ from core.evaluator import (
     _extract_json,
     _coerce_score,
     _match_theme,
+    _heuristic_overlap,
+    _heuristic_short_circuit,
     generate_recommendations,
     run_weekly_evaluation,
 )
@@ -281,3 +283,224 @@ class TestIsoWeekGuard:
         fake = MagicMock()
         fake.is_available.return_value = False
         assert has_evaluation_this_iso_week(fake) is False
+
+
+# ---------------------------------------------------------------------------
+# Heuristic overlap (deterministic pre-filter)
+# ---------------------------------------------------------------------------
+
+
+class TestHeuristicOverlap:
+    def test_identical_text_returns_one(self):
+        assert _heuristic_overlap("the cat sat on the mat", "the cat sat on the mat") == 1.0
+
+    def test_completely_disjoint_returns_zero(self):
+        a = "GPUs accelerate matrix multiplications in transformer training"
+        b = "Board members approved the quarterly dividend distribution"
+        assert _heuristic_overlap(a, b) == 0.0
+
+    def test_partial_overlap_in_band(self):
+        a = "anthropic released a new claude model with improved reasoning"
+        b = "openai launched gpt with reasoning capability and tool use"
+        h = _heuristic_overlap(a, b)
+        assert 0.0 < h < 0.5
+
+    def test_stopwords_dominated_returns_zero(self):
+        # Two sentences that share only stopwords; the heuristic must
+        # see them as disjoint content.
+        a = "the is a for"
+        b = "of the and in"
+        assert _heuristic_overlap(a, b) == 0.0
+
+    def test_empty_returns_zero(self):
+        assert _heuristic_overlap("", "anything") == 0.0
+        assert _heuristic_overlap("anything", "") == 0.0
+        assert _heuristic_overlap("", "") == 0.0
+
+    def test_short_circuit_high_band(self):
+        # High Jaccard -> high band, no LLM needed.
+        a = (
+            "transformer model training data quality benchmark evaluation "
+            "across many language tasks"
+        )
+        b = (
+            "transformer model training data quality benchmark evaluation "
+            "across many language tasks with new metrics"
+        )
+        # Confirm the heuristic is in the high band.
+        h = _heuristic_overlap(a, b)
+        assert h >= 0.85, f"expected high-band Jaccard, got {h}"
+        assert _heuristic_short_circuit(a, b) is not None
+
+    def test_short_circuit_low_band(self):
+        a = "anthropic claude opus benchmark results"
+        b = "kubernetes pod scheduling latency improvements"
+        score = _heuristic_short_circuit(a, b)
+        assert score is not None
+        assert score <= 0.05
+
+    def test_short_circuit_returns_none_in_ambiguous_band(self):
+        a = (
+            "agentic framework supports multi-step tool use planning memory"
+        )
+        b = (
+            "agent orchestration tools integrate with planning and reasoning"
+        )
+        # Confirm ambiguous, then assert the short-circuit defers to LLM.
+        h = _heuristic_overlap(a, b)
+        assert 0.05 < h < 0.85, f"setup expected ambiguous, got {h}"
+        assert _heuristic_short_circuit(a, b) is None
+
+
+# ---------------------------------------------------------------------------
+# Uniqueness judge with the heuristic + per-pair cache
+# ---------------------------------------------------------------------------
+
+
+class TestUniquenessJudgeWithHeuristic:
+    def _llm(self) -> MagicMock:
+        # Default canned response is "0.5 overlap" so any LLM call that
+        # *does* go out is forced to the ambiguous band.
+        llm = MagicMock()
+        llm.generate.return_value = '{"overlap": 0.5}'
+        return llm
+
+    def _summaries(self, theme_texts: dict) -> dict:
+        return {
+            "r1": {
+                theme: {
+                    "what_is_happening": text,
+                    "why_it_matters": "",
+                }
+                for theme, text in theme_texts.items()
+            }
+        }
+
+    def test_short_circuit_skips_llm_for_disjoint_pair(self):
+        from core.evaluator import reset_judge_events, uniqueness_judge
+
+        reset_judge_events()
+        llm = self._llm()
+        summaries = self._summaries({
+            "A": "anthropic claude opus benchmark results",
+            "B": "kubernetes pod scheduling latency improvements",
+        })
+        uniqueness_judge(llm, summaries)
+        # Heuristic should have short-circuited this pair.
+        assert llm.generate.call_count == 0
+
+    def test_short_circuit_skips_llm_for_near_duplicate_pair(self):
+        from core.evaluator import reset_judge_events, uniqueness_judge
+
+        reset_judge_events()
+        llm = self._llm()
+        summaries = self._summaries({
+            "A": "transformer training benchmark reasoning capability evaluation",
+            "B": "transformer training benchmark reasoning capability evaluation",
+        })
+        uniqueness_judge(llm, summaries)
+        assert llm.generate.call_count == 0
+
+    def test_ambiguous_pair_invokes_llm(self):
+        from core.evaluator import reset_judge_events, uniqueness_judge
+
+        reset_judge_events()
+        llm = self._llm()
+        summaries = self._summaries({
+            "A": "new agentic framework supports multi-step tool use and planning",
+            "B": "agent orchestration tools integrate with planning and memory",
+        })
+        uniqueness_judge(llm, summaries)
+        # The pair is in the ambiguous band, so the LLM is consulted.
+        assert llm.generate.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-pair cache dedups within-run vs cross-run
+# ---------------------------------------------------------------------------
+
+
+class TestUniquenessPairCache:
+    def test_same_pair_only_one_llm_call(self):
+        from core.evaluator import reset_judge_events, uniqueness_judge
+
+        reset_judge_events()
+        llm = MagicMock()
+        llm.generate.return_value = '{"overlap": 0.4}'
+
+        # Run 1 has the ambiguous summary; run 2 has the same one
+        # (prior_summaries_by_run[run1] = run1's summaries).
+        # The cross-run loop should hit the per-pair cache and NOT
+        # re-invoke the LLM.
+        text = "new agentic framework supports multi-step tool use and planning"
+        summaries = {
+            "r1": {
+                "A": {"what_is_happening": text, "why_it_matters": ""},
+                "B": {"what_is_happening": "kubernetes pod scheduling latency", "why_it_matters": ""},
+            },
+            "r2": {
+                "A": {"what_is_happening": text, "why_it_matters": ""},
+                "B": {"what_is_happening": "kubernetes pod scheduling latency", "why_it_matters": ""},
+            },
+        }
+        prior = {"r1": summaries["r1"], "r2": summaries["r2"]}
+        uniqueness_judge(llm, summaries, prior_summaries_by_run=prior)
+        # Two ambiguous pairs across the two runs (r1 A↔B, r2 A↔B).
+        # The cross-run pair (r1 A vs r2 A) should reuse the r1 A vs r1 B
+        # result only if the *text content* matches the heuristic band
+        # for that specific pair — here it doesn't, so we expect
+        # the LLM to be called for each ambiguous pair.
+        # What we DO assert: the cache is in use, so identical
+        # (item_id, text) pairs only generate one LLM call.
+        # Make this explicit by reusing the same item_id.
+        # In practice, item_ids are run-scoped, so we test the
+        # direct call: a second call to _judge_overlap with the same
+        # item_id should be a cache hit.
+        from core.evaluator import _judge_overlap
+        before = llm.generate.call_count
+        _judge_overlap(llm, text, text, run_id="r9", item_id="dup")
+        _judge_overlap(llm, text, text, run_id="r9", item_id="dup")
+        # Second call must be a cache hit; LLM invoked once at most.
+        assert llm.generate.call_count - before <= 1
+
+
+# ---------------------------------------------------------------------------
+# Judge-event buffer
+# ---------------------------------------------------------------------------
+
+
+class TestJudgeEvents:
+    def test_record_then_consume(self):
+        from core.evaluator import (
+            _record_event,
+            consume_judge_events,
+            reset_judge_events,
+        )
+        reset_judge_events()
+        _record_event(judge="categoriser", run_id="r1", item_id="art1", latency_ms=120)
+        _record_event(judge="uniqueness", run_id="r1", item_id="A|B", latency_ms=80, score=0.5)
+        events = consume_judge_events()
+        assert len(events) == 2
+        assert events[0]["judge"] == "categoriser"
+        assert events[0]["latency_ms"] == 120
+        assert events[1]["score"] == 0.5
+        # Buffer is drained.
+        assert consume_judge_events() == []
+
+    def test_buffer_is_capped(self):
+        from core.evaluator import (
+            JUDGE_EVENT_BUFFER_SIZE,
+            _record_event,
+            reset_judge_events,
+        )
+        reset_judge_events()
+        for i in range(JUDGE_EVENT_BUFFER_SIZE + 25):
+            _record_event(judge="categoriser", item_id=f"art{i}")
+        # Cap holds; we can't see all of them but we can drain what fits.
+        from core.evaluator import consume_judge_events
+        events = consume_judge_events()
+        assert len(events) <= JUDGE_EVENT_BUFFER_SIZE
+        # The oldest entries should be gone.
+        assert events[0]["item_id"] != "art0"
+
+

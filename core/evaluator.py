@@ -27,10 +27,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Deque, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -44,6 +46,89 @@ from core.llm_client import LLMClient, LLMClientError
 from core.quality_schema import insert_quality_evaluation
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Judge event buffer (consumed by the Streamlit progress panel)
+# ---------------------------------------------------------------------------
+# A small in-process ring buffer of recent judge activity.  Each entry is
+# a dict with the keys documented on ``_record_event``.  The Quality
+# Evaluation page polls ``consume_judge_events()`` to render a live
+# progress table; the buffer is thread-safe for a single producer (each
+# judge thread appends) and a single consumer (the Streamlit page).
+
+JUDGE_EVENT_BUFFER_SIZE = 200
+_judge_events: Deque[Dict] = deque(maxlen=JUDGE_EVENT_BUFFER_SIZE)
+# Optional override: tests can swap this for a different deque.
+_judge_event_buffer: Deque[Dict] = _judge_events
+
+# Per-(a, b) cache of overlap results within a single evaluation run.
+# Keyed by the sorted concatenation of theme names so within-run and
+# cross-run pairs dedup against each other.  Lives only for the duration
+# of one ``uniqueness_judge`` invocation.
+_uniqueness_pair_cache: Dict[str, float] = {}
+
+
+def _record_event(
+    judge: str,
+    run_id: str = "",
+    item_id: str = "",
+    latency_ms: int = 0,
+    parse_ok: bool = True,
+    score: Optional[float] = None,
+) -> None:
+    """Append one row to the judge-event ring buffer.  The Streamlit
+    page reads this via ``consume_judge_events()`` to render a live
+    progress panel.
+    """
+    try:
+        _judge_event_buffer.append({
+            "ts": time.time(),
+            "judge": judge,
+            "run_id": run_id or "",
+            "item_id": item_id or "",
+            "latency_ms": int(latency_ms),
+            "parse_ok": bool(parse_ok),
+            "score": score,
+        })
+    except Exception:  # noqa: BLE001
+        # Never let observability break a judge.
+        pass
+
+
+def consume_judge_events() -> List[Dict]:
+    """Return and clear the judge-event buffer.  The Streamlit progress
+    panel calls this on each tick to drain new events.
+    """
+    out = list(_judge_event_buffer)
+    _judge_event_buffer.clear()
+    return out
+
+
+def reset_judge_events() -> None:
+    """Hard-reset the buffer.  Useful in tests."""
+    _judge_event_buffer.clear()
+    _uniqueness_pair_cache.clear()
+
+
+def _event_sink_for_run(run_id: str) -> Callable[[int, bool, str], None]:
+    """Return an LLMClient event-sink that records latency and parse
+    outcome against the most recent ``_record_event`` for ``run_id``.
+    The judge helpers call ``_record_event`` with the result and the
+    event sink adds the latency.
+    """
+    last_ts = [0.0]
+
+    def _sink(latency_ms: int, ok: bool, error_msg: str) -> None:
+        _record_event(
+            judge="llm_attempt",
+            run_id=run_id,
+            item_id=error_msg[:80] if not ok else "ok",
+            latency_ms=latency_ms,
+            parse_ok=ok,
+            score=None,
+        )
+        last_ts[0] = latency_ms
+    return _sink
 
 # ---------------------------------------------------------------------------
 # Public dataclass
@@ -249,6 +334,76 @@ def _match_theme(predicted: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Heuristic overlap (deterministic pre-filter for uniqueness)
+# ---------------------------------------------------------------------------
+
+# A small stopword set keeps the Jaccard score focused on content words
+# rather than the boilerplate every AI-Pulse summary shares ("the", "is",
+# "for", "and", etc.).  The set is intentionally compact — too many
+# stopwords collapses the metric and makes the heuristic useless.
+_HEURISTIC_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+    "has", "have", "in", "is", "it", "its", "of", "on", "or", "that",
+    "the", "this", "to", "was", "were", "will", "with", "we", "our",
+    "you", "your", "they", "their", "ai", "ml", "model", "models",
+    "using", "use", "new", "key", "into", "over", "more", "most",
+    "such", "also", "than", "while", "these", "those", "some", "any",
+})
+
+# Heuristic band: below this we trust Jaccard, above we trust Jaccard,
+# in between we delegate to the LLM.  Tuned so the LLM is only called
+# when the heuristic is genuinely uncertain (0.05 < j < 0.85).
+_HEURISTIC_LOW = 0.05
+_HEURISTIC_HIGH = 0.85
+
+# Cap on text length fed into the heuristic.  AI-Pulse summaries are
+# typically a few hundred words; capping at 4000 chars per side keeps
+# the tokenisation O(few-K) and prevents any pair from blowing up the
+# judge wall-clock.
+_HEURISTIC_MAX_CHARS = 4000
+
+_TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
+
+
+def _heuristic_tokens(text: str) -> set:
+    """Lowercase alphanumeric tokens of length >= 2, minus stopwords."""
+    if not text:
+        return set()
+    text = text[:_HEURISTIC_MAX_CHARS].lower()
+    return {t for t in _TOKEN_RE.findall(text) if t not in _HEURISTIC_STOPWORDS}
+
+
+def _heuristic_overlap(a: str, b: str) -> float:
+    """Jaccard similarity over content tokens.  Returns a float in
+    ``[0.0, 1.0]``.  ``0.0`` is returned for either side being empty
+    (after stopword filtering) so that empty summaries don't get
+    conflated with truly-disjoint content.
+    """
+    ta = _heuristic_tokens(a)
+    tb = _heuristic_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
+def _heuristic_short_circuit(a: str, b: str) -> Optional[float]:
+    """Return a non-None overlap score if the heuristic can stand in
+    for the LLM (i.e. the pair is in the very-low or very-high
+    Jaccard band).  Return ``None`` if the pair needs an LLM call.
+    """
+    if a == b:
+        return 1.0
+    if not (a and a.strip()) or not (b and b.strip()):
+        return 0.0
+    h = _heuristic_overlap(a, b)
+    if h <= _HEURISTIC_LOW or h >= _HEURISTIC_HIGH:
+        return h
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Judge 1: Categoriser
 # ---------------------------------------------------------------------------
 
@@ -273,6 +428,9 @@ Summary: {summary}
 
 def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, str]:
     """Classify a single article via the LLM.  Returns (correct, predicted_name)."""
+    run_id = article.get("run_id", "")
+    article_id = str(article.get("id", ""))
+    t0 = time.monotonic()
     try:
         response = llm.generate(
             CATEGORISER_PROMPT.format(
@@ -281,9 +439,19 @@ def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, s
             ),
             temperature=0.1,
             max_tokens=60,
+            event_sink=_event_sink_for_run(run_id),
         ).strip()
+        latency_ms = int((time.monotonic() - t0) * 1000)
     except LLMClientError as exc:
         logger.warning("Categoriser judge LLM error: %s", exc)
+        _record_event(
+            judge="categoriser",
+            run_id=run_id,
+            item_id=article_id,
+            latency_ms=0,
+            parse_ok=False,
+            score=0.0,
+        )
         return (False, "")
 
     predicted = _match_theme(response)
@@ -300,6 +468,14 @@ def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, s
                 (response or "")[:200],
             )
     correct = bool(predicted and predicted == article.get("theme_name"))
+    _record_event(
+        judge="categoriser",
+        run_id=run_id,
+        item_id=article_id,
+        latency_ms=latency_ms,
+        parse_ok=bool(predicted),
+        score=1.0 if correct else 0.0,
+    )
     return (correct, predicted or "")
 
 
@@ -399,18 +575,43 @@ def _judge_faithfulness_one(
     llm: LLMClient,
     summary_text: str,
     articles: List[Dict],
+    run_id: str = "",
+    item_id: str = "",
 ) -> float:
     if not summary_text or not summary_text.strip():
         # Empty summaries are perfectly faithful (no claims made).
+        _record_event(
+            judge="faithfulness",
+            run_id=run_id,
+            item_id=item_id,
+            latency_ms=0,
+            parse_ok=True,
+            score=1.0,
+        )
         return 1.0
     prompt = FAITHFULNESS_PROMPT.format(
         summary=summary_text[:2000],
         articles=_format_articles_for_judge(articles),
     )
+    t0 = time.monotonic()
     try:
-        resp = llm.generate(prompt, temperature=0.1, max_tokens=300)
+        resp = llm.generate(
+            prompt,
+            temperature=0.1,
+            max_tokens=300,
+            event_sink=_event_sink_for_run(run_id),
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
     except LLMClientError as exc:
         logger.warning("Faithfulness judge LLM error: %s", exc)
+        _record_event(
+            judge="faithfulness",
+            run_id=run_id,
+            item_id=item_id,
+            latency_ms=0,
+            parse_ok=False,
+            score=0.0,
+        )
         return 0.0
     parsed = _extract_json(resp)
     score = _coerce_score(parsed)
@@ -420,7 +621,23 @@ def _judge_faithfulness_one(
             "Faithfulness judge: no parseable score in response: %r",
             (resp or "")[:300],
         )
+        _record_event(
+            judge="faithfulness",
+            run_id=run_id,
+            item_id=item_id,
+            latency_ms=latency_ms,
+            parse_ok=False,
+            score=0.0,
+        )
         return 0.0
+    _record_event(
+        judge="faithfulness",
+        run_id=run_id,
+        item_id=item_id,
+        latency_ms=latency_ms,
+        parse_ok=True,
+        score=score,
+    )
     return score
 
 
@@ -447,7 +664,10 @@ def faithfulness_judge(
             s = summaries[theme]
             for section in sections_to_judge:
                 text = s.get(section, "")
-                score = _judge_faithfulness_one(llm, text, articles)
+                score = _judge_faithfulness_one(
+                    llm, text, articles,
+                    run_id=run_id, item_id=f"{theme}|{section}",
+                )
                 scores.append(score)
                 run_scores.append(score)
         raw_per_run[run_id] = {"scores": run_scores}
@@ -485,19 +705,63 @@ def _summaries_to_text(summaries: Dict[str, Dict], theme: str) -> str:
     ).strip() or "(empty)"
 
 
-def _judge_overlap(llm: LLMClient, a: str, b: str) -> float:
-    if a == b:
-        return 1.0
-    if not a.strip() or not b.strip():
-        return 0.0
+def _judge_overlap(
+    llm: LLMClient,
+    a: str,
+    b: str,
+    run_id: str = "",
+    item_id: str = "",
+) -> float:
+    """Return overlap for a single (a, b) pair, using a deterministic
+    short-circuit when the heuristic is confident, and a per-evaluation
+    cache so the same pair is only sent to the LLM once even if it
+    appears in both the within-run and cross-run loops.
+    """
+    cache_key = item_id or f"{hash((a, b)) & 0xFFFFFFFF:08x}"
+    if cache_key in _uniqueness_pair_cache:
+        cached = _uniqueness_pair_cache[cache_key]
+        _record_event(
+            judge="uniqueness",
+            run_id=run_id,
+            item_id=item_id or cache_key,
+            latency_ms=0,
+            parse_ok=True,
+            score=cached,
+        )
+        return cached
+
+    heuristic = _heuristic_short_circuit(a, b)
+    if heuristic is not None:
+        _uniqueness_pair_cache[cache_key] = heuristic
+        _record_event(
+            judge="uniqueness",
+            run_id=run_id,
+            item_id=item_id or cache_key,
+            latency_ms=0,
+            parse_ok=True,
+            score=heuristic,
+        )
+        return heuristic
+
     try:
+        t0 = time.monotonic()
         resp = llm.generate(
             OVERLAP_PROMPT.format(a=a[:1500], b=b[:1500]),
             temperature=0.1,
             max_tokens=80,
+            event_sink=_event_sink_for_run(run_id),
         )
+        latency_ms = int((time.monotonic() - t0) * 1000)
     except LLMClientError as exc:
         logger.warning("Uniqueness judge LLM error: %s", exc)
+        _record_event(
+            judge="uniqueness",
+            run_id=run_id,
+            item_id=item_id or cache_key,
+            latency_ms=0,
+            parse_ok=False,
+            score=0.0,
+        )
         return 0.0
     parsed = _extract_json(resp)
     overlap = _coerce_score({"score": parsed.get("overlap") if parsed else None}) \
@@ -510,7 +774,24 @@ def _judge_overlap(llm: LLMClient, a: str, b: str) -> float:
             "Uniqueness judge: no parseable overlap in response: %r",
             (resp or "")[:200],
         )
+        _record_event(
+            judge="uniqueness",
+            run_id=run_id,
+            item_id=item_id or cache_key,
+            latency_ms=latency_ms,
+            parse_ok=False,
+            score=0.0,
+        )
         return 0.0
+    _uniqueness_pair_cache[cache_key] = overlap
+    _record_event(
+        judge="uniqueness",
+        run_id=run_id,
+        item_id=item_id or cache_key,
+        latency_ms=latency_ms,
+        parse_ok=True,
+        score=overlap,
+    )
     return overlap
 
 
@@ -521,8 +802,13 @@ def uniqueness_judge(
 ) -> Tuple[float, Dict]:
     """Score uniqueness across (a) within-run theme pairs and
     (b) cross-run same-theme pairs if `prior_summaries_by_run` is provided.
+
+    The within-run and cross-run loops share a single per-evaluation
+    cache (``_uniqueness_pair_cache``) so a pair that appears in both
+    loops only triggers one LLM call.
     """
     overlaps: List[float] = []
+    _uniqueness_pair_cache.clear()
 
     # (a) Within-run pairwise overlap
     for run_id, summaries in summaries_by_run.items():
@@ -531,7 +817,8 @@ def uniqueness_judge(
             for j in range(i + 1, len(themes)):
                 a = _summaries_to_text(summaries, themes[i])
                 b = _summaries_to_text(summaries, themes[j])
-                overlaps.append(_judge_overlap(llm, a, b))
+                item_id = f"within|{run_id}|{themes[i]}|{themes[j]}"
+                overlaps.append(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id))
 
     # (b) Cross-run same-theme overlap
     if prior_summaries_by_run:
@@ -544,7 +831,8 @@ def uniqueness_judge(
                     continue
                 a = _summaries_to_text(summaries, theme)
                 b = _summaries_to_text(prior, theme)
-                overlaps.append(_judge_overlap(llm, a, b))
+                item_id = f"cross|{run_id}|{theme}"
+                overlaps.append(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id))
 
     mean_overlap = _safe_mean(overlaps)
     uniqueness = 1.0 - mean_overlap

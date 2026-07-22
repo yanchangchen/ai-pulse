@@ -6,7 +6,7 @@ exponential-backoff retries and structured error handling.
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -19,6 +19,9 @@ logger = setup_logger(__name__)
 # Retry configuration
 MAX_RETRIES = 2
 INITIAL_BACKOFF_SECONDS = 2.0
+
+# Optional event-sink signature: (latency_ms: int, ok: bool, error_msg: str)
+LLMEventSink = Callable[[int, bool, str], None]
 
 
 class LLMClientError(Exception):
@@ -60,11 +63,17 @@ class LLMClient:
         system: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 1500,
+        event_sink: Optional[LLMEventSink] = None,
     ) -> str:
         """Send a generation request with automatic retries.
 
         Returns the model's text response.
         Raises LLMClientError if call fails or returns empty content.
+
+        ``event_sink`` (optional) is invoked once per HTTP attempt with
+        ``(latency_ms, ok, error_msg)``.  When omitted the client behaves
+        identically to its previous release; production callers don't
+        need to pass anything.
         """
         payload = {
             "model": self.model,
@@ -86,6 +95,7 @@ class LLMClient:
             # out of a stuck/degenerate decoder state that produced an empty
             # body.  Other settings stay the same.
             payload["options"]["temperature"] = 0.5 if attempt == 2 else temperature
+            t0 = time.monotonic()
             try:
                 resp = requests.post(
                     f"{self.base_url}/api/generate",
@@ -93,9 +103,12 @@ class LLMClient:
                     headers=headers,
                     timeout=120,
                 )
+                latency_ms = int((time.monotonic() - t0) * 1000)
                 if resp.status_code == 200:
                     result = resp.json().get("response", "").strip()
                     if result:
+                        if event_sink is not None:
+                            event_sink(latency_ms, True, "")
                         return result
                     else:
                         last_error = LLMClientError("Ollama returned an empty response.")
@@ -103,7 +116,9 @@ class LLMClient:
                     last_error = LLMClientError(
                         f"HTTP {resp.status_code}: {resp.text[:200]}"
                     )
-                
+
+                if event_sink is not None:
+                    event_sink(latency_ms, False, str(last_error))
                 logger.warning(
                     "Ollama API issue: %s (attempt %d/%d)",
                     last_error,
@@ -111,7 +126,10 @@ class LLMClient:
                     MAX_RETRIES,
                 )
             except requests.RequestException as exc:
+                latency_ms = int((time.monotonic() - t0) * 1000)
                 last_error = exc
+                if event_sink is not None:
+                    event_sink(latency_ms, False, str(exc))
                 logger.warning(
                     "Ollama request failed (attempt %d/%d): %s",
                     attempt,

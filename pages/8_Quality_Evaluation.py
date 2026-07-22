@@ -6,17 +6,24 @@ produced by three concurrent LLM judge agents in core/evaluator.py.
 
 from __future__ import annotations
 
+import threading
+import time
+from datetime import datetime
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime
 
 from config.settings import QUALITY_THRESHOLD
 from config.themes import THEME_ORDER
 from core.supabase_client import get_supabase_manager
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
+from core.evaluator import (
+    consume_judge_events,
+    reset_judge_events,
+)
 
 st.set_page_config(page_title="Quality Evaluation - AI Pulse", page_icon="🔬", layout="wide")
 
@@ -105,45 +112,139 @@ run_now = st.button(
 )
 
 if run_now:
-    progress = st.progress(0.0, text="Starting judges…")
-    status = st.empty()
+    # ------------------------------------------------------------------
+    # Live progress panel for the running evaluation
+    # ------------------------------------------------------------------
+    # The three judges run in their own ThreadPoolExecutor inside
+    # ``run_weekly_evaluation``.  We start that call in a daemon thread so
+    # the Streamlit main thread can keep rendering.  A short poll loop
+    # below drains ``consume_judge_events()`` every ~500 ms and updates
+    # the per-judge sub-status, the running totals, and the live events
+    # dataframe.  This is the only place where the page is allowed to
+    # block — every other section is gated by ``st.session_state`` so
+    # subsequent reruns pick up where we left off.
+    reset_judge_events()
+    progress_state = st.session_state.setdefault("eval_progress", {
+        "running": False,
+        "error": None,
+        "report": None,
+        "events": [],
+    })
+    progress_state.update({"running": True, "error": None, "report": None, "events": []})
 
-    def _tick(pct: float, msg: str) -> None:
-        progress.progress(pct, text=msg)
-        status.info(msg)
+    from core.evaluator import run_weekly_evaluation
 
-    try:
-        _tick(0.10, "Loading recent runs from Supabase…")
-        from core.evaluator import run_weekly_evaluation
+    def _run_eval() -> None:
+        try:
+            report = run_weekly_evaluation(
+                supabase=supabase,
+                lookback_days=lookback_days,
+                threshold=threshold,
+            )
+            progress_state["report"] = report
+            progress_state["error"] = None
+        except Exception as exc:  # noqa: BLE001
+            progress_state["error"] = str(exc)
+        finally:
+            progress_state["running"] = False
 
-        # Run the evaluation; the three judges inside run in their own thread
-        # pool so the Streamlit thread stays responsive.  We just show
-        # coarse progress markers.
-        _tick(0.25, "Running 3 LLM judges in parallel (this takes a few minutes)…")
-        report = run_weekly_evaluation(
-            supabase=supabase,
-            lookback_days=lookback_days,
-            threshold=threshold,
-        )
-        _tick(1.0, "Done.  Reloading history…")
-        # Invalidate the history cache so the new row appears immediately.
-        _cached_history.clear()
-        st.success(
-            f"✅ Evaluation complete — classifier {report.classifier_score:.0%}, "
-            f"faithfulness {report.faithfulness_score:.0%}, "
-            f"uniqueness {report.uniqueness_score:.0%}."
-        )
-        # Show recommendations inline.
+    eval_thread = threading.Thread(target=_run_eval, name="quality-eval-page", daemon=True)
+    eval_thread.start()
+
+    panel = st.container()
+    with panel:
+        st.markdown("#### 🔍 Live Judge Progress")
+        col_cat, col_faith, col_uniq = st.columns(3)
+        cat_box = col_cat.empty()
+        faith_box = col_faith.empty()
+        uniq_box = col_uniq.empty()
+        table_placeholder = st.empty()
+        summary_placeholder = st.empty()
+        st.caption("Auto-refreshing every ~500 ms while judges run.")
+
+    # Poll loop.  Streamlit lets a script run for a few minutes here as
+    # long as it yields via time.sleep.  We cap the loop at 10 minutes
+    # so a hung LLM can't pin the page forever.
+    loop_deadline = time.monotonic() + 600
+    last_render = 0.0
+    while progress_state["running"] and time.monotonic() < loop_deadline:
+        events = consume_judge_events()
+        if events:
+            progress_state["events"].extend(events)
+            # Keep only the most recent 200 in session to bound memory.
+            progress_state["events"] = progress_state["events"][-200:]
+
+        now = time.monotonic()
+        if now - last_render >= 0.4:
+            last_render = now
+            evs = progress_state["events"]
+            # Per-judge counts
+            cat_events = [e for e in evs if e["judge"] == "categoriser"]
+            faith_events = [e for e in evs if e["judge"] == "faithfulness"]
+            uniq_events = [e for e in evs if e["judge"] == "uniqueness"]
+
+            def _render_judge(box, name: str, items: list, score_attr: str = "score") -> None:
+                done = len(items)
+                ok = sum(1 for i in items if i.get("parse_ok"))
+                scores = [i["score"] for i in items if i.get("score") is not None]
+                mean_s = sum(scores) / len(scores) if scores else 0.0
+                lat = [i["latency_ms"] for i in items if i.get("latency_ms")]
+                mean_lat = sum(lat) / len(lat) if lat else 0
+                with box.container():
+                    st.metric(name, f"{done} done", delta=f"ok {ok}/{done}")
+                    st.progress(min(1.0, done / max(1, 20)))
+                    st.caption(
+                        f"mean score {mean_s:.2f} • mean latency {int(mean_lat)} ms"
+                    )
+
+            _render_judge(cat_box, "Categoriser", cat_events)
+            _render_judge(faith_box, "Faithfulness", faith_events)
+            _render_judge(uniq_box, "Uniqueness", uniq_events)
+
+            recent = evs[-50:]
+            if recent:
+                df = pd.DataFrame(recent)
+                df["ts"] = pd.to_datetime(df["ts"], unit="s").dt.strftime("%H:%M:%S")
+                df = df[["ts", "judge", "run_id", "item_id", "latency_ms", "parse_ok", "score"]]
+                table_placeholder.dataframe(df, hide_index=True, width="stretch")
+        time.sleep(0.25)
+
+    # Final drain of any events that arrived between the last render and
+    # the worker finishing.
+    final_events = consume_judge_events()
+    if final_events:
+        progress_state["events"].extend(final_events)
+        progress_state["events"] = progress_state["events"][-200:]
+
+    eval_thread.join(timeout=2.0)
+
+    if progress_state["error"]:
+        st.error(f"❌ Evaluation failed: {progress_state['error']}")
+    else:
+        report = progress_state["report"]
+        with summary_placeholder.container():
+            evs = progress_state["events"]
+            llm_calls = sum(1 for e in evs if e["judge"] != "uniqueness" or e.get("latency_ms", 0) > 0)
+            parse_fail = sum(1 for e in evs if not e.get("parse_ok"))
+            latencies = [e["latency_ms"] for e in evs if e.get("latency_ms", 0) > 0]
+            mean_lat = int(sum(latencies) / len(latencies)) if latencies else 0
+            st.success(
+                f"✅ Evaluation complete — classifier {report.classifier_score:.0%}, "
+                f"faithfulness {report.faithfulness_score:.0%}, "
+                f"uniqueness {report.uniqueness_score:.0%}."
+            )
+            st.caption(
+                f"Judge events: {len(evs)} • LLM calls: ~{llm_calls} • "
+                f"parse failures: {parse_fail} • mean latency: {mean_lat} ms"
+            )
         if report.recommendations:
             for rec in report.recommendations:
                 if rec.startswith("⚠️"):
                     st.warning(rec)
                 else:
                     st.success(rec)
-    except Exception as exc:  # noqa: BLE001
-        progress.empty()
-        status.empty()
-        st.error(f"❌ Evaluation failed: {exc}")
+        # Invalidate the history cache so the new row appears immediately.
+        _cached_history.clear()
 
 # ---------------------------------------------------------------------------
 # Latest scores
