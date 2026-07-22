@@ -33,6 +33,10 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 │  │  Trend Analytics │ │       Emerging Trends                │ │
 │  │  (cross-run)     │ │  (novelty / acceleration / timeline)  │ │
 │  └──────────────────┘ └──────────────────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  Quality Evaluation (8) — LLM-as-judge, weekly cadence,    │ │
+│  │  live progress panel, Supabase-backed                      │ │
+│  └────────────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
 │  Core Intelligence Layer                                         │
 │  • Fetcher       (concurrent RSS + web scraping)                 │
@@ -41,12 +45,14 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 │  • History Mgr   (JSON + Markdown + Supabase persistence)        │
 │  • Cache         (st.cache_data 6h TTL + .cache/ disk JSON)      │
 │  • BG Refresher  (daemon thread, non-blocking pipeline)          │
-│  • Shared Sidebar (consistency across all 7 pages)               │
+│  • Shared Sidebar (consistency across all 8 pages)               │
 │  • LLM Client    (Ollama Cloud, exponential-backoff retries)     │
+│  • Evaluator     (3 concurrent LLM-as-judge pools; weekly run)   │
+│  • Quality Schema (Supabase table for evaluator results)         │
 ├─────────────────────────────────────────────────────────────────┤
 │  Configuration Layer                                             │
 │  • config/settings.py   (Ollama endpoint, model, lookback, TTL)  │
-│  • config/themes.py     (5 weighted-keyword theme dicts)         │
+│  • config/themes.py     (7 weighted-keyword theme dicts)         │
 │  • config/sources.py    (RSS feeds + web-scrape registry)        │
 │  • config/Appendix_*.md (experts, blogs, papers watchlists)      │
 │  • watch.md             (user's keyword / engineering blog list) │
@@ -96,6 +102,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 | 5 | Memory Wiki | Browse past runs and per-theme summary history |
 | 6 | Trend Analytics | Cross-run momentum heatmap, keyword velocity, hype-vs-engineering index, theme drilldown |
 | 7 | Emerging Trends | Emergence timeline, acceleration index, novelty score, novel articles from the last 7 days |
+| 8 | Quality Evaluation | Weekly automated LLM-as-judge scoring (categoriser, faithfulness, uniqueness) with a live progress panel; results persist to Supabase |
 
 All pages share a sidebar nav (`core/shared_sidebar.py`) and live background-status panel.
 
@@ -116,7 +123,9 @@ The classifier tries `keyword_classify()` first, then batches unmatched articles
 ## 🧪 Tests
 
 ```bash
-pytest tests/                                  # main test suite (fetcher, classifier, summariser, visualiser)
+pytest tests/                                  # main test suite (fetcher, classifier, summariser, visualiser, evaluator)
+                                               # picks up shared fixtures in tests/conftest.py (CannedLLM, clean_judge_events, integration marker)
+pytest -m integration tests/                   # opt-in: exercises the real LLM and Supabase wiring
 python test_supabase.py                        # Supabase connection + write/read smoke test
 python test_backfill.py                        # history.json → Supabase backfill
 python test_deduplication.py                   # UPSERT dedup of (content_hash, theme_name)
@@ -134,31 +143,46 @@ python test_llm_optimization.py                # skip-summarise-when-unchanged l
 ```
 ai-pulse/
 ├── app.py                       # Streamlit entry point + sidebar + ingestion state machine
-├── pages/                       # 7 Streamlit pages (Home, Overview … Emerging Trends)
+├── pages/                       # 8 Streamlit pages (Home, Overview … Quality Evaluation)
 ├── core/
 │   ├── fetcher.py               # Concurrent RSS + BeautifulSoup web scraping
 │   ├── classifier.py            # Weighted keywords + batched LLM classification
 │   ├── summariser.py            # LLM summarisation with memory-injection
 │   ├── visualiser.py            # Word cloud generation
+│   ├── evaluator.py             # LLM-as-judge quality evaluation pipeline
+│   ├── weekly_evaluator.py      # Weekly cadence helper for the evaluator
+│   ├── quality_schema.py        # Supabase schema for quality_evaluations table
 │   ├── history_manager.py       # JSON / Markdown / Supabase persistence
 │   ├── cache.py                 # st.cache_data + disk cache + content hashing
 │   ├── bg_refresher.py          # BackgroundRefresher thread (singleton)
-│   ├── llm_client.py            # Ollama Cloud wrapper (retries, auth)
+│   ├── llm_client.py            # Ollama Cloud wrapper (retries, auth, opt-in event_sink)
 │   ├── shared_sidebar.py        # Consistent nav + status across pages
 │   ├── supabase_client.py       # All DB ops, graceful degradation
 │   ├── supabase_ui.py           # Sidebar sync status widget
 │   └── logger.py                # Centralised logging setup
 ├── config/
 │   ├── settings.py              # Days lookback, cache TTL, fetch workers
-│   ├── themes.py                # 5 themes with weighted keywords
+│   ├── themes.py                # 7 themes with weighted keywords
 │   ├── sources.py               # RSS feeds + web-scrape registry
 │   └── Appendix_*.md            # Watchlists: experts, blogs, papers
-├── tests/                       # pytest suite (fetcher/classifier/summariser/visualiser)
+├── tests/                       # pytest suite (fetcher/classifier/summariser/visualiser/evaluator)
+│   ├── conftest.py              # Shared fixtures: CannedLLM, llm_table, clean_judge_events, integration marker
+│   ├── test_fetcher.py
+│   ├── test_classifier.py
+│   ├── test_summariser.py
+│   ├── test_visualiser.py
+│   └── test_evaluator.py
+├── test_backfill.py             # Standalone: history.json → Supabase backfill smoke test
+├── test_deduplication.py        # Standalone: UPSERT dedup of (content_hash, theme_name)
+├── test_llm_optimization.py     # Standalone: skip-summarise-when-unchanged logic
+├── test_supabase.py             # Standalone: Supabase connection + write/read smoke test
 ├── .streamlit/                  # secrets.toml.example
 ├── supabase_schema.sql          # 4 tables, RLS, indexes
 ├── supabase_migration_dedup.sql # Adds (content_hash, theme_name) unique constraint
 ├── SUPABASE_SETUP_GUIDE.md
 ├── SUPABASE_INTEGRATION_README.md
+├── watch.md                     # User's keyword / engineering blog list
+├── memory.md                    # Human-readable run wiki
 ├── CLAUDE.md
 └── requirements.txt
 ```
