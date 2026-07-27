@@ -102,7 +102,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 | 5 | Memory Wiki | Browse past runs and per-theme summary history |
 | 6 | Trend Analytics | Cross-run momentum heatmap, keyword velocity, hype-vs-engineering index, theme drilldown |
 | 7 | Emerging Trends | Emergence timeline, acceleration index, novelty score, novel articles from the last 7 days |
-| 8 | Quality Evaluation | Weekly automated LLM-as-judge scoring (categoriser, faithfulness, uniqueness) with a live progress panel; results persist to Supabase |
+| 8 | Quality Evaluation | Weekly automated LLM-as-judge scoring (categoriser, faithfulness, uniqueness) with a live progress panel; results persist to Supabase. Also surfaces **keyword + watchlist suggestions** (with copy-to-clipboard snippets for `config/themes.py` and `watch.md`). |
 
 All pages share a sidebar nav (`core/shared_sidebar.py`) and live background-status panel.
 
@@ -119,6 +119,17 @@ Defined in `config/themes.py` with **weighted keywords** (1–3 — higher weigh
 7. **AI-Assisted Software Engineering** — Cursor, Claude Code, Copilot, AI code review, agentic SDLC, spec-driven development, AI-generated tests, dev velocity.
 
 The classifier tries `keyword_classify()` first, then batches unmatched articles to the LLM in groups of 20 (JSON-formatted), then a final `find_closest_theme()` relaxed match.
+
+### 🎯 Keyword & watchlist suggestions
+
+The Quality Evaluation page (`pages/8_Quality_Evaluation.py`) automatically generates two extra lists at the end of every run:
+
+- **Theme keyword suggestions** — for each theme whose classifier score falls below the threshold, the LLM is asked which 3–10 weighted keywords are missing. Suggestions are deduped against the existing entries in `config/themes.py` and rendered with a copy-pasteable `THEMES["…"]["keywords"].update(...)` snippet.
+- **Watchlist term suggestions** — the LLM is asked which 5–15 high-signal terms are missing from `watch.md`. Suggestions are deduped against the parsed `## 1. SEARCH KEYWORDS` table and rendered as a CSV row ready to paste.
+
+Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_migration_keywords.sql` once to create it). When the table is missing the suggestions still render in the page; they just won't be saved across runs.
+
+Set `LLM_DEBUG=1` in `.env` to dump the prompt and raw response body for every empty/failed LLM call — useful when Ollama Cloud is returning empty responses and the judges can't recover.
 
 ## 🧪 Tests
 
@@ -179,6 +190,7 @@ ai-pulse/
 ├── .streamlit/                  # secrets.toml.example
 ├── supabase_schema.sql          # 4 tables, RLS, indexes
 ├── supabase_migration_dedup.sql # Adds (content_hash, theme_name) unique constraint
+├── supabase_migration_keywords.sql # Adds keyword_suggestions table (used by Quality Evaluation)
 ├── SUPABASE_SETUP_GUIDE.md
 ├── SUPABASE_INTEGRATION_README.md
 ├── watch.md                     # User's keyword / engineering blog list

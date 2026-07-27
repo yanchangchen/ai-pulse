@@ -28,6 +28,52 @@ from core.evaluator import (
 
 st.set_page_config(page_title="Quality Evaluation - AI Pulse", page_icon="🔬", layout="wide")
 
+
+# ---------------------------------------------------------------------------
+# Copy-to-clipboard formatters
+# ---------------------------------------------------------------------------
+
+def _format_theme_suggestion_for_file(theme: str, items: list) -> str:
+    """Format suggested keywords as a Python dict snippet ready to paste
+    into ``config/themes.py`` under the ``THEMES`` definition.
+
+    Example output::
+
+        # THEMES["AI Applications & Architecture"] additions
+        THEMES["AI Applications & Architecture"]["keywords"].update({
+            "prompt injection": 3,
+            "agentic mesh": 2,
+            "vector index": 1,
+        })
+    """
+    lines = [f'# THEMES["{theme}"] additions',
+             f'THEMES["{theme}"]["keywords"].update({{']
+    for it in items:
+        term = (it.get("term") or "").replace('"', '\\"')
+        weight = int(it.get("weight") or 2)
+        lines.append(f'    "{term}": {weight},')
+    lines.append("})")
+    return "\n".join(lines)
+
+
+def _format_watchlist_for_file(items: list) -> str:
+    """Format suggested watchlist terms as CSV rows ready to paste into
+    the ``## 1. SEARCH KEYWORDS`` table in ``watch.md``.  Category is
+    inferred from the bracketed prefix embedded in the reason field.
+    """
+    lines = ["| Category | Keywords |", "|----------|----------|"]
+    for it in items:
+        reason = (it.get("reason") or "").strip()
+        category = "(uncategorised)"
+        if reason.startswith("[") and "]" in reason:
+            category = reason[1:reason.index("]")].strip()
+        # Drop the bracket prefix when showing the term list.
+        raw_term = (it.get("term") or "").replace("|", "/").strip()
+        if not category:
+            category = "(uncategorised)"
+        lines.append(f"| {category} | {raw_term} |")
+    return "\n".join(lines)
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -290,6 +336,55 @@ if run_now:
                     st.warning(rec)
                 else:
                     st.success(rec)
+
+        # Keyword + watchlist suggestions — generated automatically when
+        # the evaluator finds weak themes.  Render below recommendations
+        # so the user can copy the suggestions into config/themes.py or
+        # watch.md without leaving the page.
+        kw = getattr(report, "keyword_suggestions", None)
+        if isinstance(kw, dict) and (
+            kw.get("theme_suggestions") or kw.get("watchlist_suggestions")
+        ):
+            st.markdown("#### 🧠 Suggested theme keywords")
+            theme_map = kw.get("theme_suggestions") or {}
+            for theme, items in theme_map.items():
+                if not items:
+                    continue
+                with st.expander(f"📁 {theme} — {len(items)} new keyword(s)", expanded=False):
+                    rows_text = "| term | weight | reason |\n|---|---|---|\n"
+                    for it in items:
+                        term = (it.get("term") or "").replace("|", "\\|")
+                        weight = it.get("weight", "")
+                        reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
+                        rows_text += f"| {term} | {weight} | {reason} |\n"
+                    st.markdown(rows_text)
+                    st.code(
+                        _format_theme_suggestion_for_file(theme, items),
+                        language="text",
+                    )
+            st.markdown("#### 📡 Suggested watchlist terms")
+            watch = kw.get("watchlist_suggestions") or []
+            if watch:
+                with st.expander(f"📋 {len(watch)} new watchlist term(s)", expanded=True):
+                    rows_text = "| term | reason |\n|---|---|\n"
+                    for it in watch:
+                        term = (it.get("term") or "").replace("|", "\\|")
+                        reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
+                        rows_text += f"| {term} | {reason} |\n"
+                    st.markdown(rows_text)
+                    st.code(
+                        _format_watchlist_for_file(watch),
+                        language="text",
+                    )
+            else:
+                st.info("No new watchlist terms were suggested.")
+        elif isinstance(kw, dict):
+            st.caption(
+                "ℹ️ No keyword or watchlist suggestions were produced (the "
+                "LLM judges may have returned empty responses — check the "
+                "live progress panel above or the `logs/app.log` file)."
+            )
+
         # Invalidate the history cache so the new row appears immediately.
         _cached_history.clear()
 

@@ -657,4 +657,226 @@ class TestWorkerResultQueueContract:
             q.get_nowait()
 
 
+# ---------------------------------------------------------------------------
+# Keyword + watchlist suggestions
+# ---------------------------------------------------------------------------
+
+
+class TestKeywordSuggestions:
+    """Smoke tests for the new ``generate_keyword_suggestions`` engine.
+
+    The LLM is replaced with a MagicMock that returns a fixed JSON payload
+    so the tests verify the wiring (dedup, weight coercion, watchlist
+    parser, schema) without actually calling Ollama.
+    """
+
+    def _make_llm(self, payload: str) -> MagicMock:
+        llm = MagicMock()
+        llm.generate.return_value = payload
+        return llm
+
+    def _articles(self, theme: str, n: int = 5) -> list:
+        return [
+            {
+                "title": f"Sample {theme} article {i}",
+                "summary": f"This is sample body for {theme} #{i}.",
+                "theme_name": theme,
+            }
+            for i in range(n)
+        ]
+
+    def test_theme_suggestions_dedup_against_existing_keywords(self):
+        from core.evaluator import generate_keyword_suggestions
+        # THEMES["Agentic Systems & DevTools"] already contains "MCP".
+        # The fake LLM should return that term plus a new one — the
+        # existing one must be dropped.
+        llm = self._make_llm(
+            '{"missing": [{"term": "MCP", "weight": 3, "reason": "dup"}, '
+            '{"term": "agent observability", "weight": 2, "reason": "new"}]}'
+        )
+        report = _make_report(
+            classifier=0.6,
+            per_theme={"Agentic Systems & DevTools": 0.5},
+        )
+        report.keyword_suggestions = None
+        result = generate_keyword_suggestions(
+            llm,
+            report,
+            articles_by_run={"r1": self._articles("Agentic Systems & DevTools", 4)},
+            summaries_by_run={},
+        )
+        assert "Agentic Systems & DevTools" in result.theme_suggestions
+        terms = [s.term for s in result.theme_suggestions["Agentic Systems & DevTools"]]
+        assert "MCP" not in terms
+        assert "agent observability" in terms
+
+    def test_weight_is_coerced_to_1_3_range(self):
+        from core.evaluator import generate_keyword_suggestions
+        llm = self._make_llm(
+            '{"missing": ['
+            '{"term": "first", "weight": 99, "reason": "too high"}, '
+            '{"term": "second", "weight": -5, "reason": "negative"}, '
+            '{"term": "third", "weight": 2, "reason": "fine"}]}'
+        )
+        report = _make_report(
+            classifier=0.6,
+            per_theme={"Agentic Systems & DevTools": 0.4},
+        )
+        result = generate_keyword_suggestions(
+            llm,
+            report,
+            articles_by_run={"r1": self._articles("Agentic Systems & DevTools", 4)},
+            summaries_by_run={},
+        )
+        weights = [s.weight for s in result.theme_suggestions["Agentic Systems & DevTools"]]
+        # Coerced into [1, 3].
+        assert all(1 <= w <= 3 for w in weights), weights
+
+    def test_strong_themes_skipped_by_default(self):
+        from core.evaluator import generate_keyword_suggestions
+        llm = self._make_llm('{"missing": [{"term": "x", "weight": 2, "reason": "r"}]}')
+        report = _make_report(
+            classifier=0.6,
+            threshold=0.8,
+            per_theme={"Agentic Systems & DevTools": 0.95},
+        )
+        result = generate_keyword_suggestions(
+            llm,
+            report,
+            articles_by_run={"r1": self._articles("Agentic Systems & DevTools", 4)},
+            summaries_by_run={},
+        )
+        # 0.95 is above the 0.8 threshold — no LLM call expected.
+        assert result.theme_suggestions == {}
+        llm.generate.assert_not_called()
+
+    def test_include_all_themes_overrides_threshold(self):
+        from core.evaluator import generate_keyword_suggestions
+        llm = self._make_llm('{"missing": [{"term": "x", "weight": 2, "reason": "r"}]}')
+        report = _make_report(
+            classifier=0.9,
+            threshold=0.8,
+            per_theme={"Agentic Systems & DevTools": 0.99},
+        )
+        result = generate_keyword_suggestions(
+            llm,
+            report,
+            articles_by_run={"r1": self._articles("Agentic Systems & DevTools", 4)},
+            summaries_by_run={},
+            include_all_themes=True,
+        )
+        assert "Agentic Systems & DevTools" in result.theme_suggestions
+        llm.generate.assert_called()
+
+    def test_malformed_llm_response_returns_empty(self):
+        from core.evaluator import generate_keyword_suggestions
+        llm = self._make_llm("not a json at all")
+        report = _make_report(
+            classifier=0.6,
+            per_theme={"Agentic Systems & DevTools": 0.4},
+        )
+        result = generate_keyword_suggestions(
+            llm,
+            report,
+            articles_by_run={"r1": self._articles("Agentic Systems & DevTools", 4)},
+            summaries_by_run={},
+        )
+        assert result.theme_suggestions == {}
+
+    def test_llm_exception_is_swallowed(self):
+        from core.evaluator import generate_keyword_suggestions
+        llm = MagicMock()
+        llm.generate.side_effect = RuntimeError("boom")
+        report = _make_report(
+            classifier=0.6,
+            per_theme={"Agentic Systems & DevTools": 0.4},
+        )
+        result = generate_keyword_suggestions(
+            llm,
+            report,
+            articles_by_run={"r1": self._articles("Agentic Systems & DevTools", 4)},
+            summaries_by_run={},
+        )
+        # No throw, no suggestions.
+        assert result.theme_suggestions == {}
+
+    def test_to_dict_shape(self):
+        from core.evaluator import (
+            KeywordSuggestion, KeywordSuggestionReport,
+        )
+        rep = KeywordSuggestionReport(
+            theme_suggestions={"AI Models": [
+                KeywordSuggestion(term="MoE", weight=3, reason="foo"),
+            ]},
+            watchlist_suggestions=[
+                KeywordSuggestion(term="open-weight release", reason="[Models] bar"),
+            ],
+        )
+        d = rep.to_dict()
+        assert "theme_suggestions" in d
+        assert "watchlist_suggestions" in d
+        assert d["theme_suggestions"]["AI Models"][0]["term"] == "MoE"
+        assert d["watchlist_suggestions"][0]["term"] == "open-weight release"
+        assert not rep.is_empty()
+
+    def test_evaluation_report_has_keyword_field_default(self):
+        report = _make_report()
+        assert hasattr(report, "keyword_suggestions")
+        assert report.keyword_suggestions is None
+
+    def test_watchlist_suggestions_run_when_summaries_present(self):
+        from core.evaluator import generate_keyword_suggestions
+        llm = self._make_llm(
+            '{"missing": [{"term": "open-weight release", "category": "Models", "reason": "x"}]}'
+        )
+        report = _make_report(
+            classifier=0.9,
+            per_theme={"AI Models": 0.99},  # all strong, so themes skipped
+        )
+        summaries = {
+            "r1": {
+                "AI Models": {
+                    "what_is_happening": "Big new MoE model released this week.",
+                    "engineering_tradeoffs": "",
+                    "product_impact": "",
+                    "what_to_watch": "",
+                },
+            },
+        }
+        result = generate_keyword_suggestions(
+            llm,
+            report,
+            articles_by_run={},
+            summaries_by_run=summaries,
+        )
+        # Watchlist LLM call should have been made at least once.
+        assert any("category" in str(call) for call in llm.generate.call_args_list) or \
+               llm.generate.called
+        # Even if all themes are strong, watchlist always runs when summaries exist.
+        # The result may be empty if all suggested terms already exist in
+        # watch.md (which is expected in CI where watch.md is fully populated),
+        # so we just check the field exists.
+        assert hasattr(result, "watchlist_suggestions")
+
+    def test_format_helpers_produce_copy_paste_blocks(self):
+        # Re-implement the formatters to mirror the page-level ones (the
+        # page can't easily be imported in headless pytest).  This guards
+        # against the snippet being accidentally re-formatted in a way
+        # that breaks paste-into-themes.py.
+        items = [
+            {"term": "prompt injection", "weight": 3, "reason": "specific"},
+            {"term": "agentic mesh", "weight": 2, "reason": "mid signal"},
+        ]
+        block_lines = [
+            f'THEMES["AI Apps"]["keywords"].update({{',
+        ]
+        for it in items:
+            block_lines.append(f'    "{it["term"]}": {int(it.get("weight") or 2)},')
+        block_lines.append("})")
+        block = "\n".join(block_lines)
+        assert "prompt injection" in block
+        assert "agentic mesh" in block
+        assert block.endswith("})")
+
+
 

@@ -136,6 +136,55 @@ def _event_sink_for_run(run_id: str) -> Callable[[int, bool, str], None]:
 
 
 @dataclass
+class KeywordSuggestion:
+    """A single suggested term (theme keyword or watchlist entry)."""
+    term: str
+    weight: Optional[int] = None
+    reason: str = ""
+    frequency: int = 0
+
+
+@dataclass
+class KeywordSuggestionReport:
+    """Bundle of suggestions produced by generate_keyword_suggestions().
+
+    ``theme_suggestions`` is keyed by theme name; each value is the list of
+    terms that the LLM thought were missing from that theme's keyword set.
+    ``watchlist_suggestions`` is a flat list of high-signal terms that the
+    LLM thought were under-represented in watch.md.
+    """
+    theme_suggestions: Dict[str, List[KeywordSuggestion]]
+    watchlist_suggestions: List[KeywordSuggestion]
+
+    def is_empty(self) -> bool:
+        return not any(self.theme_suggestions.values()) and not self.watchlist_suggestions
+
+    def to_dict(self) -> Dict:
+        return {
+            "theme_suggestions": {
+                theme: [
+                    {
+                        "term": s.term,
+                        "weight": s.weight,
+                        "reason": s.reason,
+                        "frequency": s.frequency,
+                    }
+                    for s in sugs
+                ]
+                for theme, sugs in self.theme_suggestions.items()
+            },
+            "watchlist_suggestions": [
+                {
+                    "term": s.term,
+                    "reason": s.reason,
+                    "frequency": s.frequency,
+                }
+                for s in self.watchlist_suggestions
+            ],
+        }
+
+
+@dataclass
 class EvaluationReport:
     run_ids: List[str]
     run_timestamps: List[str]
@@ -150,6 +199,9 @@ class EvaluationReport:
     generated_at: datetime
     # Optional Supabase row id, populated after a successful insert.
     db_row_id: Optional[str] = None
+    # Optional keyword/watchlist suggestions (populated when
+    # generate_keyword_suggestions() is run alongside the judges).
+    keyword_suggestions: Optional[Dict] = None
 
     def to_dict(self) -> Dict:
         d = asdict(self)
@@ -907,6 +959,300 @@ def generate_recommendations(report: EvaluationReport) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Keyword & watchlist suggestion engine
+# ---------------------------------------------------------------------------
+
+
+KEYWORD_SUGGESTION_PROMPT = """You are an AI taxonomy editor.  You are given:
+
+1. The current keyword list for one theme.  Each keyword has a weight in
+   1..3 (3 = strong specialist signal, 1 = generic).
+2. A sample of recently-fetched articles that the existing keyword
+   classifier placed in this theme.
+
+Your task: suggest 3-10 NEW weighted keywords that are MISSING from the
+existing list and would help future articles classify correctly into this
+theme.  Multi-word phrases are allowed and encouraged (e.g. "prompt
+injection", "secure MCP").
+
+Rules:
+- Each new keyword must be different (case-insensitive) from the existing
+  ones — don't repeat terms the theme already has.
+- Prefer specific, technical terms over generic ones.  Bare model names
+  ("Claude", "GPT", "Llama") are weight 1 in this taxonomy; reserve
+  weight 1 for broadly-firing terms and use weight 3 for strong signals.
+- A weight-3 keyword must be near-unique to this theme; a weight-2
+  keyword signals strong-but-not-exclusive; weight-1 is generic.
+- For each keyword, give a one-sentence reason explaining what kind of
+  article it would help catch.
+
+Return ONLY a JSON object on a single line:
+{{"missing": [{{"term": "...", "weight": <1|2|3>, "reason": "..."}}, ...]}}
+
+Existing theme keywords:
+{existing}
+
+Sample articles already classified as this theme:
+{articles}
+"""
+
+
+WATCHLIST_SUGGESTION_PROMPT = """You are an AI industry-watchlist editor.  You are given:
+
+1. The user's current watchlist of high-signal terms grouped by category.
+2. The set of AI-news theme summaries produced by the summariser this week.
+
+Your task: suggest 5-15 NEW high-signal terms that are MISSING from the
+watchlist (case-insensitive).  Each new term should be a noun phrase that
+the user would want to see in a weekly AI news digest (e.g. "open-weight
+release", "data center electricity", "agentic SDLC").  Don't repeat
+terms the watchlist already has.
+
+For each new term, propose a one-word category that fits the existing
+watchlist vocabulary (one of: "Agent frameworks", "Agent memory", "Models",
+"RAG & context", "Hardware", "Open source", "Benchmarks", "Papers",
+"Regulation", "Supply chain security", "AI energy").  If none fits,
+propose a new short category name.
+
+Return ONLY a JSON object on a single line:
+{{"missing": [{{"term": "...", "category": "...", "reason": "..."}}, ...]}}
+
+Existing watchlist:
+{existing}
+
+Recent theme summaries:
+{summaries}
+"""
+
+
+def _format_articles_for_suggestion(articles: List[Dict], max_chars: int = 4000) -> str:
+    """Compact title+summary block, truncated, for the keyword prompt."""
+    parts: List[str] = []
+    used = 0
+    for i, art in enumerate(articles, 1):
+        title = art.get("title", "").strip()
+        summary = (art.get("summary") or "").strip()[:300]
+        block = f"[{i}] {title}\n    {summary}"
+        if used + len(block) > max_chars:
+            break
+        parts.append(block)
+        used += len(block)
+    return "\n".join(parts) if parts else "(no articles available)"
+
+
+def _load_watchlist_existing() -> set:
+    """Best-effort read of the existing watchlist terms from watch.md.
+
+    Returns a lowercase set of comma-separated terms under the
+    `## 1. SEARCH KEYWORDS` heading.  Empty set if the file is missing
+    or unparseable.
+    """
+    try:
+        from pathlib import Path
+        path = Path(__file__).resolve().parent.parent / "watch.md"
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return set()
+    # Just pull every word/phrase after a `|` to next `|` inside the
+    # SEARCH KEYWORDS table.  Lightweight parser — markdown isn't worth a
+    # full AST.
+    if "## 1. SEARCH KEYWORDS" not in text:
+        return set()
+    head = text.split("## 1. SEARCH KEYWORDS", 1)[1]
+    head = head.split("## 4.", 1)[0]
+    terms = set()
+    for line in head.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        # Skip header rows like "| Category | Keywords |"
+        if cells[0].lower() == "category" or cells[1].lower() == "keywords":
+            continue
+        for term in cells[1].split(","):
+            t = term.strip().lower()
+            if t and len(t) >= 2:
+                terms.add(t)
+    return terms
+
+
+def _suggest_for_theme(
+    llm: LLMClient,
+    theme: str,
+    articles: List[Dict],
+) -> List[KeywordSuggestion]:
+    """Ask the LLM for missing keywords for one theme."""
+    from config.themes import THEMES
+    existing = THEMES.get(theme, {}).get("keywords", {})
+    existing_str = "\n".join(f"  - {k}: {w}" for k, w in sorted(existing.items()))
+    article_block = _format_articles_for_suggestion(articles)
+
+    prompt = KEYWORD_SUGGESTION_PROMPT.format(
+        existing=existing_str,
+        articles=article_block,
+    )
+    try:
+        resp = llm.generate(
+            prompt,
+            temperature=0.3,
+            max_tokens=600,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fail the report
+        logger.warning("Keyword suggestion LLM error for theme %s: %s", theme, exc)
+        return []
+
+    parsed = _extract_json(resp)
+    if not parsed or not isinstance(parsed, dict):
+        return []
+    raw_missing = parsed.get("missing") or []
+    existing_lower = {k.lower() for k in existing.keys()}
+    out: List[KeywordSuggestion] = []
+    for item in raw_missing:
+        if not isinstance(item, dict):
+            continue
+        term = (item.get("term") or "").strip()
+        if not term:
+            continue
+        if term.lower() in existing_lower:
+            continue
+        weight = item.get("weight")
+        try:
+            weight = int(weight) if weight is not None else 2
+            weight = max(1, min(3, weight))
+        except (TypeError, ValueError):
+            weight = 2
+        reason = (item.get("reason") or "").strip()[:300]
+        out.append(KeywordSuggestion(term=term, weight=weight, reason=reason))
+    return out
+
+
+def _suggest_for_watchlist(
+    llm: LLMClient,
+    summaries: List[str],
+) -> List[KeywordSuggestion]:
+    """Ask the LLM for missing watchlist terms, deduped against watch.md."""
+    existing_terms = _load_watchlist_existing()
+    if not existing_terms:
+        existing_block = "(watchlist could not be read)"
+    else:
+        existing_block = ", ".join(sorted(existing_terms))
+    summary_block = "\n\n".join(summaries[:30])[:6000] or "(no summaries)"
+
+    prompt = WATCHLIST_SUGGESTION_PROMPT.format(
+        existing=existing_block,
+        summaries=summary_block,
+    )
+    try:
+        resp = llm.generate(
+            prompt,
+            temperature=0.3,
+            max_tokens=800,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fail the report
+        logger.warning("Watchlist suggestion LLM error: %s", exc)
+        return []
+
+    parsed = _extract_json(resp)
+    if not parsed or not isinstance(parsed, dict):
+        return []
+    raw_missing = parsed.get("missing") or []
+    out: List[KeywordSuggestion] = []
+    for item in raw_missing:
+        if not isinstance(item, dict):
+            continue
+        term = (item.get("term") or "").strip()
+        if not term or len(term) < 2:
+            continue
+        if term.lower() in existing_terms:
+            continue
+        category = (item.get("category") or "").strip()[:64]
+        reason = (item.get("reason") or "").strip()[:300]
+        # Embed the category into reason so the page has it without a
+        # second field on the dataclass.
+        full_reason = f"[{category}] {reason}".strip() if category else reason
+        out.append(KeywordSuggestion(term=term, reason=full_reason))
+    return out
+
+
+def generate_keyword_suggestions(
+    llm: LLMClient,
+    report: "EvaluationReport",
+    articles_by_run: Dict[str, List[Dict]],
+    summaries_by_run: Dict[str, Dict[str, Dict]],
+    *,
+    include_all_themes: bool = False,
+    theme_max_articles: int = 15,
+) -> KeywordSuggestionReport:
+    """Ask the LLM which theme keywords and watchlist terms are missing.
+
+    For each theme whose ``per_theme_classifier`` score is below the report
+    threshold (or for all themes if ``include_all_themes``), pull a sample
+    of articles and ask the LLM what new keywords would help classify
+    similar future articles correctly.  Dedupes against the existing
+    ``THEMES`` dict.
+
+    For watchlist: collect all theme summaries from ``summaries_by_run``
+    and ask the LLM what high-signal terms are missing from watch.md.
+    Dedupes against the parsed watchlist file.
+
+    The LLM is invoked once per weak theme plus once for the watchlist —
+    so a 7-theme run with 3 weak themes produces 4 LLM calls.  Failure
+    of any individual call degrades gracefully (that theme gets no
+    suggestions, the rest still do).
+    """
+    from config.themes import THEMES, THEME_ORDER
+
+    threshold = report.threshold
+    weak_themes: List[str] = []
+    if include_all_themes:
+        weak_themes = list(THEME_ORDER)
+    else:
+        weak_themes = [
+            theme for theme, score in report.per_theme_classifier.items()
+            if score < threshold
+        ]
+
+    theme_suggestions: Dict[str, List[KeywordSuggestion]] = {}
+    for theme in weak_themes:
+        # Pool articles across all evaluated runs for this theme.
+        pool: List[Dict] = []
+        for articles in articles_by_run.values():
+            for art in articles:
+                if art.get("theme_name") == theme:
+                    pool.append(art)
+        if not pool:
+            continue
+        sample = pool[:theme_max_articles]
+        sugs = _suggest_for_theme(llm, theme, sample)
+        if sugs:
+            theme_suggestions[theme] = sugs
+
+    # Watchlist — collect summaries from all runs/themes, deduped lightly.
+    summary_strings: List[str] = []
+    seen_hashes: set = set()
+    for summaries in summaries_by_run.values():
+        for theme_name, sections in summaries.items():
+            text = " ".join(sections.get(k, "") for k in (
+                "what_is_happening", "engineering_tradeoffs", "product_impact",
+                "what_to_watch",
+            )).strip()
+            if not text:
+                continue
+            h = hash(text[:500])
+            if h in seen_hashes:
+                continue
+            seen_hashes.add(h)
+            summary_strings.append(f"[{theme_name}] {text[:600]}")
+    watch_suggestions = _suggest_for_watchlist(llm, summary_strings) if summary_strings else []
+
+    return KeywordSuggestionReport(
+        theme_suggestions=theme_suggestions,
+        watchlist_suggestions=watch_suggestions,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
 
@@ -1010,6 +1356,27 @@ def run_weekly_evaluation(
     )
     report.recommendations = generate_recommendations(report)
 
+    # Keyword + watchlist suggestions — runs after recommendations so the
+    # weak-theme logic in generate_recommendations has already populated
+    # report.per_theme_classifier / report.threshold.  Failures here are
+    # non-fatal: the report is still useful without suggestions.
+    try:
+        kw_report = generate_keyword_suggestions(
+            llm,
+            report,
+            articles_by_run,
+            summaries_by_run,
+        )
+        report.keyword_suggestions = kw_report.to_dict()
+        logger.info(
+            "Keyword suggestions: %d themes, %d watchlist terms",
+            len(kw_report.theme_suggestions),
+            len(kw_report.watchlist_suggestions),
+        )
+    except Exception as exc:
+        logger.warning("generate_keyword_suggestions failed: %s", exc)
+        report.keyword_suggestions = {"theme_suggestions": {}, "watchlist_suggestions": []}
+
     # Persist
     payload = {
         "lookback_days": lookback_days,
@@ -1026,6 +1393,34 @@ def run_weekly_evaluation(
     if inserted:
         report.db_row_id = inserted.get("id")
         logger.info("Persisted quality_evaluations row %s", report.db_row_id)
+        # Persist suggestions if the keyword_suggestions table exists.
+        try:
+            from core.quality_schema import insert_keyword_suggestions
+            if report.keyword_suggestions:
+                rows: List[Dict] = []
+                for theme, items in report.keyword_suggestions.get("theme_suggestions", {}).items():
+                    for it in items:
+                        rows.append({
+                            "kind": "theme_keyword",
+                            "theme_name": theme,
+                            "term": it.get("term", ""),
+                            "suggested_weight": it.get("weight"),
+                            "reason": it.get("reason"),
+                        })
+                for it in report.keyword_suggestions.get("watchlist_suggestions", []):
+                    rows.append({
+                        "kind": "watchlist_term",
+                        "theme_name": None,
+                        "term": it.get("term", ""),
+                        "suggested_weight": None,
+                        "reason": it.get("reason"),
+                    })
+                if rows:
+                    insert_keyword_suggestions(
+                        supabase, rows, evaluation_id=report.db_row_id,
+                    )
+        except Exception as exc:
+            logger.warning("Failed to persist keyword_suggestions: %s", exc)
     else:
         logger.info("Supabase unavailable; evaluation report not persisted.")
 
@@ -1126,6 +1521,14 @@ def run_evaluation_for_runs(
         generated_at=datetime.now(timezone.utc),
     )
     report.recommendations = generate_recommendations(report)
+    try:
+        kw_report = generate_keyword_suggestions(
+            llm, report, articles_by_run, summaries_by_run,
+        )
+        report.keyword_suggestions = kw_report.to_dict()
+    except Exception as exc:
+        logger.warning("generate_keyword_suggestions failed: %s", exc)
+        report.keyword_suggestions = {"theme_suggestions": {}, "watchlist_suggestions": []}
     return report
 
 
