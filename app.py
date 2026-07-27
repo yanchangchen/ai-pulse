@@ -185,7 +185,8 @@ def main() -> None:
             st.toast("🔄 Background refresh started! Keep using the dashboard while we compile new insights.", icon="ℹ️")
             st.rerun()
 
-        # Navigation
+        # Navigation — keep in sync with core/shared_sidebar.py so the link
+        # list matches the other 8 pages (incl. Quality Evaluation).
         st.subheader("🧭 Navigation")
         st.page_link("app.py", label="Home", icon="🏠")
         st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
@@ -195,6 +196,7 @@ def main() -> None:
         st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
         st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
         st.page_link("pages/7_Emerging_Trends.py", label="Emerging Trends", icon="🚀")
+        st.page_link("pages/8_Quality_Evaluation.py", label="Quality Evaluation", icon="🔬")
 
         st.divider()
 
@@ -285,10 +287,11 @@ def main() -> None:
     with col3: st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
     with col4: st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
     st.markdown("<br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1: st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
     with col2: st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
     with col3: st.page_link("pages/7_Emerging_Trends.py", label="Emerging Trends", icon="🚀")
+    with col4: st.page_link("pages/8_Quality_Evaluation.py", label="Quality Eval", icon="🔬")
 
     st.markdown("---")
 
