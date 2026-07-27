@@ -5,6 +5,8 @@ exponential-backoff retries and structured error handling.
 """
 
 import logging
+import os
+import threading
 import time
 from typing import Callable, Optional
 
@@ -17,11 +19,19 @@ from core.logger import setup_logger
 logger = setup_logger(__name__)
 
 # Retry configuration
-MAX_RETRIES = 2
-INITIAL_BACKOFF_SECONDS = 2.0
+MAX_RETRIES = 3
+INITIAL_BACKOFF_SECONDS = 1.5
 
 # Optional event-sink signature: (latency_ms: int, ok: bool, error_msg: str)
 LLMEventSink = Callable[[int, bool, str], None]
+
+# Debug toggle.  When the LLM_DEBUG env var is set to a truthy value
+# ("1", "true", "yes"), the client dumps the prompt + system prompt +
+# raw response body to the log on every empty or failed HTTP attempt.
+# Default off because prompts may contain sensitive article content.
+_LLM_DEBUG = os.environ.get("LLM_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+_DEBUG_PROMPT_CHARS = 500
+_DEBUG_RESPONSE_CHARS = 1000
 
 
 class LLMClientError(Exception):
@@ -30,6 +40,8 @@ class LLMClientError(Exception):
 
 class LLMClient:
     """Thin wrapper around the Ollama Cloud /api/generate endpoint."""
+
+    _api_lock = threading.Lock()
 
     def __init__(
         self,
@@ -91,18 +103,26 @@ class LLMClient:
 
         last_error: Optional[Exception] = None
         for attempt in range(1, MAX_RETRIES + 1):
-            # On the 2nd retry, nudge the temperature up to break the model
-            # out of a stuck/degenerate decoder state that produced an empty
-            # body.  Other settings stay the same.
-            payload["options"]["temperature"] = 0.5 if attempt == 2 else temperature
+            # On subsequent retries, nudge the temperature and predict budget up
+            # to break the model out of a stuck/degenerate decoder state.
+            if attempt == 2:
+                payload["options"]["temperature"] = max(0.5, temperature)
+                payload["options"]["num_predict"] = max_tokens + 100
+            elif attempt == 3:
+                payload["options"]["temperature"] = max(0.7, temperature + 0.3)
+                payload["options"]["num_predict"] = max_tokens + 200
+            else:
+                payload["options"]["temperature"] = temperature
+                payload["options"]["num_predict"] = max_tokens
             t0 = time.monotonic()
             try:
-                resp = requests.post(
-                    f"{self.base_url}/api/generate",
-                    json=payload,
-                    headers=headers,
-                    timeout=120,
-                )
+                with self._api_lock:
+                    resp = requests.post(
+                        f"{self.base_url}/api/generate",
+                        json=payload,
+                        headers=headers,
+                        timeout=120,
+                    )
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 if resp.status_code == 200:
                     result = resp.json().get("response", "").strip()
@@ -112,28 +132,59 @@ class LLMClient:
                         return result
                     else:
                         last_error = LLMClientError("Ollama returned an empty response.")
+                        if _LLM_DEBUG:
+                            _dump_failure(
+                                label="empty_response",
+                                attempt=attempt,
+                                latency_ms=latency_ms,
+                                payload=payload,
+                                resp=resp,
+                                system=system,
+                            )
                 else:
                     last_error = LLMClientError(
                         f"HTTP {resp.status_code}: {resp.text[:200]}"
                     )
+                    if _LLM_DEBUG:
+                        _dump_failure(
+                            label="http_error",
+                            attempt=attempt,
+                            latency_ms=latency_ms,
+                            payload=payload,
+                            resp=resp,
+                            system=system,
+                        )
 
                 if event_sink is not None:
                     event_sink(latency_ms, False, str(last_error))
                 logger.warning(
-                    "Ollama API issue: %s (attempt %d/%d)",
-                    last_error,
+                    "Ollama API issue [model=%s, attempt=%d/%d, latency=%dms, prompt_len=%d]: %s",
+                    self.model,
                     attempt,
                     MAX_RETRIES,
+                    latency_ms,
+                    len(prompt),
+                    last_error,
                 )
             except requests.RequestException as exc:
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 last_error = exc
                 if event_sink is not None:
                     event_sink(latency_ms, False, str(exc))
+                if _LLM_DEBUG:
+                    logger.warning(
+                        "LLM_DEBUG request_exception [attempt=%d/%d, latency=%dms, prompt_preview=%r]",
+                        attempt,
+                        MAX_RETRIES,
+                        latency_ms,
+                        prompt[:_DEBUG_PROMPT_CHARS],
+                    )
                 logger.warning(
-                    "Ollama request failed (attempt %d/%d): %s",
+                    "Ollama API request failed [model=%s, attempt=%d/%d, latency=%dms]: %s",
+                    self.model,
                     attempt,
                     MAX_RETRIES,
+                    latency_ms,
                     exc,
                 )
 
@@ -141,8 +192,15 @@ class LLMClient:
                 backoff = INITIAL_BACKOFF_SECONDS * (2 ** (attempt - 1))
                 time.sleep(backoff)
 
+        logger.error(
+            "Ollama API error: All %d attempts failed for model=%s [prompt_len=%d]. Last error: %s",
+            MAX_RETRIES,
+            self.model,
+            len(prompt),
+            last_error,
+        )
         raise LLMClientError(
-            f"All {MAX_RETRIES} attempts failed. {last_error}"
+            f"All {MAX_RETRIES} attempts failed for model '{self.model}'. {last_error}"
         )
 
     # ------------------------------------------------------------------
@@ -154,3 +212,68 @@ class LLMClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+
+def _dump_failure(
+    *,
+    label: str,
+    attempt: int,
+    latency_ms: int,
+    payload: dict,
+    resp: "requests.Response",
+    system: Optional[str],
+) -> None:
+    """Log a structured dump of an LLM call failure (LLM_DEBUG mode).
+
+    Sanitizes the Authorization header so the bearer token never lands in
+    the log file.  Truncates the prompt and response body to keep the
+    log readable.
+    """
+    prompt_text = payload.get("prompt", "") or ""
+    response_text = ""
+    try:
+        response_text = resp.text or ""
+    except Exception:  # noqa: BLE001
+        response_text = "<unreadable>"
+
+    # Sanitize headers
+    safe_headers = {
+        k: ("Bearer ***REDACTED***" if k.lower() == "authorization" else v)
+        for k, v in (resp.request.headers if resp.request else {}).items()
+    }
+
+    logger.warning(
+        "LLM_DEBUG [%s] attempt=%d latency_ms=%d url=%s status=%s "
+        "content_type=%s request_headers=%s",
+        label,
+        attempt,
+        latency_ms,
+        resp.url,
+        resp.status_code,
+        resp.headers.get("content-type", "?"),
+        safe_headers,
+    )
+    if system:
+        logger.warning(
+            "LLM_DEBUG [%s] system_prompt[:%d]=%r",
+            label,
+            _DEBUG_PROMPT_CHARS,
+            system[:_DEBUG_PROMPT_CHARS],
+        )
+    logger.warning(
+        "LLM_DEBUG [%s] payload_options=%s",
+        label,
+        payload.get("options"),
+    )
+    logger.warning(
+        "LLM_DEBUG [%s] prompt[:%d]=%r",
+        label,
+        _DEBUG_PROMPT_CHARS,
+        prompt_text[:_DEBUG_PROMPT_CHARS],
+    )
+    logger.warning(
+        "LLM_DEBUG [%s] raw_response[:%d]=%r",
+        label,
+        _DEBUG_RESPONSE_CHARS,
+        response_text[:_DEBUG_RESPONSE_CHARS],
+    )

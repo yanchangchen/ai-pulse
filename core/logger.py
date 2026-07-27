@@ -13,12 +13,22 @@ LOGS_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOGS_DIR / "app.log"
 
 def setup_logger(name: str) -> logging.Logger:
-    """Configure and return a logger instance."""
+    """Configure and return a logger instance.
+
+    Honours two optional environment variables:
+
+    - ``LOG_LEVEL`` — override the default ``INFO`` (e.g. ``DEBUG``).
+    - ``LLM_DEBUG`` — when truthy, the LLM client dumps the prompt and
+      raw response body on every empty or failed call (see
+      ``core/llm_client.py``).
+    """
     logger = logging.getLogger(name)
-    
+
     # Only configure if the logger doesn't have handlers yet
     if not logger.handlers:
-        logger.setLevel(logging.INFO)
+        level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+        level = getattr(logging, level_name, logging.INFO)
+        logger.setLevel(level)
         
         # Formatter
         formatter = logging.Formatter(

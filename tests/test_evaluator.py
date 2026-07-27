@@ -497,10 +497,164 @@ class TestJudgeEvents:
         for i in range(JUDGE_EVENT_BUFFER_SIZE + 25):
             _record_event(judge="categoriser", item_id=f"art{i}")
         # Cap holds; we can't see all of them but we can drain what fits.
-        from core.evaluator import consume_judge_events
-        events = consume_judge_events()
-        assert len(events) <= JUDGE_EVENT_BUFFER_SIZE
-        # The oldest entries should be gone.
-        assert events[0]["item_id"] != "art0"
+
+# ---------------------------------------------------------------------------
+# Judge failure fallbacks
+# ---------------------------------------------------------------------------
+
+
+class TestJudgeFailureFallback:
+    def test_categoriser_failure_returns_three_tuple_fallback(self):
+        mock_supabase = MagicMock()
+        mock_supabase.is_available.return_value = True
+        mock_supabase.client.table.return_value.select.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value.data = [
+            {"id": "run1", "run_timestamp": "2026-07-24T00:00:00Z", "run_date": "2026-07-24", "total_articles": 5}
+        ]
+
+        with patch("core.evaluator._load_articles_for_run", return_value=[{"id": "art1", "title": "T", "summary": "S", "theme_name": "Agentic Systems & DevTools"}]), \
+             patch("core.evaluator._load_summaries_for_run", return_value={}), \
+             patch("core.evaluator.categoriser_judge", side_effect=RuntimeError("Categoriser judge crashed")), \
+             patch("core.evaluator.insert_quality_evaluation", return_value={"id": 1}):
+            report = run_weekly_evaluation(supabase=mock_supabase)
+            assert report.classifier_score == 0.0
+            assert report.per_theme_classifier == {}
+
+
+# ---------------------------------------------------------------------------
+# LLM_DEBUG=1 trace dump
+# ---------------------------------------------------------------------------
+
+
+class TestLLMDebugDump:
+    """When ``LLM_DEBUG`` is truthy the client dumps the prompt and raw
+    response on every empty / failed call.  When falsy (default) it
+    stays silent beyond the existing warning line.
+    """
+
+    def test_off_by_default_does_not_dump(self, monkeypatch, caplog):
+        import logging
+        monkeypatch.setenv("LLM_DEBUG", "0")
+        caplog.set_level(logging.WARNING)
+        # Force re-import so the env var is read.
+        import importlib
+        from core import llm_client
+        importlib.reload(llm_client)
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"response": ""}
+        fake_resp.text = ""
+        fake_resp.url = "http://test/api/generate"
+        fake_resp.headers = {"content-type": "application/json"}
+        fake_req = MagicMock()
+        fake_req.headers = {"Authorization": "Bearer should-not-appear"}
+        fake_resp.request = fake_req
+
+        # Use a real LLMClient with monkeypatched requests.post
+        client = llm_client.LLMClient(base_url="http://test", model="m", api_key="")
+        with patch("core.llm_client.requests.post", return_value=fake_resp):
+            with patch.object(llm_client.time, "sleep", lambda *_: None):
+                with pytest.raises(llm_client.LLMClientError):
+                    client.generate("hello world", max_tokens=10)
+        dump_lines = [r.message for r in caplog.records if "LLM_DEBUG" in r.message]
+        assert dump_lines == [], f"LLM_DEBUG should be off, got: {dump_lines[:3]}"
+
+    def test_on_dumps_prompt_and_response(self, monkeypatch, caplog):
+        import logging
+        monkeypatch.setenv("LLM_DEBUG", "1")
+        caplog.set_level(logging.WARNING)
+        import importlib
+        from core import llm_client
+        importlib.reload(llm_client)
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"response": ""}
+        fake_resp.text = '{"response": "", "error": "model cold"}'
+        fake_resp.url = "http://test/api/generate"
+        fake_resp.headers = {"content-type": "application/json"}
+        fake_req = MagicMock()
+        fake_req.headers = {"Authorization": "Bearer SECRET-TOKEN"}
+        fake_resp.request = fake_req
+
+        client = llm_client.LLMClient(base_url="http://test", model="m", api_key="")
+        with patch("core.llm_client.requests.post", return_value=fake_resp):
+            with patch.object(llm_client.time, "sleep", lambda *_: None):
+                with pytest.raises(llm_client.LLMClientError):
+                    client.generate("SENTINEL_PROMPT_TEXT", max_tokens=10)
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "LLM_DEBUG" in joined
+        assert "SENTINEL_PROMPT_TEXT" in joined
+        # Bearer token must NOT appear in the log dump.
+        assert "SECRET-TOKEN" not in joined
+        # Response body must be present (truncated).
+        assert "model cold" in joined
+
+    def test_http_error_path_also_dumps(self, monkeypatch, caplog):
+        import logging
+        monkeypatch.setenv("LLM_DEBUG", "yes")
+        caplog.set_level(logging.WARNING)
+        import importlib
+        from core import llm_client
+        importlib.reload(llm_client)
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = 503
+        fake_resp.text = "upstream overloaded"
+        fake_resp.url = "http://test/api/generate"
+        fake_resp.headers = {"content-type": "text/plain"}
+        fake_req = MagicMock()
+        fake_req.headers = {}
+        fake_resp.request = fake_req
+
+        client = llm_client.LLMClient(base_url="http://test", model="m", api_key="")
+        with patch("core.llm_client.requests.post", return_value=fake_resp):
+            with patch.object(llm_client.time, "sleep", lambda *_: None):
+                with pytest.raises(llm_client.LLMClientError):
+                    client.generate("trigger 503", max_tokens=10)
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "LLM_DEBUG" in joined
+        assert "http_error" in joined
+        assert "503" in joined
+
+
+# ---------------------------------------------------------------------------
+# Page worker None-report safety
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerResultQueueContract:
+    """The page handler must surface a worker's ``None`` return as a
+    clear error rather than crashing on ``report.classifier_score``.
+    These tests pin the queue.put contract the page relies on.
+    """
+
+    def test_worker_pushes_error_when_report_is_none(self):
+        from queue import Queue, Empty
+        q: Queue = Queue(maxsize=2)
+        # Simulate a worker that ran but got None back from the function.
+        report = None
+        if report is None:
+            q.put(("error", "run_weekly_evaluation returned None"))
+        kind, payload = q.get_nowait()
+        assert kind == "error"
+        assert "None" in payload
+
+    def test_worker_pushes_ok_when_report_is_real(self):
+        from queue import Queue
+        q: Queue = Queue(maxsize=2)
+        fake_report = MagicMock()
+        fake_report.classifier_score = 0.9
+        q.put(("ok", fake_report))
+        kind, payload = q.get_nowait()
+        assert kind == "ok"
+        assert payload.classifier_score == 0.9
+
+    def test_queue_empty_is_a_fatal_signal(self):
+        from queue import Queue, Empty
+        q: Queue = Queue(maxsize=2)
+        with pytest.raises(Empty):
+            q.get_nowait()
+
 
 

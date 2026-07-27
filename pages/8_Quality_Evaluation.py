@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime
+from queue import Empty as QueueEmpty, Queue
 
 import streamlit as st
 import pandas as pd
@@ -123,6 +124,13 @@ if run_now:
     # dataframe.  This is the only place where the page is allowed to
     # block — every other section is gated by ``st.session_state`` so
     # subsequent reruns pick up where we left off.
+    #
+    # Cross-thread result handoff uses a ``queue.Queue`` and a
+    # ``threading.Event`` rather than direct ``st.session_state`` writes.
+    # Streamlit's session_state is not designed to be mutated by a
+    # background thread — the main thread's snapshot can lag behind the
+    # worker's writes, leaving us with ``report=None`` *and* ``error=None``
+    # simultaneously, which previously crashed on ``report.classifier_score``.
     reset_judge_events()
     progress_state = st.session_state.setdefault("eval_progress", {
         "running": False,
@@ -131,6 +139,11 @@ if run_now:
         "events": [],
     })
     progress_state.update({"running": True, "error": None, "report": None, "events": []})
+
+    # Thread-safe handoff: worker puts (kind, payload) tuples here;
+    # main thread drains at the end.
+    result_queue: Queue = Queue(maxsize=4)
+    completion_event = threading.Event()
 
     from core.evaluator import run_weekly_evaluation
 
@@ -141,12 +154,14 @@ if run_now:
                 lookback_days=lookback_days,
                 threshold=threshold,
             )
-            progress_state["report"] = report
-            progress_state["error"] = None
+            if report is None:
+                result_queue.put(("error", "run_weekly_evaluation returned None"))
+            else:
+                result_queue.put(("ok", report))
         except Exception as exc:  # noqa: BLE001
-            progress_state["error"] = str(exc)
+            result_queue.put(("error", str(exc)))
         finally:
-            progress_state["running"] = False
+            completion_event.set()
 
     eval_thread = threading.Thread(target=_run_eval, name="quality-eval-page", daemon=True)
     eval_thread.start()
@@ -173,6 +188,12 @@ if run_now:
             progress_state["events"].extend(events)
             # Keep only the most recent 200 in session to bound memory.
             progress_state["events"] = progress_state["events"][-200:]
+
+        # If the worker has signalled completion we can stop polling
+        # early.  We still keep the running flag as a defensive check
+        # in case the queue/Event race with the dict update.
+        if completion_event.is_set():
+            break
 
         now = time.monotonic()
         if now - last_render >= 0.4:
@@ -216,12 +237,38 @@ if run_now:
         progress_state["events"].extend(final_events)
         progress_state["events"] = progress_state["events"][-200:]
 
+    # Wait for the worker to actually finish (bounded).  Once
+    # completion_event is set, the result_queue holds the worker's
+    # verdict and the worker's writes are visible to this thread.
+    completion_event.wait(timeout=10.0)
     eval_thread.join(timeout=2.0)
 
-    if progress_state["error"]:
-        st.error(f"❌ Evaluation failed: {progress_state['error']}")
+    # Drain the thread-safe result queue and persist into progress_state
+    # for downstream rendering.  ``progress_state["report"]`` /
+    # ``progress_state["error"]`` are now read-after-write from a single
+    # thread (this one) so the None race is gone.
+    worker_error = None  # type: ignore[var-annotated]
+    worker_report = None
+    try:
+        kind, payload = result_queue.get_nowait()
+    except QueueEmpty:
+        kind, payload = ("error", "Evaluation timed out before the worker could report a result.")
+    if kind == "ok":
+        worker_report = payload
+        progress_state["report"] = payload
+        progress_state["error"] = None
     else:
-        report = progress_state["report"]
+        worker_error = payload
+        progress_state["error"] = payload
+        progress_state["report"] = None
+    progress_state["running"] = False
+
+    if worker_error:
+        st.error(f"❌ Evaluation failed: {worker_error}")
+    elif worker_report is None:
+        st.error("❌ Evaluation failed: No evaluation report was generated.")
+    else:
+        report = worker_report
         with summary_placeholder.container():
             evs = progress_state["events"]
             llm_calls = sum(1 for e in evs if e["judge"] != "uniqueness" or e.get("latency_ms", 0) > 0)

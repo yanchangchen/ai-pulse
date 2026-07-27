@@ -300,6 +300,22 @@ def _extract_json(text: str) -> Optional[Dict]:
 _SCORE_KEY_ALIASES = ("score", "faithfulness", "rating", "value", "s", "n")
 
 
+def _extract_float_from_raw(text: str) -> Optional[float]:
+    """Fallback regex extraction of 0.0-1.0 float score from raw text when JSON parsing fails."""
+    if not text:
+        return None
+    match = re.search(r'(?:score|overlap|rating|faithfulness|value)[:\s=]+([0-1]\.\d+|0|1)', text, re.IGNORECASE)
+    if not match:
+        match = re.search(r'\b(0\.\d+|1\.0)\b', text)
+    if match:
+        try:
+            val = float(match.group(1))
+            return max(0.0, min(1.0, val))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def _coerce_score(parsed: Optional[Dict]) -> Optional[float]:
     """Pull a 0..1 score out of a parsed JSON dict, trying common key
     aliases.  Returns None if no plausible numeric value is present.
@@ -438,7 +454,7 @@ def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, s
                 summary=(article.get("summary") or "")[:500],
             ),
             temperature=0.1,
-            max_tokens=60,
+            max_tokens=150,
             event_sink=_event_sink_for_run(run_id),
         ).strip()
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -598,7 +614,7 @@ def _judge_faithfulness_one(
         resp = llm.generate(
             prompt,
             temperature=0.1,
-            max_tokens=300,
+            max_tokens=400,
             event_sink=_event_sink_for_run(run_id),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -615,6 +631,8 @@ def _judge_faithfulness_one(
         return 0.0
     parsed = _extract_json(resp)
     score = _coerce_score(parsed)
+    if score is None:
+        score = _extract_float_from_raw(resp)
     if score is None:
         # Log the raw response so silent zeros become diagnosable.
         logger.warning(
@@ -748,7 +766,7 @@ def _judge_overlap(
         resp = llm.generate(
             OVERLAP_PROMPT.format(a=a[:1500], b=b[:1500]),
             temperature=0.1,
-            max_tokens=80,
+            max_tokens=250,
             event_sink=_event_sink_for_run(run_id),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -769,6 +787,8 @@ def _judge_overlap(
     if overlap is None:
         # Try common alias keys directly.
         overlap = _coerce_score(parsed)
+    if overlap is None:
+        overlap = _extract_float_from_raw(resp)
     if overlap is None:
         logger.warning(
             "Uniqueness judge: no parseable overlap in response: %r",
@@ -944,11 +964,14 @@ def run_weekly_evaluation(
                 results[name] = fut.result()
             except Exception as exc:
                 logger.error("Judge %s failed: %s", name, exc)
-                results[name] = (0.0, {})
+                if name == "categoriser":
+                    results[name] = (0.0, {}, {})
+                else:
+                    results[name] = (0.0, {})
 
-    classifier_score, per_theme_classifier, cat_raw = results["categoriser"]
-    faithfulness_score, faith_raw = results["faithfulness"]
-    uniqueness_score, uniq_raw = results["uniqueness"]
+    classifier_score, per_theme_classifier, cat_raw = results.get("categoriser", (0.0, {}, {}))
+    faithfulness_score, faith_raw = results.get("faithfulness", (0.0, {}))
+    uniqueness_score, uniq_raw = results.get("uniqueness", (0.0, {}))
 
     per_run_scores: List[Dict] = []
     for run in runs:
@@ -1063,11 +1086,14 @@ def run_evaluation_for_runs(
                 results[name] = fut.result()
             except Exception as exc:
                 logger.error("Judge %s failed: %s", name, exc)
-                results[name] = (0.0, {})
+                if name == "categoriser":
+                    results[name] = (0.0, {}, {})
+                else:
+                    results[name] = (0.0, {})
 
-    classifier_score, per_theme_classifier, cat_raw = results["categoriser"]
-    faithfulness_score, faith_raw = results["faithfulness"]
-    uniqueness_score, uniq_raw = results["uniqueness"]
+    classifier_score, per_theme_classifier, cat_raw = results.get("categoriser", (0.0, {}, {}))
+    faithfulness_score, faith_raw = results.get("faithfulness", (0.0, {}))
+    uniqueness_score, uniq_raw = results.get("uniqueness", (0.0, {}))
 
     per_run_scores = [
         {
