@@ -966,5 +966,80 @@ class TestDeterministicJudges:
         assert raw["total"] == 1
 
 
+class TestJudgeSelection:
+    """Test judge_selection parameter filtering in _execute_judges_and_build_report."""
+
+    @patch("core.evaluator.insert_quality_evaluation")
+    @patch("core.evaluator.generate_keyword_suggestions")
+    @patch("core.evaluator.categoriser_judge")
+    @patch("core.evaluator.faithfulness_judge")
+    @patch("core.evaluator.uniqueness_judge")
+    def test_llm_only_mode_skips_deterministic(self, mock_uniq, mock_faith, mock_cat, mock_kw, mock_insert):
+        from core.evaluator import _execute_judges_and_build_report
+
+        mock_cat.return_value = (0.85, {"Theme A": 0.85}, {})
+        mock_faith.return_value = (0.90, {})
+        mock_uniq.return_value = (0.95, {})
+        mock_kw.return_value = MagicMock(to_dict=lambda: {})
+        mock_insert.return_value = {"id": "123"}
+
+        runs = [{"id": "r1", "run_timestamp": "2025-07-01 10:00:00"}]
+        articles = {"r1": [{"title": "Art 1", "theme_name": "Theme A"}]}
+        summaries = {"r1": {"Theme A": {"what_is_happening": "Text", "why_it_matters": "Text", "what_to_watch": "- Bullet"}}}
+
+        report = _execute_judges_and_build_report(
+            runs=runs,
+            articles_by_run=articles,
+            summaries_by_run=summaries,
+            prior_summaries_by_run={},
+            threshold=0.8,
+            judge_selection="llm",
+        )
+
+        assert report.raw_metrics["judge_selection"] == "llm"
+        assert report.raw_metrics["grounding"]["skipped"] is True
+        assert report.raw_metrics["structural_compliance"]["skipped"] is True
+        assert report.raw_metrics["coverage"]["skipped"] is True
+        assert report.raw_metrics["temporal_coherence"]["skipped"] is True
+        # LLM judges were invoked
+        mock_cat.assert_called_once()
+        mock_faith.assert_called_once()
+        mock_uniq.assert_called_once()
+
+    @patch("core.evaluator.insert_quality_evaluation")
+    @patch("core.evaluator.generate_keyword_suggestions")
+    @patch("core.evaluator.categoriser_judge")
+    @patch("core.evaluator.faithfulness_judge")
+    @patch("core.evaluator.uniqueness_judge")
+    def test_deterministic_only_mode_skips_llm(self, mock_uniq, mock_faith, mock_cat, mock_kw, mock_insert):
+        from core.evaluator import _execute_judges_and_build_report
+
+        mock_kw.return_value = MagicMock(to_dict=lambda: {})
+        mock_insert.return_value = {"id": "123"}
+
+        runs = [{"id": "r1", "run_timestamp": "2025-07-01 10:00:00"}]
+        articles = {"r1": [{"title": "Art 1", "theme_name": "Theme A"}]}
+        summaries = {"r1": {"Theme A": {"what_is_happening": "Text", "why_it_matters": "Text", "what_to_watch": "- Bullet"}}}
+
+        report = _execute_judges_and_build_report(
+            runs=runs,
+            articles_by_run=articles,
+            summaries_by_run=summaries,
+            prior_summaries_by_run={},
+            threshold=0.8,
+            judge_selection="deterministic",
+        )
+
+        assert report.raw_metrics["judge_selection"] == "deterministic"
+        assert report.raw_metrics["categoriser"]["skipped"] is True
+        assert report.raw_metrics["faithfulness"]["skipped"] is True
+        assert report.raw_metrics["uniqueness"]["skipped"] is True
+        # LLM judges were NOT invoked
+        mock_cat.assert_not_called()
+        mock_faith.assert_not_called()
+        mock_uniq.assert_not_called()
+
+
+
 
 

@@ -1085,8 +1085,17 @@ def generate_recommendations(report: EvaluationReport) -> List[str]:
     """Build human-readable recommendations based on the report."""
     threshold = report.threshold
     recs: List[str] = []
+    raw = report.raw_metrics or {}
 
-    if report.classifier_score < threshold:
+    cat_skipped = raw.get("categoriser", {}).get("skipped", False)
+    faith_skipped = raw.get("faithfulness", {}).get("skipped", False)
+    uniq_skipped = raw.get("uniqueness", {}).get("skipped", False)
+    ground_skipped = raw.get("grounding", {}).get("skipped", False)
+    struct_skipped = raw.get("structural_compliance", {}).get("skipped", False)
+    cov_skipped = raw.get("coverage", {}).get("skipped", False)
+    temp_skipped = raw.get("temporal_coherence", {}).get("skipped", False)
+
+    if not cat_skipped and report.classifier_score < threshold:
         weakest = sorted(
             report.per_theme_classifier.items(), key=lambda kv: kv[1]
         )[:2]
@@ -1099,39 +1108,39 @@ def generate_recommendations(report: EvaluationReport) -> List[str]:
             f"Action: Click '⚡ Apply All Suggestions' below or use the '🎛️ In-App Theme Keyword Editor' expander to add terms directly in the app."
         )
 
-    if report.faithfulness_score < threshold:
+    if not faith_skipped and report.faithfulness_score < threshold:
         recs.append(
             f"⚠️ Faithfulness score {report.faithfulness_score:.0%} < "
             f"{threshold:.0%}. "
             f"Action: Use the '⚙️ Faithfulness & Prompt Tuner' below to enable Strict Anti-Hallucination Mode or adjust summariser temperature directly in the app."
         )
 
-    if report.uniqueness_score < threshold:
+    if not uniq_skipped and report.uniqueness_score < threshold:
         recs.append(
             f"⚠️ Uniqueness score {report.uniqueness_score:.0%} < "
             f"{threshold:.0%}. Action: Summaries overlap across themes. Use the Theme Keyword Editor to sharpen classifier boundaries or tune summariser settings."
         )
 
-    if report.grounding_score < threshold:
+    if not ground_skipped and report.grounding_score < threshold:
         recs.append(
             f"⚠️ Grounding score {report.grounding_score:.0%} < "
             f"{threshold:.0%}. Action: further reading citations include "
             f"titles/URLs not present in input source articles."
         )
 
-    if report.structural_compliance_score < threshold:
+    if not struct_skipped and report.structural_compliance_score < threshold:
         recs.append(
             f"⚠️ Structural Compliance score {report.structural_compliance_score:.0%} < "
             f"{threshold:.0%}. Action: check summary formatting and section counts."
         )
 
-    if report.coverage_score < threshold:
+    if not cov_skipped and report.coverage_score < threshold:
         recs.append(
             f"⚠️ Coverage score {report.coverage_score:.0%} < "
             f"{threshold:.0%}. Action: many source articles are missing from output summaries."
         )
 
-    if report.temporal_coherence_score < threshold:
+    if not temp_skipped and report.temporal_coherence_score < threshold:
         recs.append(
             f"⚠️ Temporal Coherence score {report.temporal_coherence_score:.0%} < "
             f"{threshold:.0%}. Action: review week-over-week summary evolution."
@@ -1451,44 +1460,59 @@ def _execute_judges_and_build_report(
     threshold: float,
     lookback_days: int = 7,
     supabase=None,
+    judge_selection: str = "all",
 ) -> EvaluationReport:
-    """Run all 3 LLM judges + 4 deterministic judges, assemble EvaluationReport,
-    and persist results.
+    """Run selected judges (all 7, 3 LLM only, or 4 deterministic only), assemble
+    EvaluationReport, and persist results.
     """
-    llm = _get_llm()
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(
-                categoriser_judge, llm, articles_by_run
-            ): "categoriser",
-            executor.submit(
-                faithfulness_judge, llm, summaries_by_run, articles_by_run
-            ): "faithfulness",
-            executor.submit(
-                uniqueness_judge, llm, summaries_by_run, prior_summaries_by_run
-            ): "uniqueness",
-        }
-        results: Dict[str, Tuple] = {}
-        for fut in as_completed(futures):
-            name = futures[fut]
-            try:
-                results[name] = fut.result()
-            except Exception as exc:
-                logger.error("Judge %s failed: %s", name, exc)
-                if name == "categoriser":
-                    results[name] = (0.0, {}, {})
-                else:
-                    results[name] = (0.0, {})
+    llm_enabled = judge_selection in ("all", "llm")
+    deterministic_enabled = judge_selection in ("all", "deterministic")
+
+    results: Dict[str, Tuple] = {}
+
+    if llm_enabled:
+        llm = _get_llm()
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(
+                    categoriser_judge, llm, articles_by_run
+                ): "categoriser",
+                executor.submit(
+                    faithfulness_judge, llm, summaries_by_run, articles_by_run
+                ): "faithfulness",
+                executor.submit(
+                    uniqueness_judge, llm, summaries_by_run, prior_summaries_by_run
+                ): "uniqueness",
+            }
+            for fut in as_completed(futures):
+                name = futures[fut]
+                try:
+                    results[name] = fut.result()
+                except Exception as exc:
+                    logger.error("Judge %s failed: %s", name, exc)
+                    if name == "categoriser":
+                        results[name] = (0.0, {}, {})
+                    else:
+                        results[name] = (0.0, {})
+    else:
+        results["categoriser"] = (1.0, {}, {"skipped": True})
+        results["faithfulness"] = (1.0, {"skipped": True})
+        results["uniqueness"] = (1.0, {"skipped": True})
 
     classifier_score, per_theme_classifier, cat_raw = results.get("categoriser", (0.0, {}, {}))
     faithfulness_score, faith_raw = results.get("faithfulness", (0.0, {}))
     uniqueness_score, uniq_raw = results.get("uniqueness", (0.0, {}))
 
-    # Run 4 deterministic judges (sub-millisecond, zero LLM calls)
-    grounding_score, ground_raw = grounding_judge(summaries_by_run, articles_by_run)
-    structural_compliance_score, struct_raw = structural_compliance_judge(summaries_by_run)
-    coverage_score, cov_raw = coverage_judge(summaries_by_run, articles_by_run)
-    temporal_coherence_score, temp_raw = temporal_coherence_judge(summaries_by_run, prior_summaries_by_run)
+    if deterministic_enabled:
+        grounding_score, ground_raw = grounding_judge(summaries_by_run, articles_by_run)
+        structural_compliance_score, struct_raw = structural_compliance_judge(summaries_by_run)
+        coverage_score, cov_raw = coverage_judge(summaries_by_run, articles_by_run)
+        temporal_coherence_score, temp_raw = temporal_coherence_judge(summaries_by_run, prior_summaries_by_run)
+    else:
+        grounding_score, ground_raw = 1.0, {"skipped": True}
+        structural_compliance_score, struct_raw = 1.0, {"skipped": True}
+        coverage_score, cov_raw = 1.0, {"skipped": True}
+        temporal_coherence_score, temp_raw = 1.0, {"skipped": True}
 
     per_run_scores: List[Dict] = []
     for run in runs:
@@ -1517,6 +1541,7 @@ def _execute_judges_and_build_report(
         "temporal_coherence": temp_raw,
         "classifier_gates": get_latest_gate_stats(),
         "lookback_days": lookback_days,
+        "judge_selection": judge_selection,
     }
 
     report = EvaluationReport(
@@ -1612,8 +1637,9 @@ def run_weekly_evaluation(
     supabase=None,
     lookback_days: int = 7,
     threshold: float = QUALITY_THRESHOLD,
+    judge_selection: str = "all",
 ) -> EvaluationReport:
-    """Run the full evaluation. Returns an EvaluationReport and persists it to Supabase (if available)."""
+    """Run the evaluation for recent runs. Returns an EvaluationReport and persists it to Supabase (if available)."""
     if supabase is None:
         from core.supabase_client import get_supabase_manager
         supabase = get_supabase_manager()
@@ -1643,6 +1669,7 @@ def run_weekly_evaluation(
         threshold=threshold,
         lookback_days=lookback_days,
         supabase=supabase,
+        judge_selection=judge_selection,
     )
 
 
@@ -1650,10 +1677,11 @@ def run_evaluation_for_runs(
     run_ids: List[str],
     supabase=None,
     threshold: float = QUALITY_THRESHOLD,
+    judge_selection: str = "all",
 ) -> EvaluationReport:
     """Run evaluation for a specific set of run_ids (used by tests / page pre-selection)."""
     if not run_ids:
-        return run_weekly_evaluation(supabase=supabase, threshold=threshold)
+        return run_weekly_evaluation(supabase=supabase, threshold=threshold, judge_selection=judge_selection)
 
     if supabase is None:
         from core.supabase_client import get_supabase_manager
@@ -1686,6 +1714,7 @@ def run_evaluation_for_runs(
         threshold=threshold,
         lookback_days=0,
         supabase=supabase,
+        judge_selection=judge_selection,
     )
 
 

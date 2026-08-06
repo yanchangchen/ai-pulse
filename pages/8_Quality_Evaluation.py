@@ -171,6 +171,18 @@ with st.sidebar:
         horizontal=True,
         help="How far back to look for trend_runs to evaluate.",
     )
+    judge_selection_label = st.radio(
+        "Judges to Run",
+        options=["All 7 Judges", "3 LLM Judges Only", "4 Deterministic Judges Only"],
+        index=0,
+        help="Select which judges to evaluate. '3 LLM Judges Only' runs categoriser, faithfulness, and uniqueness; '4 Deterministic Judges Only' runs zero-cost sub-millisecond rule checks without LLM calls.",
+    )
+    judge_map = {
+        "All 7 Judges": "all",
+        "3 LLM Judges Only": "llm",
+        "4 Deterministic Judges Only": "deterministic",
+    }
+    judge_selection = judge_map[judge_selection_label]
 
 # ---------------------------------------------------------------------------
 # Evaluation history (lazy)
@@ -190,11 +202,11 @@ with st.spinner("Loading evaluation history…"):
 # ---------------------------------------------------------------------------
 st.subheader("▶ Run Evaluation")
 st.caption(
-    "On-demand evaluation.  Three LLM judges run concurrently and the result "
+    f"On-demand evaluation ({judge_selection_label}). Selected judges run and the result "
     "is written to the `quality_evaluations` Supabase table."
 )
 run_now = st.button(
-    "Run evaluation now",
+    f"Run evaluation ({judge_selection_label})",
     type="primary",
     width="stretch",
     key="run_quality_eval_btn",
@@ -204,21 +216,6 @@ if run_now:
     # ------------------------------------------------------------------
     # Live progress panel for the running evaluation
     # ------------------------------------------------------------------
-    # The three judges run in their own ThreadPoolExecutor inside
-    # ``run_weekly_evaluation``.  We start that call in a daemon thread so
-    # the Streamlit main thread can keep rendering.  A short poll loop
-    # below drains ``consume_judge_events()`` every ~500 ms and updates
-    # the per-judge sub-status, the running totals, and the live events
-    # dataframe.  This is the only place where the page is allowed to
-    # block — every other section is gated by ``st.session_state`` so
-    # subsequent reruns pick up where we left off.
-    #
-    # Cross-thread result handoff uses a ``queue.Queue`` and a
-    # ``threading.Event`` rather than direct ``st.session_state`` writes.
-    # Streamlit's session_state is not designed to be mutated by a
-    # background thread — the main thread's snapshot can lag behind the
-    # worker's writes, leaving us with ``report=None`` *and* ``error=None``
-    # simultaneously, which previously crashed on ``report.classifier_score``.
     reset_judge_events()
     progress_state = st.session_state.setdefault("eval_progress", {
         "running": False,
@@ -241,6 +238,7 @@ if run_now:
                 supabase=supabase,
                 lookback_days=lookback_days,
                 threshold=threshold,
+                judge_selection=judge_selection,
             )
             if report is None:
                 result_queue.put(("error", "run_weekly_evaluation returned None"))
