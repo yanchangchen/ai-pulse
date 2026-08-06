@@ -75,12 +75,11 @@ RLS is enabled with read-only public access. Run `supabase_schema.sql` and `supa
 ### Pages
 - `1_Overview.py` — theme summary cards with key takeaways
 - `2_Deep_Dive.py` — per-theme article list and further reading
-- `3_Word_Clouds.py` — trending topics visualised
+- `3_Keyword_Analysis.py` — keyword velocity analytics with theme filter & top-10 auto-plotting, plus theme word clouds
 - `4_Sources.py` — full source list with links
 - `5_History.py` — Memory Wiki to browse past runs
-- `6_Trend_Analytics.py` — historical trend analysis
-- `7_Emerging_Trends.py` — emergence timeline, acceleration index, novelty scoring, and novel articles from the last 7 days (queries Supabase directly)
-- `8_Quality_Evaluation.py` — weekly automated quality evaluation engine scoring 7 metrics: 3 LLM-as-judge (categoriser, faithfulness, uniqueness) + 4 sub-millisecond deterministic judges (grounding, structural compliance, coverage, temporal coherence) with a live progress panel; results persist to Supabase
+- `6_Trend_Analytics.py` — historical thematic momentum & theme drilldown timeline
+- `8_Quality_Evaluation.py` — weekly automated quality evaluation engine scoring 7 metrics with live progress panel, in-app theme keyword manager, 1-click apply buttons, and summariser tuner
 
 ## Project Structure
 

@@ -153,7 +153,7 @@ def main() -> None:
         st.page_link("pages/2_Deep_Dive.py", label="Deep Dive", icon="🔍")
 
     with col3:
-        st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
+        st.page_link("pages/3_Keyword_Analysis.py", label="Keyword Analysis", icon="🔑")
 
 
 if __name__ == "__main__":

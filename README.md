@@ -97,12 +97,11 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 | — | Home (`app.py`) | Dashboard with theme metrics and live ingestion status |
 | 1 | Overview | Theme summary cards with key takeaways |
 | 2 | Deep Dive | Per-theme article list, full summaries, and further reading |
-| 3 | Word Clouds | Trending topic visualisation per theme |
+| 3 | Keyword Analysis | Keyword velocity analytics with theme filter & top-10 auto-plotting, plus theme word clouds & frequency distributions |
 | 4 | Sources | All RSS feeds and web sources with article counts |
 | 5 | Memory Wiki | Browse past runs and per-theme summary history |
-| 6 | Trend Analytics | Cross-run momentum heatmap, keyword velocity, hype-vs-engineering index, theme drilldown |
-| 7 | Emerging Trends | Emergence timeline, acceleration index, novelty score, novel articles from the last 7 days |
-| 8 | Quality Evaluation | Weekly automated evaluation engine scoring 7 metrics: 3 LLM-as-judge (Categoriser, Faithfulness, Uniqueness) + 4 sub-millisecond deterministic judges (Grounding, Structural Compliance, Coverage, Temporal Coherence) with a live progress panel; results persist to Supabase. Also surfaces **keyword + watchlist suggestions** (with copy-to-clipboard snippets for `config/themes.py` and `watch.md`). |
+| 6 | Trend Analytics | Cross-run thematic momentum line chart & detailed theme historical drilldown timeline |
+| 8 | Quality Evaluation | Weekly automated evaluation engine scoring 7 metrics: 3 LLM-as-judge (Categoriser, Faithfulness, Uniqueness) + 4 sub-millisecond deterministic judges (Grounding, Structural Compliance, Coverage, Temporal Coherence) with a live progress panel; results persist to Supabase. Also surfaces **in-app theme keyword manager, 1-click apply buttons, and summariser tuner**. |
 
 All pages share a sidebar nav (`core/shared_sidebar.py`) and live background-status panel.
 

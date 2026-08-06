@@ -20,11 +20,10 @@ def render_sidebar_nav() -> None:
         st.page_link("app.py", label="Home", icon="🏠")
         st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
         st.page_link("pages/2_Deep_Dive.py", label="Deep Dive", icon="🔍")
-        st.page_link("pages/3_Word_Clouds.py", label="Word Clouds", icon="☁️")
+        st.page_link("pages/3_Keyword_Analysis.py", label="Keyword Analysis", icon="🔑")
         st.page_link("pages/4_Sources.py", label="Sources", icon="📰")
         st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
         st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
-        st.page_link("pages/7_Emerging_Trends.py", label="Emerging Trends", icon="🚀")
         st.page_link("pages/8_Quality_Evaluation.py", label="Quality Evaluation", icon="🔬")
 
         # Background status tracker
