@@ -286,7 +286,82 @@ class SupabaseManager:
         except Exception as e:
             logger.error(f"Failed to get summaries for run {run_id}: {e}")
             return None
-    
+
+    def get_summaries_across_runs(
+        self,
+        theme_filter: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        limit: int = 200,
+    ) -> Optional[List[Dict]]:
+        """Retrieve theme summaries across all runs in chronological order.
+
+        Returns a flat list of summary dicts, each augmented with
+        ``run_timestamp`` and ``run_date`` from the parent trend_run.
+        Results are ordered oldest-first so callers can reason about
+        chronological progression.
+
+        Args:
+            theme_filter: Optional theme name to restrict results to.
+            date_from: ISO date lower bound on the run timestamp.
+            date_to: ISO date upper bound on the run timestamp.
+            limit: Max rows to return.
+
+        Returns:
+            List of summary dicts (with run_timestamp/run_date), or None on failure.
+        """
+        if not self.available:
+            return None
+
+        try:
+            # Step 1 – fetch runs in the requested date window
+            runs_q = self.client.table("trend_runs") \
+                .select("id, run_timestamp, run_date") \
+                .order("run_timestamp", desc=False)
+            if date_from:
+                runs_q = runs_q.gte("run_timestamp", date_from)
+            if date_to:
+                runs_q = runs_q.lte("run_timestamp", date_to)
+
+            runs_resp = runs_q.execute()
+            if not runs_resp.data:
+                return []
+
+            run_lookup = {r["id"]: r for r in runs_resp.data}
+            run_ids = list(run_lookup.keys())
+
+            # Step 2 – fetch summaries for those runs
+            # Supabase .in_() has a practical limit; chunk if necessary
+            all_summaries: List[Dict] = []
+            chunk_size = 50
+            for i in range(0, len(run_ids), chunk_size):
+                chunk = run_ids[i:i + chunk_size]
+                sum_q = self.client.table("theme_summaries") \
+                    .select("run_id, theme_name, what_is_happening, why_it_matters, what_to_watch, article_count") \
+                    .in_("run_id", chunk)
+                if theme_filter:
+                    sum_q = sum_q.eq("theme_name", theme_filter)
+                sum_resp = sum_q.execute()
+                if sum_resp.data:
+                    all_summaries.extend(sum_resp.data)
+
+            # Step 3 – augment with run metadata and sort chronologically
+            results: List[Dict] = []
+            for s in all_summaries:
+                run_meta = run_lookup.get(s["run_id"])
+                if run_meta:
+                    results.append({
+                        **s,
+                        "run_timestamp": run_meta["run_timestamp"],
+                        "run_date": run_meta["run_date"],
+                    })
+
+            results.sort(key=lambda r: r["run_timestamp"])
+            return results[:limit]
+        except Exception as e:
+            logger.error(f"Failed to get summaries across runs: {e}")
+            return None
+
     def get_articles_for_run(self, run_id: str, theme_name: Optional[str] = None) -> Optional[List[Dict]]:
         """
         Retrieve articles for a specific run, optionally filtered by theme.
@@ -506,7 +581,29 @@ class SupabaseManager:
                 q = q.eq("source_name", source_filter)
 
             response = q.execute()
-            return response.data if response.data else []
+            articles = response.data if response.data else []
+
+            # Augment each article with the run_timestamp from trend_runs
+            if articles:
+                unique_run_ids = list({a["run_id"] for a in articles if a.get("run_id")})
+                run_lookup: Dict[str, str] = {}
+                chunk_size = 50
+                for i in range(0, len(unique_run_ids), chunk_size):
+                    chunk = unique_run_ids[i:i + chunk_size]
+                    try:
+                        runs_resp = self.client.table("trend_runs") \
+                            .select("id, run_timestamp") \
+                            .in_("id", chunk) \
+                            .execute()
+                        if runs_resp.data:
+                            for r in runs_resp.data:
+                                run_lookup[r["id"]] = r["run_timestamp"]
+                    except Exception:
+                        pass  # gracefully degrade — articles still usable without run_timestamp
+                for a in articles:
+                    a["run_timestamp"] = run_lookup.get(a.get("run_id"), None)
+
+            return articles
         except Exception as e:
             logger.error(f"Failed to search articles: {e}")
             return None
