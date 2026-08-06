@@ -5,9 +5,11 @@ Single source of truth for Ollama configuration, API keys, and app constants.
 Resolution order: st.secrets → os.environ → defaults (fail gracefully).
 """
 
+from __future__ import annotations
+
 import os
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 

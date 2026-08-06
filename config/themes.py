@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Dict
+
 # Theme definitions for AI Pulse
 # Keywords are weighted dicts: higher weight = stronger signal for that theme.
 
