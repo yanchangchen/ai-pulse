@@ -1137,7 +1137,8 @@ def generate_recommendations(report: EvaluationReport) -> List[str]:
     if not cov_skipped and report.coverage_score < threshold:
         recs.append(
             f"⚠️ Coverage score {report.coverage_score:.0%} < "
-            f"{threshold:.0%}. Action: many source articles are missing from output summaries."
+            f"{threshold:.0%}. Action: many source articles were missing from output summaries. "
+            f"Use the '⚙️ Faithfulness & Summariser Tuner' tab below to increase the Max Predict Token Budget slider (e.g. to 2000+ tokens)."
         )
 
     if not temp_skipped and report.temporal_coherence_score < threshold:

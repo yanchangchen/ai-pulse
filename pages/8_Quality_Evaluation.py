@@ -361,11 +361,34 @@ if run_now:
             parse_fail = sum(1 for e in evs if not e.get("parse_ok"))
             latencies = [e["latency_ms"] for e in evs if e.get("latency_ms", 0) > 0]
             mean_lat = int(sum(latencies) / len(latencies)) if latencies else 0
-            st.success(
-                f"✅ Evaluation complete — classifier {report.classifier_score:.0%}, "
-                f"faithfulness {report.faithfulness_score:.0%}, "
-                f"uniqueness {report.uniqueness_score:.0%}."
-            )
+            raw_m = getattr(report, "raw_metrics", {}) or {}
+            judge_mode = raw_m.get("judge_selection", "all")
+
+            if judge_mode == "deterministic":
+                st.success(
+                    f"✅ Evaluation complete (4 Deterministic Judges Only) — "
+                    f"grounding {report.grounding_score:.0%}, "
+                    f"structural compliance {report.structural_compliance_score:.0%}, "
+                    f"coverage {report.coverage_score:.0%}, "
+                    f"temporal coherence {report.temporal_coherence_score:.0%}."
+                )
+            elif judge_mode == "llm":
+                st.success(
+                    f"✅ Evaluation complete (3 LLM Judges Only) — "
+                    f"classifier {report.classifier_score:.0%}, "
+                    f"faithfulness {report.faithfulness_score:.0%}, "
+                    f"uniqueness {report.uniqueness_score:.0%}."
+                )
+            else:
+                st.success(
+                    f"✅ Evaluation complete (All 7 Judges) — "
+                    f"classifier {report.classifier_score:.0%}, "
+                    f"faithfulness {report.faithfulness_score:.0%}, "
+                    f"uniqueness {report.uniqueness_score:.0%}, "
+                    f"grounding {report.grounding_score:.0%}, "
+                    f"coverage {report.coverage_score:.0%}."
+                )
+
             st.caption(
                 f"Judge events: {len(evs)} • LLM calls: ~{llm_calls} • "
                 f"parse failures: {parse_fail} • mean latency: {mean_lat} ms"
@@ -470,28 +493,45 @@ if history_df.empty:
 else:
     latest = history_df.iloc[-1]
 
-    def _score_tile(col, label: str, score: float, threshold_val: float) -> None:
+    raw_m_latest = latest.get("raw_metrics", {}) or {}
+    cat_sk = raw_m_latest.get("categoriser", {}).get("skipped", False)
+    faith_sk = raw_m_latest.get("faithfulness", {}).get("skipped", False)
+    uniq_sk = raw_m_latest.get("uniqueness", {}).get("skipped", False)
+    ground_sk = raw_m_latest.get("grounding", {}).get("skipped", False)
+    struct_sk = raw_m_latest.get("structural_compliance", {}).get("skipped", False)
+    cov_sk = raw_m_latest.get("coverage", {}).get("skipped", False)
+    temp_sk = raw_m_latest.get("temporal_coherence", {}).get("skipped", False)
+
+    def _score_tile(col, label: str, score: float, threshold_val: float, skipped: bool = False) -> None:
         with col:
-            pct = max(0.0, min(1.0, float(score)))
-            ok = pct >= threshold_val
-            color = "#1f9d55" if ok else "#c0392b"
-            st.metric(label, f"{pct:.0%}", delta=f"threshold {threshold_val:.0%}")
-            st.progress(pct)
-            st.markdown(
-                f"<div style='height:6px;border-radius:3px;background:{color}'></div>",
-                unsafe_allow_html=True,
-            )
+            if skipped:
+                st.metric(label, "Skipped", delta="N/A (Skipped)")
+                st.progress(0.0)
+                st.markdown(
+                    "<div style='height:6px;border-radius:3px;background:#555'></div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                pct = max(0.0, min(1.0, float(score)))
+                ok = pct >= threshold_val
+                color = "#1f9d55" if ok else "#c0392b"
+                st.metric(label, f"{pct:.0%}", delta=f"threshold {threshold_val:.0%}")
+                st.progress(pct)
+                st.markdown(
+                    f"<div style='height:6px;border-radius:3px;background:{color}'></div>",
+                    unsafe_allow_html=True,
+                )
 
     c1, c2, c3, c4 = st.columns(4)
-    _score_tile(c1, "Classifier", latest["classifier_score"], threshold)
-    _score_tile(c2, "Faithfulness", latest["faithfulness_score"], threshold)
-    _score_tile(c3, "Uniqueness", latest["uniqueness_score"], threshold)
-    _score_tile(c4, "Grounding", latest.get("grounding_score", 1.0), threshold)
+    _score_tile(c1, "Classifier", latest["classifier_score"], threshold, skipped=cat_sk)
+    _score_tile(c2, "Faithfulness", latest["faithfulness_score"], threshold, skipped=faith_sk)
+    _score_tile(c3, "Uniqueness", latest["uniqueness_score"], threshold, skipped=uniq_sk)
+    _score_tile(c4, "Grounding", latest.get("grounding_score", 1.0), threshold, skipped=ground_sk)
 
     c5, c6, c7, _ = st.columns(4)
-    _score_tile(c5, "Structural Compliance", latest.get("structural_compliance_score", 1.0), threshold)
-    _score_tile(c6, "Coverage", latest.get("coverage_score", 1.0), threshold)
-    _score_tile(c7, "Temporal Coherence", latest.get("temporal_coherence_score", 1.0), threshold)
+    _score_tile(c5, "Structural Compliance", latest.get("structural_compliance_score", 1.0), threshold, skipped=struct_sk)
+    _score_tile(c6, "Coverage", latest.get("coverage_score", 1.0), threshold, skipped=cov_sk)
+    _score_tile(c7, "Temporal Coherence", latest.get("temporal_coherence_score", 1.0), threshold, skipped=temp_sk)
 
     st.caption(
         f"Generated at: {latest['generated_at']}  •  "
@@ -693,7 +733,9 @@ with tab_sum:
     from config.settings import get_summariser_settings, update_summariser_settings
     cur_s = get_summariser_settings()
 
-    st.markdown("#### ⚙️ Summariser & Faithfulness Tuning Parameters")
+    st.markdown("#### ⚙️ Summariser, Faithfulness & Coverage Tuning")
+    st.info("💡 **Coverage Tip**: If **Coverage score** is low (<70%), increase the **Max Predict Token Budget** slider to 2,000–2,500 tokens so the summariser does not cut off or omit source articles.")
+
     t_strict = st.toggle(
         "🛡️ Enable Strict Anti-Hallucination Grounding Mode",
         value=cur_s.get("strict_faithfulness_mode", False),
@@ -705,14 +747,14 @@ with tab_sum:
         help="Lower temperature (e.g. 0.1) produces strictly deterministic outputs and reduces fabrication."
     )
     s_tokens = st.slider(
-        "Max Predict Token Budget",
+        "Max Predict Token Budget (Fixes Low Coverage)",
         min_value=500, max_value=3000, value=int(cur_s.get("max_tokens", 1500)), step=100,
-        help="Response token budget for output summaries."
+        help="Response token budget for output summaries. Increase to 2,000–2,500 tokens if Coverage score is low (<70%)."
     )
 
     if st.button("💾 Save Tuner Settings", key="btn_save_sum_settings", type="primary"):
         update_summariser_settings(s_temp, s_tokens, t_strict)
-        st.toast("Saved summariser & faithfulness settings!", icon="✅")
+        st.toast("Saved summariser, faithfulness & coverage settings!", icon="✅")
         st.success("Updated active summariser tuning parameters successfully!")
         st.rerun()
 
