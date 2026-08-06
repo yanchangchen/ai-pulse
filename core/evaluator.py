@@ -1,25 +1,26 @@
 """
 Weekly quality evaluation engine for AI Pulse.
 
-Three LLM judge agents run in parallel to score recent runs:
+Combines three LLM judge agents running concurrently via ThreadPoolExecutor
+with four sub-millisecond deterministic quality checkers to score recent runs:
 
+LLM Judges (concurrent via ThreadPoolExecutor + Semaphore(3)):
 1. **CategoriserJudge** — re-classifies a stratified sample of articles per run
-   and compares against the theme that was originally assigned.  Output:
-   `classifier_score` (mean accuracy) and `per_theme_classifier` (per-theme
-   accuracy).
+   and compares against the theme originally assigned. Output: `classifier_score`
+   and `per_theme_classifier`.
 
-2. **FaithfulnessJudge** — for each run, samples three summary sections
-   ("what_is_happening", "engineering_tradeoffs", "product_impact") and asks
-   the LLM to score 0..1 how well the claims are supported by the source
-   articles.  Output: `faithfulness_score` (mean).
+2. **FaithfulnessJudge** — fact-checks summary claims across all 7 themes against
+   theme-filtered source articles (excludes empty/fallback sections from mean).
+   Output: `faithfulness_score`.
 
-3. **UniquenessJudge** — for each run, asks the LLM to score pairwise
-   overlap (0..1) between all theme summaries *in the same run* and against
-   the same theme in the previous run.  Output: `uniqueness_score` (1 minus
-   mean overlap).
+3. **UniquenessJudge** — scores pairwise overlap (0..1) between all theme summaries
+   in the same run and across consecutive runs. Output: `uniqueness_score`.
 
-The three judges run concurrently via `concurrent.futures.ThreadPoolExecutor`,
-matching the project's existing threading style (`BackgroundRefresher`).
+Deterministic Judges (sub-millisecond, zero LLM cost):
+4. **GroundingScore** — verifies further reading citations match input source articles.
+5. **StructuralComplianceScore** — checks section presence, 3–7 sentence bounds for prose, and list formatting.
+6. **CoverageScore** — measures source article recall across generated summaries.
+7. **TemporalCoherenceScore** — checks for meaningful week-over-week summary evolution.
 """
 
 from __future__ import annotations

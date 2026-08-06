@@ -1,7 +1,8 @@
 """
 AI Pulse - Quality Evaluation Page
-On-demand and weekly-view of classifier, faithfulness, and uniqueness scores
-produced by three concurrent LLM judge agents in core/evaluator.py.
+On-demand and weekly view of 7 quality metrics (Categoriser, Faithfulness, Uniqueness,
+Grounding, Structural Compliance, Coverage, and Temporal Coherence) produced by
+LLM judge agents and sub-millisecond deterministic checkers in core/evaluator.py.
 """
 
 from __future__ import annotations
@@ -85,12 +86,12 @@ check_and_show_bg_status()
 # ---------------------------------------------------------------------------
 st.title("🔬 Quality Evaluation")
 st.caption(
-    "Reference-free quality scoring of the AI Pulse pipeline.  Three LLM judge "
-    "agents run in parallel on the recent runs stored in Supabase: a "
-    "**Categoriser** judge (does the assigned theme match a fresh classification?), "
-    "a **Faithfulness** judge (are the summary claims supported by the source "
-    "articles?), and a **Uniqueness** judge (do summaries overlap across themes "
-    "and across runs?)."
+    "Reference-free quality scoring of the AI Pulse pipeline evaluating 7 quality metrics. "
+    "Three LLM judge agents run concurrently via ThreadPoolExecutor + Semaphore(3): **Categoriser** (fresh theme re-classification), "
+    "**Faithfulness** (fact-checking summary claims against theme-filtered source articles), and **Uniqueness** (pairwise overlap across themes and runs). "
+    "Four sub-millisecond deterministic judges run alongside: **Grounding** (verifying further reading citations match source articles), "
+    "**Structural Compliance** (section presence, sentence bounds, list formatting), **Coverage** (source article recall), and "
+    "**Temporal Coherence** (week-over-week summary evolution)."
 )
 
 # ---------------------------------------------------------------------------
