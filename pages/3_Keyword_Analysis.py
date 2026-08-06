@@ -33,32 +33,32 @@ def get_session_data():
     return st.session_state.themed_articles
 
 
-def get_top_5_keywords_for_theme(theme_name: str, themed_articles: dict) -> list:
-    """Get the top 5 high-signal keywords for a given theme (or all themes)."""
+def get_top_10_keywords_for_theme(theme_name: str, themed_articles: dict) -> list:
+    """Get the top 10 high-signal keywords for a given theme (or all themes)."""
     if theme_name != "All Themes (No Filter)":
         articles = themed_articles.get(theme_name, [])
         if articles:
-            top_tuples = get_top_words_for_theme(theme_name, articles, 5)
+            top_tuples = get_top_words_for_theme(theme_name, articles, 10)
             if top_tuples:
-                return [w[0] for w in top_tuples[:5]]
+                return [w[0] for w in top_tuples[:10]]
         # Fallback to configured theme keywords in THEMES
         theme_kws = THEMES.get(theme_name, {}).get("keywords", {})
         sorted_kws = sorted(theme_kws.items(), key=lambda kv: (-kv[1], kv[0]))
-        return [w[0] for w in sorted_kws[:5]]
+        return [w[0] for w in sorted_kws[:10]]
     else:
-        # Global top 5 keywords across all themes
+        # Global top 10 keywords across all themes
         all_articles = []
         for arts in themed_articles.values():
             all_articles.extend(arts)
         if all_articles:
-            top_tuples = get_top_words_for_theme("All", all_articles, 5)
+            top_tuples = get_top_words_for_theme("All", all_articles, 10)
             if top_tuples:
-                return [w[0] for w in top_tuples[:5]]
-        return ["mcp", "agents", "rag", "blackwell", "gpu"]
+                return [w[0] for w in top_tuples[:10]]
+        return ["mcp", "agent", "rag", "blackwell", "gpu", "benchmark", "model", "workflow", "security", "eval"]
 
 
 def load_keyword_data(supabase, selected_keywords, theme_filter=None, history=None):
-    """Load keyword counts per run from either Supabase or local history fallback."""
+    """Load keyword counts per run, combining singular/plural variants (e.g. agent + agents)."""
     if not selected_keywords:
         return pd.DataFrame()
 
@@ -107,7 +107,15 @@ def load_keyword_data(supabase, selected_keywords, theme_filter=None, history=No
 
         kw_row = {"timestamp": ts, "date": date}
         for kw in selected_keywords:
-            kw_row[kw] = full_text.count(kw.lower())
+            kw_lower = kw.lower().strip()
+            c_kw = canonicalize_word(kw_lower)
+            # Count exact keyword + variant singular/plural
+            cnt = full_text.count(kw_lower)
+            if c_kw == kw_lower and not kw_lower.endswith("s"):
+                cnt += full_text.count(kw_lower + "s")
+            elif kw_lower.endswith("s") and len(kw_lower) > 3:
+                cnt += full_text.count(kw_lower[:-1])
+            kw_row[kw] = cnt
         keyword_data.append(kw_row)
 
     df_keywords = pd.DataFrame(keyword_data)
@@ -149,8 +157,8 @@ def main() -> None:
             key="kw_velocity_theme_filter"
         )
 
-    # Derive top 5 keywords for the selected theme filter
-    top_5_kws = get_top_5_keywords_for_theme(theme_filter, themed_articles)
+    # Derive top 10 keywords for the selected theme filter
+    top_10_kws = get_top_10_keywords_for_theme(theme_filter, themed_articles)
 
     with col_custom:
         custom_kws = st.text_input(
@@ -159,7 +167,7 @@ def main() -> None:
             key="kw_velocity_custom_kws"
         )
 
-    options_list = list(top_5_kws)
+    options_list = list(top_10_kws)
     if custom_kws:
         for kw in custom_kws.split(","):
             kw_clean = kw.strip().lower()
@@ -169,7 +177,7 @@ def main() -> None:
     selected_keywords = st.multiselect(
         "Select Keywords to Visualise:",
         options=options_list,
-        default=top_5_kws,
+        default=top_10_kws,
         key="kw_velocity_multiselect"
     )
 

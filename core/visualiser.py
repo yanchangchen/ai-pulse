@@ -20,15 +20,44 @@ from wordcloud import WordCloud, STOPWORDS
 from config.themes import THEMES, THEME_COLORS, THEME_ORDER
 
 # Custom stopwords specific to AI news
+# Custom stopwords specific to AI news (low-signal verbs, time indicators, generic prose)
 CUSTOM_STOPWORDS = {
-    "ai", "artificial", "intelligence", "says", "new", "week", "year",
-    "also", "will", "can", "use", "using", "used", "one", "two", "three",
-    "first", "last", "said", "according", "would", "could", "may", "might",
-    "just", "like", "get", "make", "made", "know", "think", "see", "come",
-    "look", "want", "give", "take", "tell", "try", "call", "need", "feel",
-    "become", "back", "still", "well", "even", "really", "way", "thing",
-    "things", "people", "time", "day", "days", "today", "yesterday",
-    "report", "reports", "news", "article", "post", "blog", "says"
+    # Time indicators
+    "today", "yesterday", "tomorrow", "week", "weeks", "month", "months",
+    "year", "years", "day", "days", "daily", "weekly", "monthly", "yearly",
+    "now", "recent", "recently", "latest", "past", "future", "new", "first",
+    "next", "last", "earlier", "ago", "currently", "soon", "upcoming",
+
+    # Common verbs & gerunds
+    "use", "using", "used", "uses", "make", "makes", "made", "making",
+    "build", "builds", "building", "built", "create", "creates", "created", "creating",
+    "launch", "launches", "launched", "launching", "release", "releases", "released", "releasing",
+    "announce", "announces", "announced", "announcing", "show", "shows", "showed", "showing",
+    "provide", "provides", "provided", "providing", "help", "helps", "helped", "helping",
+    "need", "needs", "needed", "needing", "want", "wants", "wanted", "wanting",
+    "work", "works", "worked", "working", "run", "runs", "ran", "running",
+    "include", "includes", "included", "including", "find", "finds", "found", "finding",
+    "take", "takes", "took", "taken", "taking", "give", "gives", "gave", "given", "giving",
+    "come", "comes", "came", "coming", "go", "goes", "went", "going",
+    "say", "says", "said", "saying", "get", "gets", "got", "getting",
+    "think", "thinks", "thought", "thinking", "see", "sees", "saw", "seeing",
+    "know", "knows", "knew", "knowing", "look", "looks", "looked", "looking",
+    "tell", "tells", "told", "telling", "try", "tries", "tried", "trying",
+    "call", "calls", "called", "calling", "feel", "feels", "felt", "feeling",
+    "become", "becomes", "became", "becoming", "allow", "allows", "allowed", "allowing",
+    "enable", "enables", "enabled", "enabling", "support", "supports", "supported", "supporting",
+    "lead", "leads", "led", "leading", "bring", "brings", "brought", "bringing",
+    "set", "sets", "setting", "put", "puts", "putting", "keep", "keeps", "kept", "keeping",
+    "start", "starts", "started", "starting", "stop", "stops", "stopped", "stopping",
+
+    # Generic high-frequency prose words
+    "ai", "artificial", "intelligence", "also", "will", "can", "one", "two", "three", "four", "five",
+    "according", "would", "could", "may", "might", "must", "should", "shall",
+    "just", "like", "well", "even", "really", "way", "thing", "things", "people",
+    "time", "report", "reports", "news", "article", "articles", "post", "posts", "blog", "blogs",
+    "many", "much", "more", "most", "some", "such", "than", "other", "others", "another",
+    "part", "parts", "company", "companies", "system", "systems", "tech", "technology",
+    "high", "low", "big", "small", "good", "better", "best", "bad", "worse", "worst"
 }
 
 # Combine with default stopwords
@@ -42,6 +71,24 @@ THEME_COLOR_MAPS = {
     "AI Companies & Business": "Greens",
     "AI in Government & Policy": "Reds"
 }
+
+
+def canonicalize_word(word: str) -> str:
+    """Normalize a word into its canonical singular form to combine variants.
+    e.g., 'agents' -> 'agent', 'models' -> 'model', 'benchmarks' -> 'benchmark'
+    """
+    word = word.lower().strip()
+    if len(word) <= 3:
+        return word
+
+    if word.endswith("ies") and len(word) > 5:
+        return word[:-3] + "y"
+    elif word.endswith("es") and word[:-2].endswith(("sh", "ch", "ss", "x", "z")):
+        return word[:-2]
+    elif word.endswith("s") and not word.endswith(("ss", "us", "is", "os", "as")):
+        return word[:-1]
+
+    return word
 
 
 def preprocess_text(text: str) -> str:
@@ -62,18 +109,19 @@ def preprocess_text(text: str) -> str:
 
 
 def extract_top_words(text: str, n: int = 20) -> List[Tuple[str, int]]:
-    """Extract top N words from text, excluding stopwords."""
+    """Extract top N words from text, excluding stopwords and combining singular/plural variants."""
     words = text.split()
 
-    # Filter stopwords
-    filtered_words = [
-        word for word in words
-        if word not in ALL_STOPWORDS and len(word) > 2
-    ]
+    canonical_words = []
+    for word in words:
+        w_clean = word.lower().strip()
+        if w_clean in ALL_STOPWORDS or len(w_clean) <= 2:
+            continue
+        c_word = canonicalize_word(w_clean)
+        if c_word not in ALL_STOPWORDS and len(c_word) > 2:
+            canonical_words.append(c_word)
 
-    # Count frequencies
-    word_counts = Counter(filtered_words)
-
+    word_counts = Counter(canonical_words)
     return word_counts.most_common(n)
 
 
