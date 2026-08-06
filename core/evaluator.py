@@ -40,6 +40,16 @@ from config.settings import (
     EVALUATION_MAX_RUNS,
     EVALUATION_SAMPLE_SIZE,
     QUALITY_THRESHOLD,
+    EVAL_CATEGORISER_SUMMARY_CHARS,
+    EVAL_FAITHFULNESS_SUMMARY_CHARS,
+    EVAL_FAITHFULNESS_ARTICLE_BUDGET,
+    EVAL_OVERLAP_TEXT_CHARS,
+    EVAL_HEURISTIC_LOW,
+    EVAL_HEURISTIC_HIGH,
+    EVAL_HEURISTIC_MAX_CHARS,
+    EVAL_KEYWORD_MAX_ARTICLES,
+    EVAL_KEYWORD_REASON_CHARS,
+    EVAL_FAITHFULNESS_SKIP_STRINGS,
 )
 from config.themes import THEMES, THEME_ORDER
 from core.llm_client import LLMClient, LLMClientError
@@ -61,11 +71,10 @@ _judge_events: Deque[Dict] = deque(maxlen=JUDGE_EVENT_BUFFER_SIZE)
 # Optional override: tests can swap this for a different deque.
 _judge_event_buffer: Deque[Dict] = _judge_events
 
-# Per-(a, b) cache of overlap results within a single evaluation run.
-# Keyed by the sorted concatenation of theme names so within-run and
-# cross-run pairs dedup against each other.  Lives only for the duration
-# of one ``uniqueness_judge`` invocation.
-_uniqueness_pair_cache: Dict[str, float] = {}
+# Per-(a, b) overlap cache is now scoped per-evaluation (passed as a
+# local dict to uniqueness_judge / _judge_overlap) rather than living
+# as a module-level global.  This prevents concurrent evaluations from
+# corrupting each other's results.
 
 
 def _record_event(
@@ -98,26 +107,26 @@ def _record_event(
 def consume_judge_events() -> List[Dict]:
     """Return and clear the judge-event buffer.  The Streamlit progress
     panel calls this on each tick to drain new events.
+    Uses popleft() for atomic draining to avoid TOCTOU race.
     """
-    out = list(_judge_event_buffer)
-    _judge_event_buffer.clear()
+    out = []
+    while _judge_event_buffer:
+        try:
+            out.append(_judge_event_buffer.popleft())
+        except IndexError:
+            break
     return out
 
 
 def reset_judge_events() -> None:
     """Hard-reset the buffer.  Useful in tests."""
     _judge_event_buffer.clear()
-    _uniqueness_pair_cache.clear()
 
 
 def _event_sink_for_run(run_id: str) -> Callable[[int, bool, str], None]:
     """Return an LLMClient event-sink that records latency and parse
     outcome against the most recent ``_record_event`` for ``run_id``.
-    The judge helpers call ``_record_event`` with the result and the
-    event sink adds the latency.
     """
-    last_ts = [0.0]
-
     def _sink(latency_ms: int, ok: bool, error_msg: str) -> None:
         _record_event(
             judge="llm_attempt",
@@ -127,7 +136,6 @@ def _event_sink_for_run(run_id: str) -> Callable[[int, bool, str], None]:
             parse_ok=ok,
             score=None,
         )
-        last_ts[0] = latency_ms
     return _sink
 
 # ---------------------------------------------------------------------------
@@ -192,6 +200,10 @@ class EvaluationReport:
     classifier_score: float
     faithfulness_score: float
     uniqueness_score: float
+    grounding_score: float
+    structural_compliance_score: float
+    coverage_score: float
+    temporal_coherence_score: float
     per_theme_classifier: Dict[str, float]
     per_run_scores: List[Dict]
     recommendations: List[str]
@@ -289,8 +301,14 @@ def _load_summaries_for_run(supabase, run_id: str) -> Dict[str, Dict]:
 # ---------------------------------------------------------------------------
 
 
+_llm: Optional[LLMClient] = None
+
+
 def _get_llm() -> LLMClient:
-    return LLMClient()
+    global _llm
+    if _llm is None:
+        _llm = LLMClient()
+    return _llm
 
 
 def _safe_mean(values: List[float]) -> float:
@@ -391,13 +409,28 @@ def _coerce_score(parsed: Optional[Dict]) -> Optional[float]:
 
 
 def _match_theme(predicted: str) -> Optional[str]:
-    """Fuzzy-match a free-form LLM theme name to one of the canonical THEMES."""
+    """Fuzzy-match a free-form LLM theme name to one of the canonical THEMES.
+    Checks both directions: canonical-in-predicted and predicted-in-canonical,
+    plus word-overlap fallback for short LLM responses.
+    """
     if not predicted:
         return None
-    lower = predicted.lower()
+    lower = predicted.lower().strip()
+    # Forward: full canonical name appears in the LLM response
     for theme in THEMES.keys():
         if theme.lower() in lower:
             return theme
+    # Reverse: LLM response appears in a canonical name
+    for theme in THEMES.keys():
+        if lower in theme.lower():
+            return theme
+    # Word-overlap fallback: match if >= 2 significant words overlap
+    pred_words = {w for w in re.findall(r'[a-z]+', lower) if len(w) > 3}
+    if len(pred_words) >= 2:
+        for theme in THEMES.keys():
+            theme_words = {w for w in re.findall(r'[a-z]+', theme.lower()) if len(w) > 3}
+            if len(pred_words & theme_words) >= 2:
+                return theme
     return None
 
 
@@ -419,16 +452,12 @@ _HEURISTIC_STOPWORDS = frozenset({
 })
 
 # Heuristic band: below this we trust Jaccard, above we trust Jaccard,
-# in between we delegate to the LLM.  Tuned so the LLM is only called
-# when the heuristic is genuinely uncertain (0.05 < j < 0.85).
-_HEURISTIC_LOW = 0.05
-_HEURISTIC_HIGH = 0.85
+# in between we delegate to the LLM.  Configurable via settings.
+_HEURISTIC_LOW = EVAL_HEURISTIC_LOW
+_HEURISTIC_HIGH = EVAL_HEURISTIC_HIGH
 
-# Cap on text length fed into the heuristic.  AI-Pulse summaries are
-# typically a few hundred words; capping at 4000 chars per side keeps
-# the tokenisation O(few-K) and prevents any pair from blowing up the
-# judge wall-clock.
-_HEURISTIC_MAX_CHARS = 4000
+# Cap on text length fed into the heuristic.  Configurable via settings.
+_HEURISTIC_MAX_CHARS = EVAL_HEURISTIC_MAX_CHARS
 
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
@@ -503,7 +532,7 @@ def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, s
         response = llm.generate(
             CATEGORISER_PROMPT.format(
                 title=article.get("title", ""),
-                summary=(article.get("summary") or "")[:500],
+                summary=(article.get("summary") or "")[:EVAL_CATEGORISER_SUMMARY_CHARS],
             ),
             temperature=0.1,
             max_tokens=150,
@@ -624,7 +653,7 @@ SOURCE ARTICLES:
 """
 
 
-def _format_articles_for_judge(articles: List[Dict], max_chars: int = 3000) -> str:
+def _format_articles_for_judge(articles: List[Dict], max_chars: int = EVAL_FAITHFULNESS_ARTICLE_BUDGET) -> str:
     """Format a list of articles into a compact text block, truncated."""
     parts: List[str] = []
     used = 0
@@ -645,20 +674,13 @@ def _judge_faithfulness_one(
     articles: List[Dict],
     run_id: str = "",
     item_id: str = "",
-) -> float:
+) -> Optional[float]:
     if not summary_text or not summary_text.strip():
-        # Empty summaries are perfectly faithful (no claims made).
-        _record_event(
-            judge="faithfulness",
-            run_id=run_id,
-            item_id=item_id,
-            latency_ms=0,
-            parse_ok=True,
-            score=1.0,
-        )
-        return 1.0
+        # Empty summaries are excluded from scoring (return None) rather
+        # than scored 1.0, which would inflate the metric.
+        return None
     prompt = FAITHFULNESS_PROMPT.format(
-        summary=summary_text[:2000],
+        summary=summary_text[:EVAL_FAITHFULNESS_SUMMARY_CHARS],
         articles=_format_articles_for_judge(articles),
     )
     t0 = time.monotonic()
@@ -716,7 +738,12 @@ def faithfulness_judge(
     summaries_by_run: Dict[str, Dict[str, Dict]],
     articles_by_run: Dict[str, List[Dict]],
 ) -> Tuple[float, Dict]:
-    """Score summary faithfulness across all runs.  Returns (overall, raw)."""
+    """Score summary faithfulness across all runs.  Returns (overall, raw).
+
+    Evaluates all themes (not a subset) and filters articles to only
+    those matching the theme being judged.  Empty or known-fallback
+    sections are excluded from the mean to avoid inflating the score.
+    """
     sections_to_judge = [
         "what_is_happening",
         "engineering_tradeoffs",
@@ -726,20 +753,24 @@ def faithfulness_judge(
     raw_per_run: Dict[str, Dict] = {}
 
     for run_id, summaries in summaries_by_run.items():
-        articles = articles_by_run.get(run_id, [])
+        all_articles = articles_by_run.get(run_id, [])
         run_scores: List[float] = []
-        # Sample at most one summary per section across themes
-        themes = list(summaries.keys())[:3]
-        for theme in themes:
+        for theme in summaries.keys():
             s = summaries[theme]
+            # Filter articles to only those matching this theme
+            theme_articles = [a for a in all_articles if a.get("theme_name") == theme]
             for section in sections_to_judge:
                 text = s.get(section, "")
+                # Skip empty or known-fallback sections
+                if not text or not text.strip() or text.strip() in EVAL_FAITHFULNESS_SKIP_STRINGS:
+                    continue
                 score = _judge_faithfulness_one(
-                    llm, text, articles,
+                    llm, text, theme_articles,
                     run_id=run_id, item_id=f"{theme}|{section}",
                 )
-                scores.append(score)
-                run_scores.append(score)
+                if score is not None:
+                    scores.append(score)
+                    run_scores.append(score)
         raw_per_run[run_id] = {"scores": run_scores}
 
     return _safe_mean(scores), {"per_run": raw_per_run, "samples": len(scores)}
@@ -781,6 +812,7 @@ def _judge_overlap(
     b: str,
     run_id: str = "",
     item_id: str = "",
+    pair_cache: Optional[Dict[str, float]] = None,
 ) -> float:
     """Return overlap for a single (a, b) pair, using a deterministic
     short-circuit when the heuristic is confident, and a per-evaluation
@@ -788,8 +820,8 @@ def _judge_overlap(
     appears in both the within-run and cross-run loops.
     """
     cache_key = item_id or f"{hash((a, b)) & 0xFFFFFFFF:08x}"
-    if cache_key in _uniqueness_pair_cache:
-        cached = _uniqueness_pair_cache[cache_key]
+    if pair_cache is not None and cache_key in pair_cache:
+        cached = pair_cache[cache_key]
         _record_event(
             judge="uniqueness",
             run_id=run_id,
@@ -802,7 +834,8 @@ def _judge_overlap(
 
     heuristic = _heuristic_short_circuit(a, b)
     if heuristic is not None:
-        _uniqueness_pair_cache[cache_key] = heuristic
+        if pair_cache is not None:
+            pair_cache[cache_key] = heuristic
         _record_event(
             judge="uniqueness",
             run_id=run_id,
@@ -816,7 +849,7 @@ def _judge_overlap(
     try:
         t0 = time.monotonic()
         resp = llm.generate(
-            OVERLAP_PROMPT.format(a=a[:1500], b=b[:1500]),
+            OVERLAP_PROMPT.format(a=a[:EVAL_OVERLAP_TEXT_CHARS], b=b[:EVAL_OVERLAP_TEXT_CHARS]),
             temperature=0.1,
             max_tokens=250,
             event_sink=_event_sink_for_run(run_id),
@@ -855,7 +888,8 @@ def _judge_overlap(
             score=0.0,
         )
         return 0.0
-    _uniqueness_pair_cache[cache_key] = overlap
+    if pair_cache is not None:
+        pair_cache[cache_key] = overlap
     _record_event(
         judge="uniqueness",
         run_id=run_id,
@@ -875,12 +909,10 @@ def uniqueness_judge(
     """Score uniqueness across (a) within-run theme pairs and
     (b) cross-run same-theme pairs if `prior_summaries_by_run` is provided.
 
-    The within-run and cross-run loops share a single per-evaluation
-    cache (``_uniqueness_pair_cache``) so a pair that appears in both
-    loops only triggers one LLM call.
+    Uses a local per-evaluation cache so concurrent evaluations don't interfere.
     """
     overlaps: List[float] = []
-    _uniqueness_pair_cache.clear()
+    pair_cache: Dict[str, float] = {}
 
     # (a) Within-run pairwise overlap
     for run_id, summaries in summaries_by_run.items():
@@ -890,7 +922,7 @@ def uniqueness_judge(
                 a = _summaries_to_text(summaries, themes[i])
                 b = _summaries_to_text(summaries, themes[j])
                 item_id = f"within|{run_id}|{themes[i]}|{themes[j]}"
-                overlaps.append(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id))
+                overlaps.append(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache))
 
     # (b) Cross-run same-theme overlap
     if prior_summaries_by_run:
@@ -904,11 +936,143 @@ def uniqueness_judge(
                 a = _summaries_to_text(summaries, theme)
                 b = _summaries_to_text(prior, theme)
                 item_id = f"cross|{run_id}|{theme}"
-                overlaps.append(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id))
+                overlaps.append(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache))
 
     mean_overlap = _safe_mean(overlaps)
     uniqueness = 1.0 - mean_overlap
     return uniqueness, {"samples": len(overlaps), "mean_overlap": mean_overlap}
+
+
+def parse_further_reading_titles(further_reading_text: str) -> List[str]:
+    """Parse titles out of further reading section."""
+    titles = []
+    if not further_reading_text:
+        return titles
+    for line in further_reading_text.splitlines():
+        line = line.strip().lstrip("-*").strip()
+        if not line:
+            continue
+        parts = line.split("|")
+        if parts:
+            title = parts[0].strip().strip("[]* ")
+            if title:
+                titles.append(title)
+    return titles
+
+
+def grounding_judge(
+    summaries_by_run: Dict[str, Dict[str, Dict]],
+    articles_by_run: Dict[str, List[Dict]],
+) -> Tuple[float, Dict]:
+    """Deterministic score: what fraction of further_reading citations
+    actually exist in the source articles for that run?
+    """
+    matched, total = 0, 0
+    for run_id, summaries in summaries_by_run.items():
+        all_articles = articles_by_run.get(run_id, [])
+        article_titles = {a.get("title", "").lower().strip() for a in all_articles if a.get("title")}
+        for theme, sections in summaries.items():
+            fr_text = sections.get("further_reading", "")
+            cited_titles = parse_further_reading_titles(fr_text)
+            for title in cited_titles:
+                total += 1
+                t_lower = title.lower().strip()
+                if any(t_lower in at or at in t_lower for at in article_titles):
+                    matched += 1
+    score = matched / total if total > 0 else 1.0
+    return round(score, 4), {"matched": matched, "total": total}
+
+
+def structural_compliance_judge(
+    summaries_by_run: Dict[str, Dict[str, Dict]],
+) -> Tuple[float, Dict]:
+    """Deterministic score: does the generated output adhere to requested structure?"""
+    checks_passed, checks_total = 0, 0
+    required_sections = [
+        "what_is_happening",
+        "engineering_tradeoffs",
+        "product_impact",
+        "what_to_watch",
+        "further_reading",
+    ]
+    prose_sections = ["what_is_happening", "engineering_tradeoffs", "product_impact"]
+
+    for run_id, summaries in summaries_by_run.items():
+        for theme, sections in summaries.items():
+            for sec in required_sections:
+                checks_total += 1
+                val = sections.get(sec, "")
+                if val and val.strip() and val.strip() not in EVAL_FAITHFULNESS_SKIP_STRINGS:
+                    checks_passed += 1
+
+            for sec in prose_sections:
+                checks_total += 1
+                text = sections.get(sec, "")
+                sentences = [s for s in re.split(r"[.!?]+", text) if s.strip()]
+                if 3 <= len(sentences) <= 7:
+                    checks_passed += 1
+
+    score = checks_passed / checks_total if checks_total > 0 else 1.0
+    return round(score, 4), {"passed": checks_passed, "total": checks_total}
+
+
+def coverage_judge(
+    summaries_by_run: Dict[str, Dict[str, Dict]],
+    articles_by_run: Dict[str, List[Dict]],
+) -> Tuple[float, Dict]:
+    """Deterministic recall metric: fraction of source articles mentioned in summary."""
+    covered, total = 0, 0
+    for run_id, summaries in summaries_by_run.items():
+        all_articles = articles_by_run.get(run_id, [])
+        for theme, sections in summaries.items():
+            theme_articles = [a for a in all_articles if a.get("theme_name") == theme]
+            full_summary_text = " ".join(str(v) for v in sections.values()).lower()
+            for art in theme_articles:
+                total += 1
+                title = art.get("title", "")
+                words = {w.lower() for w in re.findall(r"[a-zA-Z0-9]+", title) if len(w) > 4}
+                if words and any(w in full_summary_text for w in words):
+                    covered += 1
+
+    score = covered / total if total > 0 else 1.0
+    return round(score, 4), {"covered": covered, "total": total}
+
+
+def temporal_coherence_judge(
+    summaries_by_run: Dict[str, Dict[str, Dict]],
+    prior_summaries_by_run: Optional[Dict[str, Dict[str, Dict]]] = None,
+) -> Tuple[float, Dict]:
+    """Deterministic score: checks that summary changes between runs are meaningful."""
+    if not prior_summaries_by_run:
+        return 1.0, {"samples": 0, "notes": "No prior runs to compare"}
+
+    coherent, total = 0, 0
+    evolution_words = {"new", "evolved", "since", "previously", "building on", "update", "latest"}
+
+    for run_id, summaries in summaries_by_run.items():
+        prior = prior_summaries_by_run.get(run_id)
+        if not prior:
+            continue
+        for theme, sections in summaries.items():
+            if theme not in prior:
+                continue
+            total += 1
+            cur_text = sections.get("what_is_happening", "")
+            prev_text = prior[theme].get("what_is_happening", "")
+
+            overlap = _heuristic_overlap(cur_text, prev_text)
+            if overlap >= 0.95:
+                continue
+
+            cur_lower = cur_text.lower()
+            has_evo_claim = any(w in cur_lower for w in evolution_words)
+            if has_evo_claim and not prev_text.strip():
+                continue
+
+            coherent += 1
+
+    score = coherent / total if total > 0 else 1.0
+    return round(score, 4), {"coherent": coherent, "total": total}
 
 
 # ---------------------------------------------------------------------------
@@ -949,6 +1113,31 @@ def generate_recommendations(report: EvaluationReport) -> List[str]:
             f"{threshold:.0%}. Action: summaries overlap too much across "
             f"themes. Review the prompt to emphasize differentiation, and "
             f"check for cross-theme article leakage in core/classifier.py."
+        )
+
+    if report.grounding_score < threshold:
+        recs.append(
+            f"⚠️ Grounding score {report.grounding_score:.0%} < "
+            f"{threshold:.0%}. Action: further reading citations include "
+            f"titles/URLs not present in input source articles."
+        )
+
+    if report.structural_compliance_score < threshold:
+        recs.append(
+            f"⚠️ Structural Compliance score {report.structural_compliance_score:.0%} < "
+            f"{threshold:.0%}. Action: check summary formatting and section counts."
+        )
+
+    if report.coverage_score < threshold:
+        recs.append(
+            f"⚠️ Coverage score {report.coverage_score:.0%} < "
+            f"{threshold:.0%}. Action: many source articles are missing from output summaries."
+        )
+
+    if report.temporal_coherence_score < threshold:
+        recs.append(
+            f"⚠️ Temporal Coherence score {report.temporal_coherence_score:.0%} < "
+            f"{threshold:.0%}. Action: review week-over-week summary evolution."
         )
 
     if not recs:
@@ -1122,7 +1311,7 @@ def _suggest_for_theme(
             weight = max(1, min(3, weight))
         except (TypeError, ValueError):
             weight = 2
-        reason = (item.get("reason") or "").strip()[:300]
+        reason = (item.get("reason") or "").strip()[:EVAL_KEYWORD_REASON_CHARS]
         out.append(KeywordSuggestion(term=term, weight=weight, reason=reason))
     return out
 
@@ -1182,7 +1371,7 @@ def generate_keyword_suggestions(
     summaries_by_run: Dict[str, Dict[str, Dict]],
     *,
     include_all_themes: bool = False,
-    theme_max_articles: int = 15,
+    theme_max_articles: int = EVAL_KEYWORD_MAX_ARTICLES,
 ) -> KeywordSuggestionReport:
     """Ask the LLM which theme keywords and watchlist terms are missing.
 
@@ -1257,39 +1446,18 @@ def generate_keyword_suggestions(
 # ---------------------------------------------------------------------------
 
 
-def run_weekly_evaluation(
-    supabase=None,
+def _execute_judges_and_build_report(
+    runs: List[Dict],
+    articles_by_run: Dict[str, List[Dict]],
+    summaries_by_run: Dict[str, Dict[str, Dict]],
+    prior_summaries_by_run: Dict[str, Dict[str, Dict]],
+    threshold: float,
     lookback_days: int = 7,
-    threshold: float = QUALITY_THRESHOLD,
+    supabase=None,
 ) -> EvaluationReport:
-    """Run the full evaluation.  Returns an EvaluationReport and persists it
-    to Supabase (if available).
+    """Run all 3 LLM judges + 4 deterministic judges, assemble EvaluationReport,
+    and persist results.
     """
-    if supabase is None:
-        from core.supabase_client import get_supabase_manager
-        supabase = get_supabase_manager()
-
-    runs = _load_recent_runs(supabase, lookback_days)
-
-    # Pre-load articles + summaries for each run
-    articles_by_run: Dict[str, List[Dict]] = {}
-    summaries_by_run: Dict[str, Dict[str, Dict]] = {}
-    for run in runs:
-        run_id = run["id"]
-        articles_by_run[run_id] = _load_articles_for_run(supabase, run_id)
-        summaries_by_run[run_id] = _load_summaries_for_run(supabase, run_id)
-
-    # Build a "prior run" lookup for uniqueness: pair each run with the
-    # chronologically previous one (by run_timestamp).
-    runs_sorted = sorted(runs, key=lambda r: r.get("run_timestamp", ""))
-    prior_summaries_by_run: Dict[str, Dict[str, Dict]] = {}
-    for i in range(1, len(runs_sorted)):
-        cur_id = runs_sorted[i]["id"]
-        prev_id = runs_sorted[i - 1]["id"]
-        if prev_id in summaries_by_run:
-            prior_summaries_by_run[cur_id] = summaries_by_run[prev_id]
-
-    # Run the three judges concurrently
     llm = _get_llm()
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
@@ -1319,6 +1487,12 @@ def run_weekly_evaluation(
     faithfulness_score, faith_raw = results.get("faithfulness", (0.0, {}))
     uniqueness_score, uniq_raw = results.get("uniqueness", (0.0, {}))
 
+    # Run 4 deterministic judges (sub-millisecond, zero LLM calls)
+    grounding_score, ground_raw = grounding_judge(summaries_by_run, articles_by_run)
+    structural_compliance_score, struct_raw = structural_compliance_judge(summaries_by_run)
+    coverage_score, cov_raw = coverage_judge(summaries_by_run, articles_by_run)
+    temporal_coherence_score, temp_raw = temporal_coherence_judge(summaries_by_run, prior_summaries_by_run)
+
     per_run_scores: List[Dict] = []
     for run in runs:
         run_id = run["id"]
@@ -1334,10 +1508,17 @@ def run_weekly_evaluation(
                                             .get("sampled", 0),
         })
 
+    from core.classifier import get_latest_gate_stats
+
     raw_metrics = {
         "categoriser": cat_raw,
         "faithfulness": faith_raw,
         "uniqueness": uniq_raw,
+        "grounding": ground_raw,
+        "structural_compliance": struct_raw,
+        "coverage": cov_raw,
+        "temporal_coherence": temp_raw,
+        "classifier_gates": get_latest_gate_stats(),
         "lookback_days": lookback_days,
     }
 
@@ -1348,18 +1529,18 @@ def run_weekly_evaluation(
         classifier_score=round(classifier_score, 4),
         faithfulness_score=round(faithfulness_score, 4),
         uniqueness_score=round(uniqueness_score, 4),
+        grounding_score=round(grounding_score, 4),
+        structural_compliance_score=round(structural_compliance_score, 4),
+        coverage_score=round(coverage_score, 4),
+        temporal_coherence_score=round(temporal_coherence_score, 4),
         per_theme_classifier={k: round(v, 4) for k, v in per_theme_classifier.items()},
         per_run_scores=per_run_scores,
-        recommendations=[],  # filled in below
+        recommendations=[],
         raw_metrics=raw_metrics,
         generated_at=datetime.now(timezone.utc),
     )
     report.recommendations = generate_recommendations(report)
 
-    # Keyword + watchlist suggestions — runs after recommendations so the
-    # weak-theme logic in generate_recommendations has already populated
-    # report.per_theme_classifier / report.threshold.  Failures here are
-    # non-fatal: the report is still useful without suggestions.
     try:
         kw_report = generate_keyword_suggestions(
             llm,
@@ -1385,6 +1566,10 @@ def run_weekly_evaluation(
         "classifier_score": report.classifier_score,
         "faithfulness_score": report.faithfulness_score,
         "uniqueness_score": report.uniqueness_score,
+        "grounding_score": report.grounding_score,
+        "structural_compliance_score": report.structural_compliance_score,
+        "coverage_score": report.coverage_score,
+        "temporal_coherence_score": report.temporal_coherence_score,
         "per_theme_classifier": report.per_theme_classifier,
         "recommendations": report.recommendations,
         "raw_metrics": report.raw_metrics,
@@ -1393,7 +1578,6 @@ def run_weekly_evaluation(
     if inserted:
         report.db_row_id = inserted.get("id")
         logger.info("Persisted quality_evaluations row %s", report.db_row_id)
-        # Persist suggestions if the keyword_suggestions table exists.
         try:
             from core.quality_schema import insert_keyword_suggestions
             if report.keyword_suggestions:
@@ -1427,14 +1611,50 @@ def run_weekly_evaluation(
     return report
 
 
+def run_weekly_evaluation(
+    supabase=None,
+    lookback_days: int = 7,
+    threshold: float = QUALITY_THRESHOLD,
+) -> EvaluationReport:
+    """Run the full evaluation. Returns an EvaluationReport and persists it to Supabase (if available)."""
+    if supabase is None:
+        from core.supabase_client import get_supabase_manager
+        supabase = get_supabase_manager()
+
+    runs = _load_recent_runs(supabase, lookback_days)
+
+    articles_by_run: Dict[str, List[Dict]] = {}
+    summaries_by_run: Dict[str, Dict[str, Dict]] = {}
+    for run in runs:
+        run_id = run["id"]
+        articles_by_run[run_id] = _load_articles_for_run(supabase, run_id)
+        summaries_by_run[run_id] = _load_summaries_for_run(supabase, run_id)
+
+    runs_sorted = sorted(runs, key=lambda r: r.get("run_timestamp", ""))
+    prior_summaries_by_run: Dict[str, Dict[str, Dict]] = {}
+    for i in range(1, len(runs_sorted)):
+        cur_id = runs_sorted[i]["id"]
+        prev_id = runs_sorted[i - 1]["id"]
+        if prev_id in summaries_by_run:
+            prior_summaries_by_run[cur_id] = summaries_by_run[prev_id]
+
+    return _execute_judges_and_build_report(
+        runs=runs,
+        articles_by_run=articles_by_run,
+        summaries_by_run=summaries_by_run,
+        prior_summaries_by_run=prior_summaries_by_run,
+        threshold=threshold,
+        lookback_days=lookback_days,
+        supabase=supabase,
+    )
+
+
 def run_evaluation_for_runs(
     run_ids: List[str],
     supabase=None,
     threshold: float = QUALITY_THRESHOLD,
 ) -> EvaluationReport:
-    """Run evaluation for a specific set of run_ids (used by tests / page
-    pre-selection).  Falls back to weekly behaviour when run_ids is empty.
-    """
+    """Run evaluation for a specific set of run_ids (used by tests / page pre-selection)."""
     if not run_ids:
         return run_weekly_evaluation(supabase=supabase, threshold=threshold)
 
@@ -1450,8 +1670,6 @@ def run_evaluation_for_runs(
     if not runs:
         raise EvaluationError("None of the requested run_ids were found.")
 
-    # Reuse the same logic as run_weekly_evaluation by faking the "recent
-    # runs" load: build the same shape and inline the rest.
     articles_by_run = {r["id"]: _load_articles_for_run(supabase, r["id"]) for r in runs}
     summaries_by_run = {r["id"]: _load_summaries_for_run(supabase, r["id"]) for r in runs}
 
@@ -1463,79 +1681,19 @@ def run_evaluation_for_runs(
         if prev_id in summaries_by_run:
             prior_summaries_by_run[cur_id] = summaries_by_run[prev_id]
 
-    llm = _get_llm()
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(categoriser_judge, llm, articles_by_run): "categoriser",
-            executor.submit(
-                faithfulness_judge, llm, summaries_by_run, articles_by_run
-            ): "faithfulness",
-            executor.submit(
-                uniqueness_judge, llm, summaries_by_run, prior_summaries_by_run
-            ): "uniqueness",
-        }
-        results: Dict[str, Tuple] = {}
-        for fut in as_completed(futures):
-            name = futures[fut]
-            try:
-                results[name] = fut.result()
-            except Exception as exc:
-                logger.error("Judge %s failed: %s", name, exc)
-                if name == "categoriser":
-                    results[name] = (0.0, {}, {})
-                else:
-                    results[name] = (0.0, {})
-
-    classifier_score, per_theme_classifier, cat_raw = results.get("categoriser", (0.0, {}, {}))
-    faithfulness_score, faith_raw = results.get("faithfulness", (0.0, {}))
-    uniqueness_score, uniq_raw = results.get("uniqueness", (0.0, {}))
-
-    per_run_scores = [
-        {
-            "run_id": r["id"],
-            "run_timestamp": r.get("run_timestamp", ""),
-            "run_date": r.get("run_date", ""),
-            "classifier_correct": cat_raw.get("per_run", {}).get(r["id"], {}).get("correct", 0),
-            "classifier_sampled": cat_raw.get("per_run", {}).get(r["id"], {}).get("sampled", 0),
-        }
-        for r in runs
-    ]
-    raw_metrics = {
-        "categoriser": cat_raw,
-        "faithfulness": faith_raw,
-        "uniqueness": uniq_raw,
-        "lookback_days": 0,
-        "explicit_run_ids": run_ids,
-    }
-    report = EvaluationReport(
-        run_ids=[r["id"] for r in runs],
-        run_timestamps=[r.get("run_timestamp", "") for r in runs],
+    return _execute_judges_and_build_report(
+        runs=runs,
+        articles_by_run=articles_by_run,
+        summaries_by_run=summaries_by_run,
+        prior_summaries_by_run=prior_summaries_by_run,
         threshold=threshold,
-        classifier_score=round(classifier_score, 4),
-        faithfulness_score=round(faithfulness_score, 4),
-        uniqueness_score=round(uniqueness_score, 4),
-        per_theme_classifier={k: round(v, 4) for k, v in per_theme_classifier.items()},
-        per_run_scores=per_run_scores,
-        recommendations=[],
-        raw_metrics=raw_metrics,
-        generated_at=datetime.now(timezone.utc),
+        lookback_days=0,
+        supabase=supabase,
     )
-    report.recommendations = generate_recommendations(report)
-    try:
-        kw_report = generate_keyword_suggestions(
-            llm, report, articles_by_run, summaries_by_run,
-        )
-        report.keyword_suggestions = kw_report.to_dict()
-    except Exception as exc:
-        logger.warning("generate_keyword_suggestions failed: %s", exc)
-        report.keyword_suggestions = {"theme_suggestions": {}, "watchlist_suggestions": []}
-    return report
 
 
 def load_evaluation_history(supabase=None, limit: int = 12) -> pd.DataFrame:
-    """Return a DataFrame of recent quality_evaluations rows, newest first.
-    Empty DataFrame if Supabase is unavailable.
-    """
+    """Return a DataFrame of recent quality_evaluations rows, newest first."""
     if supabase is None:
         from core.supabase_client import get_supabase_manager
         supabase = get_supabase_manager()

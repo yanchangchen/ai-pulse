@@ -32,17 +32,23 @@ def save_run_to_history(
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date_key = datetime.now().strftime("%Y-%m-%d")
 
-    # 1. Update JSON History — store only the latest run for fast cold-boot
-    # Full historical data lives in Supabase; history.json is just a local cache.
-    history_data = {
-        timestamp: {
-            "date": date_key,
-            "summaries": summaries,
-            "counts": article_counts,
-            "full_articles": full_articles,
-            "themed_articles": themed_articles
-        }
+    # 1. Update JSON History — store the latest N runs for context
+    # Full historical data lives in Supabase; history.json is a local cache
+    # that keeps enough runs for get_recent_context() to work.
+    MAX_LOCAL_RUNS = 5
+    history_data = load_full_history()
+    history_data[timestamp] = {
+        "date": date_key,
+        "summaries": summaries,
+        "counts": article_counts,
+        "full_articles": full_articles,
+        "themed_articles": themed_articles
     }
+
+    # Trim to most recent N runs
+    if len(history_data) > MAX_LOCAL_RUNS:
+        sorted_keys = sorted(history_data.keys(), reverse=True)
+        history_data = {k: history_data[k] for k in sorted_keys[:MAX_LOCAL_RUNS]}
 
     with open(HISTORY_JSON, "w", encoding="utf-8") as f:
         json.dump(history_data, f, indent=2, ensure_ascii=False)

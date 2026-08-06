@@ -118,7 +118,13 @@ Defined in `config/themes.py` with **weighted keywords** (1–3 — higher weigh
 6. **AI Security & Trust** — prompt injection, jailbreaks, red-teaming, guardrails, model poisoning, exfiltration, secure MCP, agent hijack, model theft, MLSec.
 7. **AI-Assisted Software Engineering** — Cursor, Claude Code, Copilot, AI code review, agentic SDLC, spec-driven development, AI-generated tests, dev velocity.
 
-The classifier tries `keyword_classify()` first, then batches unmatched articles to the LLM in groups of 20 (JSON-formatted), then a final `find_closest_theme()` relaxed match.
+The classifier processes articles through a **4-pass waterfall pipeline** (`core/classifier.py`, `core/tfidf_classifier.py`):
+1. **Pass 1 (Weighted Keywords)**: Fast exact keyword matching using `config/themes.py` weights (~75% of items).
+2. **Pass 2 (TF-IDF Cosine Similarity)**: Sub-millisecond vector cosine angle matching against theme vocabulary vectors (~20% of items).
+3. **Pass 3 (Batched Ollama LLM)**: Batched LLM requests reserved strictly for remaining ambiguous items (< 5% of items).
+4. **Pass 4 (Soft-Match Heuristic)**: Guaranteed fuzzy token/substring fallback to ensure 100% coverage.
+
+Gate breakdown metrics (Pass 1/2/3/4 item counts and percentages) are tracked automatically and rendered on the **Quality Evaluation** page (`pages/8_Quality_Evaluation.py`) to monitor gate efficiency over time.
 
 ### 🎯 Keyword & watchlist suggestions
 

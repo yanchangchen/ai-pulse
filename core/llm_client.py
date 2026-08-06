@@ -41,7 +41,7 @@ class LLMClientError(Exception):
 class LLMClient:
     """Thin wrapper around the Ollama Cloud /api/generate endpoint."""
 
-    _api_lock = threading.Lock()
+    _api_lock = threading.Semaphore(3)
 
     def __init__(
         self,

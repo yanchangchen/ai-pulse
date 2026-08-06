@@ -95,6 +95,42 @@ EVALUATION_MAX_RUNS: int = 7
 EVALUATION_CHECK_INTERVAL_SECONDS: int = 3600
 
 # ---------------------------------------------------------------------------
+# Evaluation judge budgets
+# ---------------------------------------------------------------------------
+# Character budgets for text truncation in the evaluation judges.
+# These control how much text each judge sees per LLM call.
+EVAL_CATEGORISER_SUMMARY_CHARS: int = 500
+EVAL_FAITHFULNESS_SUMMARY_CHARS: int = 2000
+EVAL_FAITHFULNESS_ARTICLE_BUDGET: int = 6000
+EVAL_OVERLAP_TEXT_CHARS: int = 1500
+
+# Heuristic Jaccard overlap thresholds for the uniqueness judge.
+# Below LOW → accept heuristic as overlap score (skip LLM).
+# Above HIGH → accept heuristic as overlap score (skip LLM).
+# Between LOW and HIGH → delegate to LLM for semantic scoring.
+EVAL_HEURISTIC_LOW: float = 0.05
+EVAL_HEURISTIC_HIGH: float = 0.85
+EVAL_HEURISTIC_MAX_CHARS: int = 4000
+
+# Keyword suggestion budgets
+EVAL_KEYWORD_MAX_ARTICLES: int = 15
+EVAL_KEYWORD_REASON_CHARS: int = 300
+
+# Known fallback strings produced by the summariser when it fails or has
+# insufficient data.  The faithfulness judge skips these instead of
+# scoring them 1.0 (which would inflate the metric).
+EVAL_FAITHFULNESS_SKIP_STRINGS: tuple = (
+    "No engineering tradeoffs analyzed.",
+    "No product impact analyzed.",
+    "Refer to previous summaries.",
+    "Unable to analyze due to error.",
+    "Unable to generate summary.",
+    "Limited news signal this week.",
+    "No new developments to report.",
+    "Unable to generate significance analysis.",
+)
+
+# ---------------------------------------------------------------------------
 # LLM context window
 # ---------------------------------------------------------------------------
 # num_ctx passed to Ollama on every generate() call.  4096 covers ~10

@@ -1,21 +1,35 @@
 """
 Theme classification module for AI Pulse.
-Classifies articles into 5 thematic areas using weighted keyword matching
-and falls back to the LLM client for ambiguous cases.
+Classifies articles into 7 strategic themes using a 4-pass waterfall pipeline:
+1. Pass 1: Exact weighted keyword matching (keyword_classify)
+2. Pass 2: TF-IDF Cosine Similarity matching (tfidf_classify)
+3. Pass 3: Batched LLM classification (classify_with_ollama)
+4. Pass 4: Soft-match heuristic fallback (find_closest_theme)
 """
 
 import re
+import json
 import logging
 from typing import Dict, List, Optional
 
 from config.themes import THEMES
 from core.llm_client import LLMClient, LLMClientError
+from core.tfidf_classifier import tfidf_classify
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Shared LLM client instance (initialised lazily)
 _llm: Optional[LLMClient] = None
+
+# Global store for latest classification gate metrics
+_last_gate_stats: Dict[str, int] = {
+    "gate_1_keyword": 0,
+    "gate_2_tfidf": 0,
+    "gate_3_ollama": 0,
+    "gate_4_heuristic": 0,
+    "total": 0,
+}
 
 
 def _get_llm() -> LLMClient:
@@ -25,10 +39,15 @@ def _get_llm() -> LLMClient:
     return _llm
 
 
+def get_latest_gate_stats() -> Dict[str, int]:
+    """Return gate distribution metrics for the most recent classification run."""
+    return dict(_last_gate_stats)
+
+
 def keyword_classify(title: str, summary: str) -> Optional[str]:
     """Classify article using weighted keyword matching.
 
-    Keywords in config/themes.py now map to integer weights.
+    Keywords in config/themes.py map to integer weights.
     The theme with the highest *weighted* score wins.
     """
     text = f"{title} {summary}".lower()
@@ -119,40 +138,72 @@ def find_closest_theme(title: str, summary: str) -> str:
 
 
 def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
-    """Classify all articles into themes.
+    """Classify all articles into strategic themes using a 4-pass waterfall:
+    - Pass 1: Weighted Keyword Matching
+    - Pass 2: TF-IDF Cosine Similarity
+    - Pass 3: Batched Ollama LLM Classifier
+    - Pass 4: Soft-Match Heuristic Fallback
 
     Returns:
         Dictionary with theme names as keys and lists of articles as values.
     """
-    # First pass: keyword classification
-    keyword_classified: List[Dict] = []
-    ollama_needed: List[Dict] = []
+    global _last_gate_stats
 
+    gate_counts = {
+        "gate_1_keyword": 0,
+        "gate_2_tfidf": 0,
+        "gate_3_ollama": 0,
+        "gate_4_heuristic": 0,
+        "total": len(articles),
+    }
+
+    classified_list: List[Dict] = []
+    unmatched_after_pass1: List[Dict] = []
+
+    # ------------------------------------------------------------------
+    # Pass 1: Exact Weighted Keyword Classification
+    # ------------------------------------------------------------------
     for article in articles:
-        theme = keyword_classify(article['title'], article['summary'])
-
+        theme = keyword_classify(article.get("title", ""), article.get("summary", ""))
         if theme:
-            article['theme'] = theme
-            keyword_classified.append(article)
+            article["theme"] = theme
+            article["gate"] = 1
+            gate_counts["gate_1_keyword"] += 1
+            classified_list.append(article)
         else:
-            ollama_needed.append(article)
+            unmatched_after_pass1.append(article)
 
-    logger.info(
-        "Keyword classified: %d, need Ollama: %d",
-        len(keyword_classified),
-        len(ollama_needed),
-    )
+    # ------------------------------------------------------------------
+    # Pass 2: TF-IDF Cosine Similarity Classification
+    # ------------------------------------------------------------------
+    unmatched_after_pass2: List[Dict] = []
+    for article in unmatched_after_pass1:
+        theme, sim_score, _ = tfidf_classify(
+            article.get("title", ""),
+            article.get("summary", ""),
+            min_similarity=0.05,
+        )
+        if theme:
+            article["theme"] = theme
+            article["gate"] = 2
+            article["tfidf_score"] = sim_score
+            gate_counts["gate_2_tfidf"] += 1
+            classified_list.append(article)
+        else:
+            unmatched_after_pass2.append(article)
 
-    # Second pass: Ollama classification for unmatched articles (batched)
-    if ollama_needed:
-        batch_size = 20  # Increased batch size
+    # ------------------------------------------------------------------
+    # Pass 3: Batched Ollama LLM Classification for remaining items
+    # ------------------------------------------------------------------
+    unmatched_after_pass3: List[Dict] = []
+
+    if unmatched_after_pass2:
+        batch_size = 20
         llm = _get_llm()
 
-        for i in range(0, len(ollama_needed), batch_size):
-            batch = ollama_needed[i:i + batch_size]
-            
-            # Create a simple lookup for the prompt
-            batch_items = [f"ID {idx}: {a['title']}" for idx, a in enumerate(batch)]
+        for i in range(0, len(unmatched_after_pass2), batch_size):
+            batch = unmatched_after_pass2[i:i + batch_size]
+            batch_items = [f"ID {idx}: {a.get('title', '')}" for idx, a in enumerate(batch)]
             items_text = "\n".join(batch_items)
 
             system_prompt = (
@@ -166,58 +217,64 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
                 "- AI-Assisted Software Engineering\n\n"
                 "CRITICAL INSTRUCTIONS:\n"
                 "1. You must categorize every single article provided. Do not skip or omit any article.\n"
-                "2. If an article does not fit a category perfectly or is ambiguous, choose the closest and most relevant one from the 7 themes above. Under no circumstances should you return 'Other', 'Unknown', or omit it.\n"
-                "3. You must return a valid JSON object mapping every single provided ID to its theme name.\n"
-                "Example: {\"ID 0\": \"Frontier Models & Benchmarks\", \"ID 1\": \"AI Security & Trust\"}"
+                "2. Choose the single closest theme name.\n"
+                "3. Return a valid JSON object mapping ID to theme name: {\"ID 0\": \"Frontier Models & Benchmarks\"}"
             )
 
             prompt = f"Classify these articles:\n\n{items_text}"
 
             try:
                 result = llm.generate(prompt, system=system_prompt, temperature=0.1, max_tokens=1000)
-                
-                # Attempt to parse JSON from the response
-                import json
-                # Handle cases where LLM adds extra text around JSON
                 json_match = re.search(r'\{.*\}', result, re.DOTALL)
                 if json_match:
                     mapping = json.loads(json_match.group(0))
-                    
                     for idx, article in enumerate(batch):
                         id_key = f"ID {idx}"
                         theme_name = mapping.get(id_key)
-                        
                         if theme_name:
-                            # Clean and validate the theme name
                             for valid_theme in THEMES.keys():
                                 if valid_theme.lower() in theme_name.lower():
                                     article['theme'] = valid_theme
-                                    keyword_classified.append(article)
+                                    article['gate'] = 3
+                                    gate_counts["gate_3_ollama"] += 1
+                                    classified_list.append(article)
                                     break
-                else:
-                    truncated_result = result[:200] + "..." if len(result) > 200 else result
-                    logger.warning("LLM response did not contain JSON: %s", truncated_result)
-
             except Exception as exc:
                 logger.error("Batch JSON Ollama classification error: %s", exc)
 
-    # Final cleanup: Assign closest theme for anything missed instead of a blind default
-    for article in ollama_needed:
+    # Collect any items still unassigned after Pass 3
+    for article in unmatched_after_pass2:
         if 'theme' not in article:
-            article['theme'] = find_closest_theme(article['title'], article['summary'])
-            keyword_classified.append(article)
+            unmatched_after_pass3.append(article)
+
+    # ------------------------------------------------------------------
+    # Pass 4: Soft-Match Heuristic Fallback
+    # ------------------------------------------------------------------
+    for article in unmatched_after_pass3:
+        if 'theme' not in article:
+            article['theme'] = find_closest_theme(article.get('title', ''), article.get('summary', ''))
+            article['gate'] = 4
+            gate_counts["gate_4_heuristic"] += 1
+            classified_list.append(article)
+
+    # Save metrics globally
+    _last_gate_stats = gate_counts
+
+    logger.info(
+        "Classification complete [%d total]. Pass 1 (Keywords): %d, Pass 2 (TF-IDF): %d, Pass 3 (Ollama): %d, Pass 4 (Heuristic): %d",
+        len(articles),
+        gate_counts["gate_1_keyword"],
+        gate_counts["gate_2_tfidf"],
+        gate_counts["gate_3_ollama"],
+        gate_counts["gate_4_heuristic"],
+    )
 
     # Group by theme
     themed_articles: Dict[str, List[Dict]] = {theme: [] for theme in THEMES.keys()}
-
-    for article in keyword_classified:
+    for article in classified_list:
         theme = article.get('theme', 'Agentic Systems & DevTools')
         if theme in themed_articles:
             themed_articles[theme].append(article)
-
-    # Log counts
-    for theme, arts in themed_articles.items():
-        logger.info("Theme '%s': %d articles", theme, len(arts))
 
     return themed_articles
 

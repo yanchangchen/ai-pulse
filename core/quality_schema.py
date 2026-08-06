@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS quality_evaluations (
     classifier_score FLOAT NOT NULL,
     faithfulness_score FLOAT NOT NULL,
     uniqueness_score FLOAT NOT NULL,
+    grounding_score FLOAT DEFAULT 1.0,
+    structural_compliance_score FLOAT DEFAULT 1.0,
+    coverage_score FLOAT DEFAULT 1.0,
+    temporal_coherence_score FLOAT DEFAULT 1.0,
     per_theme_classifier JSONB,
     recommendations JSONB,
     raw_metrics JSONB

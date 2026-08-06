@@ -330,6 +330,27 @@ if run_now:
                 f"Judge events: {len(evs)} • LLM calls: ~{llm_calls} • "
                 f"parse failures: {parse_fail} • mean latency: {mean_lat} ms"
             )
+
+            # Render Classification Waterfall Gate Breakdown
+            raw_m = getattr(report, "raw_metrics", {}) or {}
+            gates = raw_m.get("classifier_gates")
+            if not gates:
+                from core.classifier import get_latest_gate_stats
+                gates = get_latest_gate_stats()
+
+            if isinstance(gates, dict) and gates.get("total", 0) > 0:
+                tot = gates["total"]
+                p1 = gates.get("gate_1_keyword", 0)
+                p2 = gates.get("gate_2_tfidf", 0)
+                p3 = gates.get("gate_3_ollama", 0)
+                p4 = gates.get("gate_4_heuristic", 0)
+
+                st.markdown("##### 🚪 Classification Pipeline Gate Breakdown")
+                gc1, gc2, gc3, gc4 = st.columns(4)
+                gc1.metric("Pass 1: Keyword", f"{p1}/{tot}", f"{p1/tot:.0%}" if tot else "0%")
+                gc2.metric("Pass 2: TF-IDF", f"{p2}/{tot}", f"{p2/tot:.0%}" if tot else "0%")
+                gc3.metric("Pass 3: Ollama LLM", f"{p3}/{tot}", f"{p3/tot:.0%}" if tot else "0%")
+                gc4.metric("Pass 4: Heuristic", f"{p4}/{tot}", f"{p4/tot:.0%}" if tot else "0%")
         if report.recommendations:
             for rec in report.recommendations:
                 if rec.startswith("⚠️"):
@@ -414,10 +435,16 @@ else:
                 unsafe_allow_html=True,
             )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     _score_tile(c1, "Classifier", latest["classifier_score"], threshold)
     _score_tile(c2, "Faithfulness", latest["faithfulness_score"], threshold)
     _score_tile(c3, "Uniqueness", latest["uniqueness_score"], threshold)
+    _score_tile(c4, "Grounding", latest.get("grounding_score", 1.0), threshold)
+
+    c5, c6, c7, _ = st.columns(4)
+    _score_tile(c5, "Structural Compliance", latest.get("structural_compliance_score", 1.0), threshold)
+    _score_tile(c6, "Coverage", latest.get("coverage_score", 1.0), threshold)
+    _score_tile(c7, "Temporal Coherence", latest.get("temporal_coherence_score", 1.0), threshold)
 
     st.caption(
         f"Generated at: {latest['generated_at']}  •  "
@@ -464,6 +491,38 @@ if not history_df.empty and len(history_df) >= 1:
         name="Uniqueness",
         line=dict(color="#ff7f0e", width=3),
     ))
+    if "grounding_score" in history_df.columns:
+        fig.add_trace(go.Scatter(
+            x=history_df["generated_at"],
+            y=history_df["grounding_score"],
+            mode="lines+markers",
+            name="Grounding",
+            line=dict(color="#9467bd", width=2),
+        ))
+    if "structural_compliance_score" in history_df.columns:
+        fig.add_trace(go.Scatter(
+            x=history_df["generated_at"],
+            y=history_df["structural_compliance_score"],
+            mode="lines+markers",
+            name="Structural Compliance",
+            line=dict(color="#8c564b", width=2),
+        ))
+    if "coverage_score" in history_df.columns:
+        fig.add_trace(go.Scatter(
+            x=history_df["generated_at"],
+            y=history_df["coverage_score"],
+            mode="lines+markers",
+            name="Coverage",
+            line=dict(color="#e377c2", width=2),
+        ))
+    if "temporal_coherence_score" in history_df.columns:
+        fig.add_trace(go.Scatter(
+            x=history_df["generated_at"],
+            y=history_df["temporal_coherence_score"],
+            mode="lines+markers",
+            name="Temporal Coherence",
+            line=dict(color="#17becf", width=2),
+        ))
     fig.add_hline(
         y=threshold,
         line_dash="dash",

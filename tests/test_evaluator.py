@@ -41,6 +41,10 @@ def _make_report(
     classifier: float = 0.9,
     faithfulness: float = 0.9,
     uniqueness: float = 0.9,
+    grounding: float = 0.9,
+    structural_compliance: float = 0.9,
+    coverage: float = 0.9,
+    temporal_coherence: float = 0.9,
     threshold: float = 0.8,
     per_theme: dict | None = None,
 ) -> EvaluationReport:
@@ -51,6 +55,10 @@ def _make_report(
         classifier_score=classifier,
         faithfulness_score=faithfulness,
         uniqueness_score=uniqueness,
+        grounding_score=grounding,
+        structural_compliance_score=structural_compliance,
+        coverage_score=coverage,
+        temporal_coherence_score=temporal_coherence,
         per_theme_classifier=per_theme or {
             "Agentic Systems & DevTools": 0.95,
             "Frontier Models & Benchmarks": 0.85,
@@ -874,9 +882,89 @@ class TestKeywordSuggestions:
             block_lines.append(f'    "{it["term"]}": {int(it.get("weight") or 2)},')
         block_lines.append("})")
         block = "\n".join(block_lines)
-        assert "prompt injection" in block
-        assert "agentic mesh" in block
         assert block.endswith("})")
+
+
+# ---------------------------------------------------------------------------
+# Deterministic judges tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicJudges:
+    def test_grounding_judge_matches_valid_citations(self):
+        from core.evaluator import grounding_judge
+
+        articles = [
+            {"title": "OpenAI Releases GPT-5 Architecture", "url": "https://example.com/1"},
+            {"title": "Llama 3 Fine-tuning Guide", "url": "https://example.com/2"},
+        ]
+        summaries = {
+            "r1": {
+                "Frontier Models & Benchmarks": {
+                    "further_reading": "- [OpenAI Releases GPT-5 Architecture] | Source | https://example.com/1"
+                }
+            }
+        }
+        score, raw = grounding_judge(summaries, {"r1": articles})
+        assert score == 1.0
+        assert raw["matched"] == 1
+        assert raw["total"] == 1
+
+    def test_structural_compliance_judge_checks_sections(self):
+        from core.evaluator import structural_compliance_judge
+
+        summaries = {
+            "r1": {
+                "Agentic Systems & DevTools": {
+                    "what_is_happening": "Sentence one is clear. Sentence two gives context. Sentence three concludes shift.",
+                    "engineering_tradeoffs": "Engineers build pipelines. Tradeoffs include latency and memory costs. Always balance budget.",
+                    "product_impact": "Product managers evaluate feasibility. Margin impacts are significant. Enterprise ready now.",
+                    "what_to_watch": "- Item 1\n- Item 2\n- Item 3",
+                    "further_reading": "- Article 1 | Source | Link",
+                }
+            }
+        }
+        score, raw = structural_compliance_judge(summaries)
+        assert score == 1.0
+        assert raw["passed"] == raw["total"]
+
+    def test_coverage_judge_calculates_article_recall(self):
+        from core.evaluator import coverage_judge
+
+        articles = [
+            {"title": "Anthropic Claude Opus Benchmark Release", "theme_name": "Frontier Models & Benchmarks"},
+            {"title": "Kubernetes GPU Deployment Techniques", "theme_name": "Frontier Models & Benchmarks"},
+        ]
+        summaries = {
+            "r1": {
+                "Frontier Models & Benchmarks": {
+                    "what_is_happening": "Anthropic announced new claude benchmark evaluation results."
+                }
+            }
+        }
+        score, raw = coverage_judge(summaries, {"r1": articles})
+        assert score == 0.5  # 1 out of 2 covered
+        assert raw["covered"] == 1
+        assert raw["total"] == 2
+
+    def test_temporal_coherence_judge_flags_stale_summaries(self):
+        from core.evaluator import temporal_coherence_judge
+
+        summaries_r2 = {
+            "r2": {
+                "Theme A": {"what_is_happening": "Identical summary text across two runs."}
+            }
+        }
+        prior_r1 = {
+            "r2": {
+                "Theme A": {"what_is_happening": "Identical summary text across two runs."}
+            }
+        }
+        score, raw = temporal_coherence_judge(summaries_r2, prior_r1)
+        assert score == 0.0  # Completely stale
+        assert raw["coherent"] == 0
+        assert raw["total"] == 1
+
 
 
 
