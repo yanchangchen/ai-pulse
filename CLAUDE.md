@@ -80,7 +80,7 @@ RLS is enabled with read-only public access. Run `supabase_schema.sql` and `supa
 - `5_History.py` — Memory Wiki to browse past runs
 - `6_Trend_Analytics.py` — historical trend analysis
 - `7_Emerging_Trends.py` — emergence timeline, acceleration index, novelty scoring, and novel articles from the last 7 days (queries Supabase directly)
-- `8_Quality_Evaluation.py` — weekly automated LLM-as-judge scoring (categoriser, faithfulness, uniqueness) with a live progress panel; results persist to Supabase
+- `8_Quality_Evaluation.py` — weekly automated quality evaluation engine scoring 7 metrics: 3 LLM-as-judge (categoriser, faithfulness, uniqueness) + 4 sub-millisecond deterministic judges (grounding, structural compliance, coverage, temporal coherence) with a live progress panel; results persist to Supabase
 
 ## Project Structure
 
@@ -93,19 +93,19 @@ ai-pulse/
 │   ├── classifier.py            # Weighted keywords → batched LLM classification
 │   ├── summariser.py            # LLM summarisation with memory injection
 │   ├── visualiser.py            # Word cloud generation
-│   ├── evaluator.py             # LLM-as-judge quality evaluation pipeline
+│   ├── evaluator.py             # LLM-as-judge + deterministic quality evaluation pipeline
 │   ├── weekly_evaluator.py      # Weekly cadence helper for the evaluator
 │   ├── quality_schema.py        # Supabase schema for quality_evaluations table
 │   ├── history_manager.py       # JSON / Markdown / Supabase persistence
 │   ├── cache.py                 # st.cache_data 6h TTL + disk cache + content hashing
 │   ├── bg_refresher.py          # BackgroundRefresher thread (singleton)
-│   ├── llm_client.py            # Ollama wrapper (retries, auth, opt-in event_sink)
+│   ├── llm_client.py            # Ollama wrapper (Semaphore(3) concurrency, retries, auth, opt-in event_sink)
 │   ├── shared_sidebar.py        # Consistent nav + status across pages
 │   ├── supabase_client.py       # All DB ops with graceful degradation
 │   ├── supabase_ui.py           # Sidebar sync status widget
 │   └── logger.py                # Centralised logging setup
 ├── config/
-│   ├── settings.py              # Days lookback, cache TTL, fetch workers
+│   ├── settings.py              # Days lookback, cache TTL, fetch workers, evaluation judge budgets
 │   ├── themes.py                # 7 themes with weighted keywords
 │   ├── sources.py               # RSS feeds + web-scrape registry
 │   └── Appendix_*.md            # Watchlists: experts, blogs, papers
@@ -118,6 +118,8 @@ ai-pulse/
 │   └── test_evaluator.py
 ├── supabase_schema.sql          # 4 tables, RLS, indexes
 ├── supabase_migration_dedup.sql # Adds (content_hash, theme_name) unique constraint
+├── supabase_migration_keywords.sql # Adds keyword_suggestions table
+├── supabase_migration_quality_metrics.sql # Adds 4 new metric columns to quality_evaluations
 ├── SUPABASE_SETUP_GUIDE.md
 ├── SUPABASE_INTEGRATION_README.md
 ├── watch.md                     # User's keyword / engineering blog list
@@ -129,10 +131,10 @@ ai-pulse/
 
 ## Key Patterns
 
-- **Shared LLM client is lazily instantiated** in each core module via `_get_llm()` (module-level singleton).
+- **Shared LLM client is lazily instantiated** in each core module via `_get_llm()` (module-level singleton). Uses `threading.Semaphore(3)` for bounded concurrency.
 - **Theme keywords are weighted dicts** — higher weight = stronger classification signal. Edit `config/themes.py` to retrain the classifier.
 - **`watch.md`** is the user's watchlist keywords and engineering blog sources — referenced by the fetcher for high-signal targeting.
 - **Logs** are written to `logs/app.log` via `core/logger.py` (`setup_logger(__name__)`).
 - **Supabase is optional and degrades gracefully** — `is_available()` returns `False` if env vars are missing, and the app continues to function with just `history.json` / `memory.md`.
 - **LLM calls are batched** for efficiency (20 articles per JSON classification request; 10–20× token savings vs. per-article calls).
-- **Quality Evaluation runs three LLM judges in parallel** — Categoriser, Faithfulness, and Uniqueness — inside a `ThreadPoolExecutor` in `core/evaluator.py`. Results persist to Supabase via `core/quality_schema.insert_quality_evaluation()`. The page is ISO-week-guarded (`has_evaluation_this_iso_week`) so a fresh evaluation only runs once per week. While running, the page drives the pipeline from a daemon thread and renders a live progress panel by polling a thread-safe ring buffer in `core/evaluator.py`.
+- **Quality Evaluation runs 3 LLM judges in parallel + 4 deterministic sub-millisecond judges** — Categoriser, Faithfulness, Uniqueness, Grounding, Structural Compliance, Coverage, and Temporal Coherence — inside a `ThreadPoolExecutor` in `core/evaluator.py`. Results persist to Supabase via `core/quality_schema.insert_quality_evaluation()`. The page is ISO-week-guarded (`has_evaluation_this_iso_week`) so a fresh evaluation only runs once per week. While running, the page drives the pipeline from a daemon thread and renders a live progress panel by polling a thread-safe ring buffer in `core/evaluator.py`.

@@ -102,7 +102,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 | 5 | Memory Wiki | Browse past runs and per-theme summary history |
 | 6 | Trend Analytics | Cross-run momentum heatmap, keyword velocity, hype-vs-engineering index, theme drilldown |
 | 7 | Emerging Trends | Emergence timeline, acceleration index, novelty score, novel articles from the last 7 days |
-| 8 | Quality Evaluation | Weekly automated LLM-as-judge scoring (categoriser, faithfulness, uniqueness) with a live progress panel; results persist to Supabase. Also surfaces **keyword + watchlist suggestions** (with copy-to-clipboard snippets for `config/themes.py` and `watch.md`). |
+| 8 | Quality Evaluation | Weekly automated evaluation engine scoring 7 metrics: 3 LLM-as-judge (Categoriser, Faithfulness, Uniqueness) + 4 sub-millisecond deterministic judges (Grounding, Structural Compliance, Coverage, Temporal Coherence) with a live progress panel; results persist to Supabase. Also surfaces **keyword + watchlist suggestions** (with copy-to-clipboard snippets for `config/themes.py` and `watch.md`). |
 
 All pages share a sidebar nav (`core/shared_sidebar.py`) and live background-status panel.
 
@@ -126,6 +126,18 @@ The classifier processes articles through a **4-pass waterfall pipeline** (`core
 
 Gate breakdown metrics (Pass 1/2/3/4 item counts and percentages) are tracked automatically and rendered on the **Quality Evaluation** page (`pages/8_Quality_Evaluation.py`) to monitor gate efficiency over time.
 
+### 🔬 Quality Evaluation Metrics (7 Scores)
+
+The evaluation suite (`core/evaluator.py`) combines LLM judges with zero-cost deterministic validation:
+
+1. **Categoriser Accuracy** (LLM) — Re-classifies a stratified sample of articles to test theme assignment correctness.
+2. **Faithfulness** (LLM) — Fact-checks summary claims against theme-filtered source articles (excludes empty/fallback sections).
+3. **Uniqueness** (Hybrid Heuristic + LLM) — Measures pairwise overlap across themes and consecutive runs.
+4. **Grounding Score** (Deterministic) — Verifies that `further_reading` citations match actual input source article titles/URLs.
+5. **Structural Compliance** (Deterministic) — Validates section counts, prose sentence bounds (3–7 sentences), and watchlist formatting.
+6. **Coverage Score** (Deterministic) — Measures source article recall across the theme's generated summary.
+7. **Temporal Coherence** (Deterministic) — Verifies week-over-week summary evolution (flags stale text or ungrounded evolution claims).
+
 ### 🎯 Keyword & watchlist suggestions
 
 The Quality Evaluation page (`pages/8_Quality_Evaluation.py`) automatically generates two extra lists at the end of every run:
@@ -133,7 +145,7 @@ The Quality Evaluation page (`pages/8_Quality_Evaluation.py`) automatically gene
 - **Theme keyword suggestions** — for each theme whose classifier score falls below the threshold, the LLM is asked which 3–10 weighted keywords are missing. Suggestions are deduped against the existing entries in `config/themes.py` and rendered with a copy-pasteable `THEMES["…"]["keywords"].update(...)` snippet.
 - **Watchlist term suggestions** — the LLM is asked which 5–15 high-signal terms are missing from `watch.md`. Suggestions are deduped against the parsed `## 1. SEARCH KEYWORDS` table and rendered as a CSV row ready to paste.
 
-Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_migration_keywords.sql` once to create it). When the table is missing the suggestions still render in the page; they just won't be saved across runs.
+Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_migration_keywords.sql` once to create it). When the table is missing the suggestions still render in the page; they just won't be saved across runs. Run `supabase_migration_quality_metrics.sql` to add the 4 new metric columns to existing Supabase instances.
 
 Set `LLM_DEBUG=1` in `.env` to dump the prompt and raw response body for every empty/failed LLM call — useful when Ollama Cloud is returning empty responses and the judges can't recover.
 
@@ -197,6 +209,7 @@ ai-pulse/
 ├── supabase_schema.sql          # 4 tables, RLS, indexes
 ├── supabase_migration_dedup.sql # Adds (content_hash, theme_name) unique constraint
 ├── supabase_migration_keywords.sql # Adds keyword_suggestions table (used by Quality Evaluation)
+├── supabase_migration_quality_metrics.sql # Adds 4 new metric columns to quality_evaluations table
 ├── SUPABASE_SETUP_GUIDE.md
 ├── SUPABASE_INTEGRATION_README.md
 ├── watch.md                     # User's keyword / engineering blog list
