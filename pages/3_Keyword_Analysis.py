@@ -160,6 +160,12 @@ def main() -> None:
     # Derive top 10 keywords for the selected theme filter
     top_10_kws = get_top_10_keywords_for_theme(theme_filter, themed_articles)
 
+    # Automatically reset multiselect selection to the new theme's top 10 keywords when theme filter changes
+    last_theme = st.session_state.get("_prev_kw_theme_filter", None)
+    if last_theme != theme_filter:
+        st.session_state["_prev_kw_theme_filter"] = theme_filter
+        st.session_state["kw_velocity_multiselect"] = top_10_kws
+
     with col_custom:
         custom_kws = st.text_input(
             "💡 Add custom keywords (comma-separated):",
@@ -167,7 +173,9 @@ def main() -> None:
             key="kw_velocity_custom_kws"
         )
 
-    options_list = list(top_10_kws)
+    # Ensure all selected keywords and top 10 options are in options_list
+    current_selected = st.session_state.get("kw_velocity_multiselect", top_10_kws)
+    options_list = list(dict.fromkeys(top_10_kws + current_selected))
     if custom_kws:
         for kw in custom_kws.split(","):
             kw_clean = kw.strip().lower()
@@ -177,7 +185,6 @@ def main() -> None:
     selected_keywords = st.multiselect(
         "Select Keywords to Visualise:",
         options=options_list,
-        default=top_10_kws,
         key="kw_velocity_multiselect"
     )
 
