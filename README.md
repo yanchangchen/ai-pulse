@@ -126,28 +126,58 @@ The classifier processes articles through a **4-pass waterfall pipeline** (`core
 
 Gate breakdown metrics (Pass 1/2/3/4 item counts and percentages) are tracked automatically and rendered on the **Quality Evaluation** page (`pages/8_Quality_Evaluation.py`) to monitor gate efficiency over time.
 
-### 🔬 Quality Evaluation Metrics (7 Scores)
+### 🔬 Quality Evaluation Suite & Judge Metrics
 
-The evaluation suite (`core/evaluator.py`) combines LLM judges with zero-cost deterministic validation:
+The evaluation suite (`core/evaluator.py`) runs **7 automated checks** to ensure news summaries and theme classifications remain accurate, faithful, and non-repetitive over time.
 
-1. **Categoriser Accuracy** (LLM) — Re-classifies a stratified sample of articles to test theme assignment correctness.
-2. **Faithfulness** (LLM) — Fact-checks summary claims against theme-filtered source articles (excludes empty/fallback sections).
-3. **Uniqueness** (Hybrid Heuristic + LLM) — Measures pairwise overlap across themes and consecutive runs.
-4. **Grounding Score** (Deterministic) — Verifies that `further_reading` citations match actual input source article titles/URLs.
-5. **Structural Compliance** (Deterministic) — Validates section counts, prose sentence bounds (3–7 sentences), and watchlist formatting.
-6. **Coverage Score** (Deterministic) — Measures source article recall across the theme's generated summary.
-7. **Temporal Coherence** (Deterministic) — Verifies week-over-week summary evolution (flags stale text or ungrounded evolution claims).
+#### ⚙️ Execution Architecture
+- **3 Concurrent LLM Judges**: Run inside a `ThreadPoolExecutor` bounded by `Semaphore(3)` to prevent API rate limiting:
+  - *Categoriser Judge* (fresh theme re-classification sample)
+  - *Faithfulness Judge* (fact-checking summary claims against source articles)
+  - *Uniqueness Judge* (pairwise summary overlap across themes and runs)
+- **4 Sub-Millisecond Deterministic Judges**: Zero-cost rule-based checks running alongside:
+  - *Grounding Judge* (citation matching)
+  - *Structural Compliance Judge* (section, sentence, and list formatting bounds)
+  - *Coverage Judge* (source article recall)
+  - *Temporal Coherence Judge* (week-over-week summary evolution tracking)
 
-### 🎯 Keyword & watchlist suggestions
+#### 📊 Comprehensive Judge Metrics (Layman & Technical Summary)
 
-The Quality Evaluation page (`pages/8_Quality_Evaluation.py`) automatically generates two extra lists at the end of every run:
+| Metric | Judge Type | What It Checks (Layman Explanation) | How It Checks (Technical Method) | Target Threshold |
+|---|---|---|---|---|
+| **Categoriser Accuracy** | LLM-as-Judge | Are articles being sorted into the right themes? | Re-classifies a stratified sample of articles via LLM and compares predicted themes against active assignments. | ≥ 80% |
+| **Faithfulness Score** | LLM-as-Judge | Are the generated summaries truthful to the original articles without making things up? | Extracts claims from summary bullet points and uses LLM fact-checking against theme-filtered source article text. | ≥ 80% |
+| **Uniqueness Score** | Hybrid Heuristic + LLM | Are different theme summaries distinct, or are they repeating the same stories across themes/runs? | Performs Jaccard/cosine text overlap filtering; invokes LLM pairwise uniqueness judge when overlap is in ambiguous bands. | ≥ 80% |
+| **Grounding Score** | Deterministic | Do the "Further Reading" links point to real articles fetched in the run? | Cross-references cited titles/links in `further_reading` against the exact set of input source articles. | 100% |
+| **Structural Compliance** | Deterministic | Is the summary formatted properly with the right sections, sentence lengths, and bullet counts? | Regex validates mandatory headers (`WHAT HAPPENED`, `SIGNIFICANCE`, `WATCHLIST`) and checks sentence count bounds (3–7 sentences). | 100% |
+| **Coverage Score** | Deterministic | Did the summary capture key information from all fetched articles, or did it ignore most of them? | Measures source article title/entity token recall across the generated theme summary. | ≥ 70% |
+| **Temporal Coherence** | Deterministic | Is the summary actually updating week-over-week, or is it echoing static past summaries? | Compares active summary against past run summaries to verify evolution claims and flag stale text repetition. | ≥ 75% |
 
-- **Theme keyword suggestions** — for each theme whose classifier score falls below the threshold, the LLM is asked which 3–10 weighted keywords are missing. Suggestions are deduped against the existing entries in `config/themes.py` and rendered with a copy-pasteable `THEMES["…"]["keywords"].update(...)` snippet.
-- **Watchlist term suggestions** — the LLM is asked which 5–15 high-signal terms are missing from `watch.md`. Suggestions are deduped against the parsed `## 1. SEARCH KEYWORDS` table and rendered as a CSV row ready to paste.
+---
 
-Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_migration_keywords.sql` once to create it). When the table is missing the suggestions still render in the page; they just won't be saved across runs. Run `supabase_migration_quality_metrics.sql` to add the 4 new metric columns to existing Supabase instances.
+### 🛠️ In-App Remediation & Guidance (No Backend Code Edits Needed)
 
-Set `LLM_DEBUG=1` in `.env` to dump the prompt and raw response body for every empty/failed LLM call — useful when Ollama Cloud is returning empty responses and the judges can't recover.
+When evaluation scores fall below threshold targets, users do **not** need to edit Python files on the backend. The **Quality Evaluation** page (`pages/8_Quality_Evaluation.py`) includes built-in interactive controls to fix issues directly inside the Streamlit UI:
+
+1. **⚡ 1-Click "Apply All Suggested Keywords"**:
+   - When **Categoriser Accuracy** is low for a specific theme, the evaluation engine identifies missing high-signal keywords.
+   - Click the **"⚡ Apply all suggested keywords to [Theme]"** button to instantly add missing terms to active configuration with disk persistence.
+
+2. **🎛️ Theme Keyword Manager**:
+   - Add new keywords with customizable weights (1–3) or remove weak keywords for any of the 7 strategic themes.
+   - Automatically persists changes to `config/custom_keywords.json` and hot-reloads the classifier pipeline.
+
+3. **⚙️ Faithfulness & Summariser Tuner**:
+   - If **Faithfulness** drops, adjust LLM generation parameters directly via UI sliders:
+     - Lower **Temperature** (e.g. `0.1 – 0.2`) to reduce hallucination risk.
+     - Adjust **Max Output Tokens** to discourage wordy fabrication.
+     - Toggle **Strict Anti-Hallucination Grounding Mode** to enforce strict source-article citation rules in prompt templates.
+   - Automatically persists settings to `config/custom_settings.json`.
+
+4. **📌 Watchlist Term Suggestions**:
+   - Surfaces high-signal term suggestions for `watch.md` in copy-pasteable blocks to improve future fetching precision.
+
+Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_migration_keywords.sql` once to create it). Set `LLM_DEBUG=1` in `.env` to dump the prompt and raw response body for debugging.
 
 ## 🧪 Tests
 
