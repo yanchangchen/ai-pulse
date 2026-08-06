@@ -143,3 +143,61 @@ THEME_COLORS = {
 # Theme order for display
 THEME_ORDER = list(THEMES.keys())
 
+# ---------------------------------------------------------------------------
+# Runtime & Persistent Keyword Management (In-App Editing Support)
+# ---------------------------------------------------------------------------
+import json
+from pathlib import Path
+
+CUSTOM_KEYWORDS_FILE = Path(__file__).parent / "custom_keywords.json"
+
+
+def load_custom_keywords() -> Dict[str, Dict[str, int]]:
+    """Load custom keywords overlay from JSON if it exists."""
+    if CUSTOM_KEYWORDS_FILE.exists():
+        try:
+            with open(CUSTOM_KEYWORDS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_custom_keywords(custom_data: Dict[str, Dict[str, int]]) -> None:
+    """Save custom keywords overlay to JSON."""
+    with open(CUSTOM_KEYWORDS_FILE, "w", encoding="utf-8") as f:
+        json.dump(custom_data, f, indent=2, ensure_ascii=False)
+
+
+def add_keywords_to_theme(theme_name: str, new_keywords: Dict[str, int]) -> bool:
+    """Add or update keywords for a theme at runtime and persist to custom_keywords.json."""
+    if theme_name not in THEMES:
+        return False
+    THEMES[theme_name]["keywords"].update(new_keywords)
+    custom = load_custom_keywords()
+    if theme_name not in custom:
+        custom[theme_name] = {}
+    custom[theme_name].update(new_keywords)
+    save_custom_keywords(custom)
+    return True
+
+
+def remove_keyword_from_theme(theme_name: str, keyword: str) -> bool:
+    """Remove a keyword from a theme at runtime and update custom_keywords.json."""
+    if theme_name not in THEMES or keyword not in THEMES[theme_name]["keywords"]:
+        return False
+    del THEMES[theme_name]["keywords"][keyword]
+    custom = load_custom_keywords()
+    if theme_name in custom and keyword in custom[theme_name]:
+        del custom[theme_name][keyword]
+        save_custom_keywords(custom)
+    return True
+
+
+# Auto-apply any stored custom keywords overlay on import
+_custom = load_custom_keywords()
+for _t_name, _kw_map in _custom.items():
+    if _t_name in THEMES:
+        THEMES[_t_name]["keywords"].update(_kw_map)
+
+

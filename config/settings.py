@@ -149,3 +149,52 @@ CHARS_PER_TOKEN: int = 3
 # Fraction of num_ctx reserved for input (rest is for system + output).
 INPUT_BUDGET_FRACTION: float = 0.6
 
+# ---------------------------------------------------------------------------
+# Dynamic Summariser & Faithfulness Tuning (In-App Editing Support)
+# ---------------------------------------------------------------------------
+from pathlib import Path
+import json
+
+CUSTOM_SETTINGS_FILE = Path(__file__).parent / "custom_settings.json"
+
+
+def load_custom_settings() -> dict:
+    """Load custom settings overlay from JSON if it exists."""
+    if CUSTOM_SETTINGS_FILE.exists():
+        try:
+            with open(CUSTOM_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_custom_settings(data: dict) -> None:
+    """Save custom settings overlay to JSON."""
+    with open(CUSTOM_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def get_summariser_settings() -> dict:
+    """Return active summariser parameters, merging defaults with custom settings."""
+    defaults = {
+        "temperature": 0.3,
+        "max_tokens": 1500,
+        "strict_faithfulness_mode": False,
+    }
+    defaults.update(load_custom_settings())
+    return defaults
+
+
+def update_summariser_settings(
+    temperature: float, max_tokens: int, strict_faithfulness_mode: bool
+) -> dict:
+    """Update active summariser parameters and persist to custom_settings.json."""
+    data = load_custom_settings()
+    data["temperature"] = float(temperature)
+    data["max_tokens"] = int(max_tokens)
+    data["strict_faithfulness_mode"] = bool(strict_faithfulness_mode)
+    save_custom_settings(data)
+    return data
+
+

@@ -359,10 +359,6 @@ if run_now:
                 else:
                     st.success(rec)
 
-        # Keyword + watchlist suggestions — generated automatically when
-        # the evaluator finds weak themes.  Render below recommendations
-        # so the user can copy the suggestions into config/themes.py or
-        # watch.md without leaving the page.
         kw = getattr(report, "keyword_suggestions", None)
         if isinstance(kw, dict) and (
             kw.get("theme_suggestions") or kw.get("watchlist_suggestions")
@@ -372,14 +368,25 @@ if run_now:
             for theme, items in theme_map.items():
                 if not items:
                     continue
-                with st.expander(f"📁 {theme} — {len(items)} new keyword(s)", expanded=False):
+                with st.expander(f"📁 {theme} — {len(items)} new keyword(s)", expanded=True):
                     rows_text = "| term | weight | reason |\n|---|---|---|\n"
+                    kw_payload = {}
                     for it in items:
                         term = (it.get("term") or "").replace("|", "\\|")
-                        weight = it.get("weight", "")
+                        weight = int(it.get("weight") or 2)
                         reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
                         rows_text += f"| {term} | {weight} | {reason} |\n"
+                        if it.get("term"):
+                            kw_payload[it["term"]] = weight
                     st.markdown(rows_text)
+
+                    if st.button(f"⚡ Apply all {len(items)} suggested keywords to {theme}", key=f"btn_apply_kw_{theme}"):
+                        from config.themes import add_keywords_to_theme
+                        add_keywords_to_theme(theme, kw_payload)
+                        st.toast(f"Applied {len(items)} keywords to {theme}!", icon="⚡")
+                        st.success(f"Successfully added {len(items)} keywords to **{theme}** and persisted to custom keywords!")
+                        st.rerun()
+
                     st.code(
                         _format_theme_suggestion_for_file(theme, items),
                         language="text",
@@ -600,3 +607,73 @@ if not history_df.empty:
         width="stretch",
         hide_index=True,
     )
+
+# ---------------------------------------------------------------------------
+# In-App Pipeline Tuner & Keyword Manager (No Backend Editing Required)
+# ---------------------------------------------------------------------------
+st.divider()
+st.subheader("🛠️ In-App Pipeline Tuner & Keyword Manager")
+st.caption("Modify taxonomy keywords and tuning parameters directly in the application without editing backend files.")
+
+tab_kw, tab_sum = st.tabs(["🎛️ Theme Keyword Manager", "⚙️ Faithfulness & Summariser Tuner"])
+
+with tab_kw:
+    from config.themes import THEMES, THEME_ORDER, add_keywords_to_theme, remove_keyword_from_theme
+    selected_theme = st.selectbox("Select Theme to Manage", THEME_ORDER, key="sel_theme_mgr")
+    current_keywords = THEMES[selected_theme].get("keywords", {})
+
+    st.markdown(f"#### ➕ Add New Keyword to `{selected_theme}`")
+    col_add1, col_add2, col_add3 = st.columns([3, 1, 1])
+    with col_add1:
+        new_term = st.text_input("Keyword / Phrase", key="txt_new_kw", placeholder="e.g. agentic mesh")
+    with col_add2:
+        new_weight = st.selectbox("Signal Weight", [1, 2, 3], index=1, format_func=lambda w: f"Weight {w} ({'Generic' if w==1 else 'Strong' if w==2 else 'Specialist'})", key="sel_new_weight")
+    with col_add3:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("➕ Add Keyword", key="btn_add_kw", type="primary"):
+            if new_term.strip():
+                add_keywords_to_theme(selected_theme, {new_term.strip(): new_weight})
+                st.toast(f"Added '{new_term.strip()}' (weight {new_weight}) to {selected_theme}!", icon="✅")
+                st.rerun()
+
+    st.markdown(f"#### 📋 Current Keywords for `{selected_theme}` ({len(current_keywords)} active)")
+    kw_items = sorted(current_keywords.items(), key=lambda kv: (-kv[1], kv[0]))
+    cols_per_row = 3
+    for i in range(0, len(kw_items), cols_per_row):
+        c_group = st.columns(cols_per_row)
+        for j, (kw_name, kw_wt) in enumerate(kw_items[i:i+cols_per_row]):
+            with c_group[j]:
+                col_lbl, col_btn = st.columns([4, 1])
+                col_lbl.markdown(f"`{kw_name}` *(wt: {kw_wt})*")
+                if col_btn.button("❌", key=f"del_{selected_theme}_{kw_name}", help=f"Remove '{kw_name}'"):
+                    remove_keyword_from_theme(selected_theme, kw_name)
+                    st.toast(f"Removed '{kw_name}' from {selected_theme}!", icon="🗑️")
+                    st.rerun()
+
+with tab_sum:
+    from config.settings import get_summariser_settings, update_summariser_settings
+    cur_s = get_summariser_settings()
+
+    st.markdown("#### ⚙️ Summariser & Faithfulness Tuning Parameters")
+    t_strict = st.toggle(
+        "🛡️ Enable Strict Anti-Hallucination Grounding Mode",
+        value=cur_s.get("strict_faithfulness_mode", False),
+        help="Appends strict source-grounding rules to the summariser system prompt."
+    )
+    s_temp = st.slider(
+        "Summariser Temperature",
+        min_value=0.0, max_value=1.0, value=float(cur_s.get("temperature", 0.3)), step=0.05,
+        help="Lower temperature (e.g. 0.1) produces strictly deterministic outputs and reduces fabrication."
+    )
+    s_tokens = st.slider(
+        "Max Predict Token Budget",
+        min_value=500, max_value=3000, value=int(cur_s.get("max_tokens", 1500)), step=100,
+        help="Response token budget for output summaries."
+    )
+
+    if st.button("💾 Save Tuner Settings", key="btn_save_sum_settings", type="primary"):
+        update_summariser_settings(s_temp, s_tokens, t_strict)
+        st.toast("Saved summariser & faithfulness settings!", icon="✅")
+        st.success("Updated active summariser tuning parameters successfully!")
+        st.rerun()
+

@@ -151,13 +151,22 @@ Writing style rules:
 - Never start two consecutive sentences with the same word
 """
 
+    from config.settings import get_summariser_settings
+    sum_settings = get_summariser_settings()
+
+    if sum_settings.get("strict_faithfulness_mode"):
+        system_prompt += (
+            "\n- STRICT FAITHFULNESS MANDATE: Every claim must be explicitly supported by the provided SOURCE ARTICLES. "
+            "Do NOT extrapolate, infer unmentioned facts, or invent details."
+        )
+
     try:
         llm = _get_llm()
         content = llm.generate(
             user_prompt,
             system=system_prompt,
-            temperature=0.3,
-            max_tokens=1500,
+            temperature=float(sum_settings.get("temperature", 0.3)),
+            max_tokens=int(sum_settings.get("max_tokens", 1500)),
         )
 
         # Parse the response

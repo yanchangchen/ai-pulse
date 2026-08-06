@@ -1096,24 +1096,20 @@ def generate_recommendations(report: EvaluationReport) -> List[str]:
         recs.append(
             f"⚠️ Classifier score {report.classifier_score:.0%} < "
             f"{threshold:.0%}. Weakest themes: {weakest_str}. "
-            f"Action: review keywords in config/themes.py for these themes "
-            f"and add new high-signal terms."
+            f"Action: Click '⚡ Apply All Suggestions' below or use the '🎛️ In-App Theme Keyword Editor' expander to add terms directly in the app."
         )
 
     if report.faithfulness_score < threshold:
         recs.append(
             f"⚠️ Faithfulness score {report.faithfulness_score:.0%} < "
-            f"{threshold:.0%}. Action: tighten the summariser prompt in "
-            f"core/summariser.py to require source-article IDs in claims, "
-            f"or reduce max_tokens to discourage fabrication."
+            f"{threshold:.0%}. "
+            f"Action: Use the '⚙️ Faithfulness & Prompt Tuner' below to enable Strict Anti-Hallucination Mode or adjust summariser temperature directly in the app."
         )
 
     if report.uniqueness_score < threshold:
         recs.append(
             f"⚠️ Uniqueness score {report.uniqueness_score:.0%} < "
-            f"{threshold:.0%}. Action: summaries overlap too much across "
-            f"themes. Review the prompt to emphasize differentiation, and "
-            f"check for cross-theme article leakage in core/classifier.py."
+            f"{threshold:.0%}. Action: Summaries overlap across themes. Use the Theme Keyword Editor to sharpen classifier boundaries or tune summariser settings."
         )
 
     if report.grounding_score < threshold:
