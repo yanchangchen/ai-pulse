@@ -94,6 +94,47 @@ st.caption(
     "**Temporal Coherence** (week-over-week summary evolution)."
 )
 
+with st.expander("📖 Guide: How Evaluation Checks Work & In-App Remedy Actions", expanded=False):
+    st.markdown("""
+    ### ⚙️ Evaluation Suite Architecture
+    The evaluation suite runs **7 automated checks** combining **3 concurrent LLM judge agents** (executing in parallel via `ThreadPoolExecutor` + `Semaphore(3)`) with **4 sub-millisecond deterministic judges**:
+
+    - **3 Concurrent LLM Judges**: **Categoriser** (fresh theme re-classification sample), **Faithfulness** (fact-checking summary claims against source articles), and **Uniqueness** (pairwise summary overlap across themes and runs).
+    - **4 Deterministic Judges**: **Grounding** (citation verification), **Structural Compliance** (section, sentence, and list formatting bounds), **Coverage** (source article recall), and **Temporal Coherence** (week-over-week summary evolution tracking).
+
+    ---
+
+    ### 📊 Layman & Technical Guide to the 7 Judge Checks
+
+    | Metric | Judge Type | What It Checks (Layman Explanation) | How It Checks (Technical Method) | Target Threshold |
+    |---|---|---|---|---|
+    | **Categoriser Accuracy** | LLM-as-Judge | Are articles being sorted into the right themes? | Re-classifies a stratified sample of articles via LLM and compares predicted themes against active assignments. | ≥ 80% |
+    | **Faithfulness Score** | LLM-as-Judge | Are the generated summaries truthful to the original articles without making things up? | Extracts claims from summary bullet points and uses LLM fact-checking against theme-filtered source article text. | ≥ 80% |
+    | **Uniqueness Score** | Hybrid Heuristic + LLM | Are different theme summaries distinct, or are they repeating the same stories across themes/runs? | Performs Jaccard/cosine text overlap filtering; invokes LLM pairwise uniqueness judge when overlap is in ambiguous bands. | ≥ 80% |
+    | **Grounding Score** | Deterministic | Do the "Further Reading" links point to real articles fetched in the run? | Cross-references cited titles/links in `further_reading` against the exact set of input source articles. | 100% |
+    | **Structural Compliance** | Deterministic | Is the summary formatted properly with mandatory headers, sentence lengths, and bullet counts? | Regex validates mandatory headers (`WHAT HAPPENED`, `SIGNIFICANCE`, `WATCHLIST`) and checks sentence count bounds (3–7 sentences). | 100% |
+    | **Coverage Score** | Deterministic | Did the summary capture key information from all fetched articles, or did it ignore most of them? | Measures source article title/entity token recall across the generated theme summary. | ≥ 70% |
+    | **Temporal Coherence** | Deterministic | Is the summary actually updating week-over-week, or is it echoing static past summaries? | Compares active summary against past run summaries to verify evolution claims and flag stale text repetition. | ≥ 75% |
+
+    ---
+
+    ### 🛠️ Guidance on In-App Remedy Actions (No Backend Code Edits Needed)
+
+    When any metric falls below target, you do **not** need to edit backend code. Use the interactive controls built directly into this page:
+
+    1. **⚡ 1-Click "Apply All Suggested Keywords"**:
+       - When **Categoriser Accuracy** drops for a weak theme, scroll to the **Keyword Suggestions** section below and click **"⚡ Apply all suggested keywords to [Theme]"** to automatically persist missing terms.
+    2. **🎛️ Theme Keyword Manager Tab**:
+       - Switch to the **Theme Keyword Manager** standing control tab below to add new terms with custom weights (1–3) or delete weak keywords for any theme (persisted to `config/custom_keywords.json`).
+    3. **⚙️ Faithfulness & Summariser Tuner Tab**:
+       - Switch to the **Faithfulness & Summariser Tuner** standing control tab below to tune LLM parameters:
+         - **Lower Temperature** (`0.1 – 0.2`) to suppress hallucinations.
+         - **Reduce Max Output Tokens** to discourage ungrounded narrative filler.
+         - **Enable Strict Anti-Hallucination Grounding Mode** to enforce source-article citation rules (persisted to `config/custom_settings.json`).
+    4. **📌 Watchlist Term Suggestions**:
+       - Copy suggested terms at the bottom of this page into `watch.md` to refine future RSS & web fetching precision.
+    """)
+
 # ---------------------------------------------------------------------------
 # Supabase availability check
 # ---------------------------------------------------------------------------
