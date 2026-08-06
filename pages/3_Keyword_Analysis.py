@@ -38,7 +38,7 @@ def get_top_10_keywords_for_theme(theme_name: str, themed_articles: dict) -> lis
     if theme_name != "All Themes (No Filter)":
         articles = themed_articles.get(theme_name, [])
         if articles:
-            top_tuples = get_top_words_for_theme(theme_name, articles, num_words=10)
+            top_tuples = get_top_words_for_theme(theme_name, articles, 10)
             if top_tuples:
                 return [w[0] for w in top_tuples[:10]]
         # Fallback to configured theme keywords in THEMES
@@ -51,7 +51,7 @@ def get_top_10_keywords_for_theme(theme_name: str, themed_articles: dict) -> lis
         for arts in themed_articles.values():
             all_articles.extend(arts)
         if all_articles:
-            top_tuples = get_top_words_for_theme("All", all_articles, num_words=10)
+            top_tuples = get_top_words_for_theme("All", all_articles, 10)
             if top_tuples:
                 return [w[0] for w in top_tuples[:10]]
         return ["mcp", "agents", "rag", "blackwell", "gpu", "benchmark", "eu ai act", "security", "fine-tuning", "orchestration"]
