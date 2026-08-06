@@ -75,9 +75,9 @@ RLS is enabled with read-only public access. Run `supabase_schema.sql` and `supa
 ### Pages
 - `1_Overview.py` — theme summary cards with key takeaways
 - `2_Deep_Dive.py` — per-theme article list and further reading
-- `3_Keyword_Analysis.py` — keyword velocity analytics with theme filter & top-10 auto-plotting, plus theme word clouds
+- `3_Keyword_Analysis.py` — keyword velocity analytics with theme filter & top-10 auto-plotting (with `canonicalize_word()` singular/plural merging and expanded low-signal stopwords), plus theme word clouds
 - `4_Sources.py` — full source list with links
-- `5_History.py` — Memory Wiki to browse past runs
+- `5_History.py` — Memory Wiki with 3 tabs: **🔮 Ask Sage** (conversational chat agent grounded in wiki data with chronological citations, powered by `core/sage_agent.py`), 📖 Memory Timeline, ⚖️ Compare Runs
 - `6_Trend_Analytics.py` — historical thematic momentum & theme drilldown timeline
 - `8_Quality_Evaluation.py` — weekly automated quality evaluation engine scoring 7 metrics with live progress panel, in-app theme keyword manager, 1-click apply buttons, and summariser tuner
 
@@ -99,8 +99,9 @@ ai-pulse/
 │   ├── cache.py                 # st.cache_data 6h TTL + disk cache + content hashing
 │   ├── bg_refresher.py          # BackgroundRefresher thread (singleton)
 │   ├── llm_client.py            # Ollama wrapper (Semaphore(3) concurrency, retries, auth, opt-in event_sink)
+│   ├── sage_agent.py            # Sage chat agent (persona, relevance-ranked context builder, first-appearance annotation)
 │   ├── shared_sidebar.py        # Consistent nav + status across pages
-│   ├── supabase_client.py       # All DB ops with graceful degradation
+│   ├── supabase_client.py       # All DB ops with graceful degradation (incl. get_summaries_across_runs)
 │   ├── supabase_ui.py           # Sidebar sync status widget
 │   └── logger.py                # Centralised logging setup
 ├── config/
@@ -108,13 +109,14 @@ ai-pulse/
 │   ├── themes.py                # 7 themes with weighted keywords
 │   ├── sources.py               # RSS feeds + web-scrape registry
 │   └── Appendix_*.md            # Watchlists: experts, blogs, papers
-├── tests/                       # pytest suite (fetcher, classifier, summariser, visualiser, evaluator)
+├── tests/                       # pytest suite (fetcher, classifier, summariser, visualiser, evaluator, sage_agent)
 │   ├── conftest.py              # Shared fixtures: CannedLLM, llm_table, clean_judge_events, integration marker
 │   ├── test_fetcher.py
 │   ├── test_classifier.py
 │   ├── test_summariser.py
 │   ├── test_visualiser.py
-│   └── test_evaluator.py
+│   ├── test_evaluator.py
+│   └── test_sage_agent.py
 ├── supabase_schema.sql          # 4 tables, RLS, indexes
 ├── supabase_migration_dedup.sql # Adds (content_hash, theme_name) unique constraint
 ├── supabase_migration_keywords.sql # Adds keyword_suggestions table
@@ -137,3 +139,5 @@ ai-pulse/
 - **Supabase is optional and degrades gracefully** — `is_available()` returns `False` if env vars are missing, and the app continues to function with just `history.json` / `memory.md`.
 - **LLM calls are batched** for efficiency (20 articles per JSON classification request; 10–20× token savings vs. per-article calls).
 - **Quality Evaluation runs 3 LLM judges in parallel + 4 deterministic sub-millisecond judges** — Categoriser, Faithfulness, Uniqueness, Grounding, Structural Compliance, Coverage, and Temporal Coherence — inside a `ThreadPoolExecutor` in `core/evaluator.py`. Results persist to Supabase via `core/quality_schema.insert_quality_evaluation()`. The page is ISO-week-guarded (`has_evaluation_this_iso_week`) so a fresh evaluation only runs once per week. While running, the page drives the pipeline from a daemon thread and renders a live progress panel by polling a thread-safe ring buffer in `core/evaluator.py`.
+- **Sage (`core/sage_agent.py`)** is the Memory Wiki's conversational chat agent. It assembles a relevance-ranked, character-budgeted context string from cross-run summaries (`get_summaries_across_runs()`) with first-appearance annotations, then calls the same Ollama LLM via `LLMClient.generate()`. Sage's response format: (1) factual chronological account with `[Theme · Run YYYY-MM-DD]` citations, then (2) "My read on this" assessment. Multi-turn conversation state is stored in `st.session_state.sage_messages`.
+- **Keyword canonicalization** — `core/visualiser.py` exports `canonicalize_word()` which normalises plurals (`agents` → `agent`, `models` → `model`, `capabilities` → `capability`). Both `extract_top_words()` and the Keyword Velocity Analytics in `pages/3_Keyword_Analysis.py` use it to merge singular/plural variants. A comprehensive low-signal stopword list filters verbs, time indicators, and generic prose.

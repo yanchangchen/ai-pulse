@@ -1,6 +1,6 @@
 # AI Pulse — Intelligence Dashboard
 
-An advanced AI news intelligence dashboard that aggregates, analyses, and persists AI industry developments into a longitudinal memory system. Aggregates 30+ engineering blogs and newsletters, classifies them into 5 strategic themes, and produces context-aware LLM summaries that track the **evolution** of trends across runs.
+An advanced AI news intelligence dashboard that aggregates, analyses, and persists AI industry developments into a longitudinal memory system. Aggregates 30+ engineering blogs and newsletters, classifies them into 7 strategic themes, and produces context-aware LLM summaries that track the **evolution** of trends across runs. Includes **Sage**, an embedded AI research analyst you can chat with to explore trends in the archive.
 
 ## 🚀 Key Features
 
@@ -26,12 +26,12 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 ├─────────────────────────────────────────────────────────────────┤
 │  Pages                                                           │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐│
-│  │ Overview │ │ Deep Dive│ │  Word    │ │ Sources  │ │ Memory ││
-│  │  (Home)  │ │          │ │  Clouds  │ │          │ │  Wiki  ││
+│  │ Overview │ │ Deep Dive│ │ Keyword │ │ Sources  │ │ Memory ││
+│  │  (Home)  │ │          │ │ Analysis│ │          │ │  Wiki  ││
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └────────┘│
 │  ┌──────────────────┐ ┌──────────────────────────────────────┐ │
-│  │  Trend Analytics │ │       Emerging Trends                │ │
-│  │  (cross-run)     │ │  (novelty / acceleration / timeline)  │ │
+│  │  Trend Analytics │ │       Quality Evaluation             │ │
+│  │  (cross-run)     │ │  (LLM-as-judge, weekly cadence)      │ │
 │  └──────────────────┘ └──────────────────────────────────────┘ │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │  Quality Evaluation (8) — LLM-as-judge, weekly cadence,    │ │
@@ -45,8 +45,9 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 │  • History Mgr   (JSON + Markdown + Supabase persistence)        │
 │  • Cache         (st.cache_data 6h TTL + .cache/ disk JSON)      │
 │  • BG Refresher  (daemon thread, non-blocking pipeline)          │
-│  • Shared Sidebar (consistency across all 8 pages)               │
+│  • Shared Sidebar (consistency across all pages)               │
 │  • LLM Client    (Ollama Cloud, exponential-backoff retries)     │
+│  • Sage Agent    (Memory Wiki chat — chronological citations)    │
 │  • Evaluator     (3 concurrent LLM-as-judge pools; weekly run)   │
 │  • Quality Schema (Supabase table for evaluator results)         │
 ├─────────────────────────────────────────────────────────────────┤
@@ -97,9 +98,9 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 | — | Home (`app.py`) | Dashboard with theme metrics and live ingestion status |
 | 1 | Overview | Theme summary cards with key takeaways |
 | 2 | Deep Dive | Per-theme article list, full summaries, and further reading |
-| 3 | Keyword Analysis | Keyword velocity analytics with theme filter & top-10 auto-plotting, plus theme word clouds & frequency distributions |
+| 3 | Keyword Analysis | Keyword velocity analytics with theme filter & top-10 auto-plotting (with singular/plural canonicalization & low-signal stopword filtering), plus theme word clouds & frequency distributions |
 | 4 | Sources | All RSS feeds and web sources with article counts |
-| 5 | Memory Wiki | Browse past runs and per-theme summary history |
+| 5 | Memory Wiki | **🔮 Ask Sage** (default tab) — conversational chat agent grounded in wiki data with chronological citations; 📖 Memory Timeline — browse past runs; ⚖️ Compare Runs — side-by-side diff |
 | 6 | Trend Analytics | Cross-run thematic momentum line chart & detailed theme historical drilldown timeline |
 | 8 | Quality Evaluation | Weekly automated evaluation engine scoring 7 metrics: 3 LLM-as-judge (Categoriser, Faithfulness, Uniqueness) + 4 sub-millisecond deterministic judges (Grounding, Structural Compliance, Coverage, Temporal Coherence) with a live progress panel; results persist to Supabase. Also surfaces **in-app theme keyword manager, 1-click apply buttons, and summariser tuner**. |
 
@@ -151,7 +152,7 @@ Set `LLM_DEBUG=1` in `.env` to dump the prompt and raw response body for every e
 ## 🧪 Tests
 
 ```bash
-pytest tests/                                  # main test suite (fetcher, classifier, summariser, visualiser, evaluator)
+pytest tests/                                  # main test suite (fetcher, classifier, summariser, visualiser, evaluator, sage_agent)
                                                # picks up shared fixtures in tests/conftest.py (CannedLLM, clean_judge_events, integration marker)
 pytest -m integration tests/                   # opt-in: exercises the real LLM and Supabase wiring
 python test_supabase.py                        # Supabase connection + write/read smoke test
@@ -184,6 +185,7 @@ ai-pulse/
 │   ├── cache.py                 # st.cache_data + disk cache + content hashing
 │   ├── bg_refresher.py          # BackgroundRefresher thread (singleton)
 │   ├── llm_client.py            # Ollama Cloud wrapper (retries, auth, opt-in event_sink)
+│   ├── sage_agent.py            # Sage chat agent (persona, context builder, relevance scorer)
 │   ├── shared_sidebar.py        # Consistent nav + status across pages
 │   ├── supabase_client.py       # All DB ops, graceful degradation
 │   ├── supabase_ui.py           # Sidebar sync status widget
@@ -193,13 +195,14 @@ ai-pulse/
 │   ├── themes.py                # 7 themes with weighted keywords
 │   ├── sources.py               # RSS feeds + web-scrape registry
 │   └── Appendix_*.md            # Watchlists: experts, blogs, papers
-├── tests/                       # pytest suite (fetcher/classifier/summariser/visualiser/evaluator)
+├── tests/                       # pytest suite (fetcher/classifier/summariser/visualiser/evaluator/sage_agent)
 │   ├── conftest.py              # Shared fixtures: CannedLLM, llm_table, clean_judge_events, integration marker
 │   ├── test_fetcher.py
 │   ├── test_classifier.py
 │   ├── test_summariser.py
 │   ├── test_visualiser.py
-│   └── test_evaluator.py
+│   ├── test_evaluator.py
+│   └── test_sage_agent.py
 ├── test_backfill.py             # Standalone: history.json → Supabase backfill smoke test
 ├── test_deduplication.py        # Standalone: UPSERT dedup of (content_hash, theme_name)
 ├── test_llm_optimization.py     # Standalone: skip-summarise-when-unchanged logic
