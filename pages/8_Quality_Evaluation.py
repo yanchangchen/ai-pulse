@@ -148,43 +148,6 @@ if not supabase.is_available():
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Sidebar controls
-# ---------------------------------------------------------------------------
-with st.sidebar:
-    st.divider()
-    st.subheader("🎚️ Evaluation Settings")
-    threshold = st.slider(
-        "Threshold",
-        min_value=0.50,
-        max_value=0.99,
-        value=QUALITY_THRESHOLD,
-        step=0.01,
-        format="%.2f",
-        help="Scores below this line trigger a recommendation.  The value used "
-        "is stored on the resulting evaluation row so historical reports "
-        "remain comparable.",
-    )
-    lookback_days = st.radio(
-        "Lookback (days)",
-        options=[1, 7, 14, 30],
-        index=1,
-        horizontal=True,
-        help="How far back to look for trend_runs to evaluate.",
-    )
-    judge_selection_label = st.radio(
-        "Judges to Run",
-        options=["All 7 Judges", "3 LLM Judges Only", "4 Deterministic Judges Only"],
-        index=0,
-        help="Select which judges to evaluate. '3 LLM Judges Only' runs categoriser, faithfulness, and uniqueness; '4 Deterministic Judges Only' runs zero-cost sub-millisecond rule checks without LLM calls.",
-    )
-    judge_map = {
-        "All 7 Judges": "all",
-        "3 LLM Judges Only": "llm",
-        "4 Deterministic Judges Only": "deterministic",
-    }
-    judge_selection = judge_map[judge_selection_label]
-
-# ---------------------------------------------------------------------------
 # Evaluation history (lazy)
 # ---------------------------------------------------------------------------
 HISTORY_LIMIT = 12
@@ -198,15 +161,55 @@ with st.spinner("Loading evaluation history…"):
     history_df = _cached_history(supabase, HISTORY_LIMIT)
 
 # ---------------------------------------------------------------------------
-# Run-now button
+# Run Evaluation & Settings Control Card
 # ---------------------------------------------------------------------------
-st.subheader("▶ Run Evaluation")
-st.caption(
-    f"On-demand evaluation ({judge_selection_label}). Selected judges run and the result "
-    "is written to the `quality_evaluations` Supabase table."
-)
+st.subheader("▶ Run Evaluation & Settings")
+st.caption("Configure evaluation parameters below and trigger on-demand scoring. Results persist automatically to Supabase.")
+
+with st.container():
+    col_cfg1, col_cfg2, col_cfg3 = st.columns([1.2, 1, 1])
+
+    with col_cfg1:
+        judge_selection_label = st.selectbox(
+            "🎯 Judges to Run",
+            options=["All 7 Judges", "3 LLM Judges Only", "4 Deterministic Judges Only"],
+            index=0,
+            help="Select which judges to evaluate. '3 LLM Judges Only' runs categoriser, faithfulness, and uniqueness; '4 Deterministic Judges Only' runs zero-cost sub-millisecond rule checks without LLM calls.",
+            key="cfg_judge_selection",
+        )
+
+    with col_cfg2:
+        lookback_days = st.selectbox(
+            "📅 Lookback Window",
+            options=[1, 7, 14, 30],
+            index=1,
+            format_func=lambda d: f"{d} Day{'s' if d > 1 else ''}",
+            help="How far back to look for trend_runs to evaluate.",
+            key="cfg_lookback_days",
+        )
+
+    with col_cfg3:
+        threshold = st.slider(
+            "🎯 Threshold Score",
+            min_value=0.50,
+            max_value=0.99,
+            value=QUALITY_THRESHOLD,
+            step=0.01,
+            format="%.2f",
+            help="Scores below this threshold line trigger actionable recommendations.",
+            key="cfg_threshold",
+        )
+
+judge_map = {
+    "All 7 Judges": "all",
+    "3 LLM Judges Only": "llm",
+    "4 Deterministic Judges Only": "deterministic",
+}
+judge_selection = judge_map[judge_selection_label]
+
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 run_now = st.button(
-    f"Run evaluation ({judge_selection_label})",
+    f"🚀 Run Evaluation Now ({judge_selection_label})",
     type="primary",
     width="stretch",
     key="run_quality_eval_btn",
