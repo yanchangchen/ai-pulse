@@ -15,7 +15,7 @@ cd ai-pulse
 streamlit run app.py
 ```
 
-First load triggers a `BackgroundRefresher` thread; the UI stays responsive while news is fetched, classified, and summarised. Subsequent loads restore from `history.json` and only refresh in the background if the cache is older than 6 hours.
+First load triggers a `BackgroundRefresher` thread; the UI stays responsive while news is fetched, classified, and summarised. Subsequent loads restore from `history.json` and only refresh in the background if the cache is older than 12 hours.
 
 ## Testing
 
@@ -40,7 +40,7 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-anon-key
 ```
 
-Core constants are in `config/settings.py` — source of truth for `DAYS_LOOKBACK` (14), `CACHE_TTL_SECONDS` (6h), and `FETCH_WORKERS` (8). `_get_secret()` reads in order: `st.secrets` → `.streamlit/secrets.toml` → env vars → default.
+Core constants are in `config/settings.py` — source of truth for `DAYS_LOOKBACK` (14), `CACHE_TTL_SECONDS` (12h), and `FETCH_WORKERS` (8). `_get_secret()` reads in order: `st.secrets` → `.streamlit/secrets.toml` → env vars → default.
 
 ## Architecture
 
@@ -52,7 +52,7 @@ Articles are classified into 7 themes (defined in `config/themes.py`) using **we
 
 ### Caching Strategy
 Two-layer cache in `core/cache.py`:
-1. **`st.cache_data`** with 6-hour TTL wraps every expensive call (`cache_fetch_news`, `cache_classify_articles`, `cache_generate_summaries`, `cache_wordclouds`).
+1. **`st.cache_data`** with 12-hour TTL wraps every expensive call (`cache_fetch_news`, `cache_classify_articles`, `cache_generate_summaries`, `cache_wordclouds`).
 2. **Disk-based JSON cache** in `.cache/` for restart survival.
 3. **Content-based hashing** (`get_articles_hash()` — SHA-256 of sorted `title+link`) prevents redundant LLM calls if article content hasn't changed between runs.
 
@@ -96,7 +96,7 @@ ai-pulse/
 │   ├── weekly_evaluator.py      # Weekly cadence helper for the evaluator
 │   ├── quality_schema.py        # Supabase schema for quality_evaluations table
 │   ├── history_manager.py       # JSON / Markdown / Supabase persistence
-│   ├── cache.py                 # st.cache_data 6h TTL + disk cache + content hashing
+│   ├── cache.py                 # st.cache_data 12h TTL + disk cache + content hashing
 │   ├── bg_refresher.py          # BackgroundRefresher thread (singleton)
 │   ├── llm_client.py            # Ollama wrapper (Semaphore(3) concurrency, retries, auth, opt-in event_sink)
 │   ├── sage_agent.py            # Sage chat agent (persona, relevance-ranked context builder, first-appearance annotation)

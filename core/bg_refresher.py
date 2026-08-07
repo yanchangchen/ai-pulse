@@ -199,7 +199,7 @@ def render_sidebar_info() -> None:
         last_run_time = get_last_run_time()
         if last_run_time:
             hours_since = (datetime.now() - last_run_time).total_seconds() / 3600
-            if hours_since < 6:
+            if hours_since < 12:
                 st.sidebar.success(f"✅ Cache up-to-date ({int(hours_since)}h ago)")
             else:
                 st.sidebar.warning(f"⚠️ Cache expired ({int(hours_since)}h old)")
@@ -220,7 +220,7 @@ def render_sidebar_info() -> None:
             st.sidebar.caption(f"Last update finished: {status_info['completed_timestamp']}")
 
 
-def is_cache_expired(max_age_hours: float = 6.0) -> bool:
+def is_cache_expired(max_age_hours: float = 12.0) -> bool:
     """Check if the history cache is missing or older than max_age_hours."""
     from core.history_manager import get_last_run_time
     last_run_time = get_last_run_time()

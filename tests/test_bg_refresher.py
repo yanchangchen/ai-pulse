@@ -19,6 +19,6 @@ def test_is_cache_expired_recent_run():
 
 
 def test_is_cache_expired_old_run():
-    old = datetime.now() - timedelta(hours=7)
+    old = datetime.now() - timedelta(hours=13)
     with patch("core.history_manager.get_last_run_time", return_value=old):
         assert is_cache_expired() is True

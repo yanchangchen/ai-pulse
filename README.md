@@ -5,7 +5,7 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 ## 🚀 Key Features
 
 - **7 strategic themes** — weighted keyword classification, with batched LLM fallback for ambiguous articles (20 articles per JSON request, 10–20× token savings).
-- **Background ingestion** — first load and 6-hour-expiry refreshes run in a daemon thread (`core/bg_refresher.py`); the UI stays responsive while the pipeline runs.
+- **Background ingestion** — first load and 12-hour-expiry refreshes run in a daemon thread (`core/bg_refresher.py`); the UI stays responsive while the pipeline runs.
 - **Persistent memory** — every run is appended to `history.json` (machine-readable), `memory.md` (human-readable wiki), and optionally Supabase (cloud). The last 2 runs' summaries are injected into the next LLM prompt so the model reports on **evolutions**, not static snapshots.
 - **Token optimisation** — content-based SHA-256 hashing skips redundant LLM calls when fetched articles are unchanged; `articles` table uses `(content_hash, theme_name)` UPSERT to deduplicate across runs.
 - **Longitudinal analytics** — Trend Analytics, Emerging Trends, and Memory Wiki pages query Supabase directly for cross-run metrics (momentum, novelty, keyword velocity).
@@ -43,7 +43,7 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 │  • Classifier    (weighted keywords → batched LLM → fallback)    │
 │  • Summariser    (context-aware, memory-injected)                │
 │  • History Mgr   (JSON + Markdown + Supabase persistence)        │
-│  • Cache         (st.cache_data 6h TTL + .cache/ disk JSON)      │
+│  • Cache         (st.cache_data 12h TTL + .cache/ disk JSON)     │
 │  • BG Refresher  (daemon thread, non-blocking pipeline)          │
 │  • Shared Sidebar (consistency across all pages)               │
 │  • LLM Client    (Ollama Cloud, exponential-backoff retries)     │
@@ -89,7 +89,7 @@ See [`SUPABASE_SETUP_GUIDE.md`](./SUPABASE_SETUP_GUIDE.md) for the full schema (
 streamlit run app.py
 ```
 
-The first load triggers a background ingestion. Subsequent loads restore from `history.json` and only refresh in the background if the cache is older than 6 hours.
+The first load triggers a background ingestion. Subsequent loads restore from `history.json` and only refresh in the background if the cache is older than 12 hours.
 
 ## 🧭 Pages
 
@@ -194,7 +194,7 @@ python test_llm_optimization.py                # skip-summarise-when-unchanged l
 ## 📈 Performance & Monitoring
 
 - **Logs** — `logs/app.log` (console + file handler via `core/logger.py`).
-- **Cache** — `st.cache_data` with 6-hour TTL + `.cache/*.json` disk persistence; `get_articles_hash()` short-circuits LLM calls when content is unchanged.
+- **Cache** — `st.cache_data` with 12-hour TTL + `.cache/*.json` disk persistence; `get_articles_hash()` short-circuits LLM calls when content is unchanged.
 - **Cloud sync** — Supabase sync status shown in the sidebar; all runs persisted automatically once env vars are set; first load backfills `history.json` → Supabase.
 
 ## 📁 Project Structure

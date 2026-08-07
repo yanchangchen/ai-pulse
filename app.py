@@ -103,7 +103,7 @@ def main() -> None:
     from core.bg_refresher import check_and_show_bg_status
     check_and_show_bg_status()
 
-    # 2. Check if cache expired (> 6 hours) or no data loaded, and trigger background thread
+    # 2. Check if cache expired (> 12 hours) or no data loaded, and trigger background thread
     from core.bg_refresher import BackgroundRefresher, is_cache_expired
     if is_cache_expired() and not BackgroundRefresher.is_running():
         logger.info("Cache expired or missing. Triggering non-blocking background refresh.")
@@ -119,7 +119,7 @@ def main() -> None:
 
     last_time = get_last_run_time()
     if last_time:
-        st.caption(f"📅 Last Intelligence Run: **{last_time}** (Auto-refreshes every 6 hours)")
+        st.caption(f"📅 Last Intelligence Run: **{last_time}** (Auto-refreshes every 12 hours)")
 
     st.divider()
 
