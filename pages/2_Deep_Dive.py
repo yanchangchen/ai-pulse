@@ -7,7 +7,7 @@ import streamlit as st
 import pandas as pd
 
 from config.themes import THEME_ORDER, THEME_COLORS
-from core.design_system import apply_design_system
+from core.design_system import apply_design_system, sanitize_summary_html
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
 
@@ -103,7 +103,7 @@ def main() -> None:
     # What is happening
     st.subheader("📰 The Signal (What is Happening)")
     if theme_summary.get('what_is_happening'):
-        st.markdown(theme_summary['what_is_happening'])
+        st.markdown(sanitize_summary_html(theme_summary['what_is_happening']))
     else:
         st.info("No summary available for this theme.")
 

@@ -7,7 +7,7 @@ import streamlit as st
 from datetime import datetime, timedelta
 
 from config.themes import THEME_ORDER, THEME_COLORS
-from core.design_system import apply_design_system
+from core.design_system import apply_design_system, sanitize_summary_html
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
 
@@ -71,7 +71,7 @@ def main() -> None:
                 <div class="card-meta">📰 <b>{len(articles1)}</b> articles tracked this period</div>
                 <div style="margin-top: 14px;">
                     <div class="card-section-label" style="color: {color1};">THE LATEST SIGNAL</div>
-                    <div style="font-size: 15px; line-height: 1.6;">{summary1.get('what_is_happening', 'No signal available.')}</div>
+                    <div style="font-size: 15px; line-height: 1.6;">{sanitize_summary_html(summary1.get('what_is_happening', 'No signal available.'))}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -96,7 +96,7 @@ def main() -> None:
                     <div class="card-meta">📰 <b>{len(articles2)}</b> articles tracked this period</div>
                     <div style="margin-top: 14px;">
                         <div class="card-section-label" style="color: {color2};">THE LATEST SIGNAL</div>
-                        <div style="font-size: 15px; line-height: 1.6;">{summary2.get('what_is_happening', 'No signal available.')}</div>
+                        <div style="font-size: 15px; line-height: 1.6;">{sanitize_summary_html(summary2.get('what_is_happening', 'No signal available.'))}</div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)

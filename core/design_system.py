@@ -112,21 +112,23 @@ def apply_design_system() -> None:
 
 
 def get_plotly_theme_layout() -> Dict[str, Any]:
-    """Return layout kwargs for Plotly figures that dynamically adapt to background
-    colors and prevent contrast clashes in light/dark mode.
-    """
+    """Returns Plotly kwargs for transparent theme-aware background layout."""
     return {
         "paper_bgcolor": "rgba(0,0,0,0)",
         "plot_bgcolor": "rgba(0,0,0,0)",
-        "font": {"family": "Inter, sans-serif"},
-        "margin": {"l": 20, "r": 20, "t": 30, "b": 30},
-        "hoverlabel": {"font_family": "Inter, sans-serif"},
-        "xaxis": {
-            "gridcolor": "rgba(128,128,128,0.15)",
-            "zerolinecolor": "rgba(128,128,128,0.2)",
+        "font": {
+            "family": "Inter, sans-serif",
         },
-        "yaxis": {
-            "gridcolor": "rgba(128,128,128,0.15)",
-            "zerolinecolor": "rgba(128,128,128,0.2)",
-        },
+        "margin": dict(l=20, r=20, t=30, b=20),
     }
+
+
+def sanitize_summary_html(text: str) -> str:
+    """Strips or converts raw HTML <small> tags into clean Markdown text."""
+    import re
+    if not text:
+        return ""
+    # Clean legacy <small style="..."> tags from earlier runs
+    cleaned = re.sub(r"<small[^>]*>(.*?)</small>", r"\1", text, flags=re.DOTALL)
+    cleaned = re.sub(r"</?small[^>]*>", "", cleaned)
+    return cleaned.strip()

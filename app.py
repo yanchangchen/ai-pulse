@@ -20,7 +20,7 @@ from core.history_manager import get_last_run, get_last_run_time
 from core.llm_client import LLMClient
 from core.logger import setup_logger
 from core.bg_refresher import BackgroundRefresher
-from core.design_system import apply_design_system
+from core.design_system import apply_design_system, sanitize_summary_html
 from core.shared_sidebar import render_sidebar_nav
 
 
@@ -196,7 +196,7 @@ def main() -> None:
         color = THEME_COLORS.get(theme, '#666')
         if summary and summary.get('what_is_happening'):
             with st.expander(f"📌 {theme} ({len(articles)} articles)"):
-                st.markdown(f"**The Signal:** {summary.get('what_is_happening', '')}")
+                st.markdown(f"**The Signal:** {sanitize_summary_html(summary.get('what_is_happening', ''))}")
                 st.markdown(f"**Significance:** {summary.get('why_it_matters', '')}")
 
 
