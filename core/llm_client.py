@@ -34,8 +34,18 @@ _DEBUG_PROMPT_CHARS = 500
 _DEBUG_RESPONSE_CHARS = 1000
 
 
+import sys
+
 class LLMClientError(Exception):
     """Raised when the LLM API call fails after all retries."""
+
+
+class LLMQuotaExceededError(LLMClientError):
+    """Raised when the LLM API quota or rate limit is exhausted (HTTP 429 / usage limit)."""
+
+
+_QUOTA_EXCEEDED_FLAG = "_aipulse_llm_quota_exceeded"
+_QUOTA_MSG_FLAG = "_aipulse_llm_quota_message"
 
 
 class LLMClient:
@@ -54,11 +64,41 @@ class LLMClient:
         self.api_key = api_key
 
     # ------------------------------------------------------------------
+    # Quota / Rate Limit Management
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def is_quota_exceeded(cls) -> bool:
+        """Return True if the LLM API rate limit / weekly quota has been exceeded."""
+        return getattr(sys, _QUOTA_EXCEEDED_FLAG, False)
+
+    @classmethod
+    def get_quota_message(cls) -> str:
+        """Return details of the quota error message if present."""
+        return getattr(sys, _QUOTA_MSG_FLAG, "")
+
+    @classmethod
+    def mark_quota_exceeded(cls, msg: str = "") -> None:
+        """Mark LLM API quota as exceeded to stop further LLM calls across threads/session."""
+        setattr(sys, _QUOTA_EXCEEDED_FLAG, True)
+        if msg:
+            setattr(sys, _QUOTA_MSG_FLAG, msg)
+        logger.error("LLM Quota Exceeded flag set: %s", msg)
+
+    @classmethod
+    def reset_quota_status(cls) -> None:
+        """Reset quota exceeded flag (e.g. for testing or manual recovery)."""
+        setattr(sys, _QUOTA_EXCEEDED_FLAG, False)
+        setattr(sys, _QUOTA_MSG_FLAG, "")
+
+    # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Return True if the Ollama Cloud endpoint is reachable."""
+        """Return True if the Ollama Cloud endpoint is reachable and quota is active."""
+        if self.is_quota_exceeded():
+            return False
         try:
             headers = self._auth_headers()
             resp = requests.get(
@@ -80,13 +120,13 @@ class LLMClient:
         """Send a generation request with automatic retries.
 
         Returns the model's text response.
+        Raises LLMQuotaExceededError if rate limit (HTTP 429) is hit.
         Raises LLMClientError if call fails or returns empty content.
-
-        ``event_sink`` (optional) is invoked once per HTTP attempt with
-        ``(latency_ms, ok, error_msg)``.  When omitted the client behaves
-        identically to its previous release; production callers don't
-        need to pass anything.
         """
+        if self.is_quota_exceeded():
+            msg = self.get_quota_message() or "Ollama Cloud weekly usage limit reached (HTTP 429)."
+            raise LLMQuotaExceededError(f"Quota exceeded: {msg}")
+
         payload = {
             "model": self.model,
             "prompt": (
@@ -103,8 +143,10 @@ class LLMClient:
 
         last_error: Optional[Exception] = None
         for attempt in range(1, MAX_RETRIES + 1):
-            # On subsequent retries, nudge the temperature and predict budget up
-            # to break the model out of a stuck/degenerate decoder state.
+            if self.is_quota_exceeded():
+                msg = self.get_quota_message() or "Ollama Cloud weekly usage limit reached (HTTP 429)."
+                raise LLMQuotaExceededError(f"Quota exceeded: {msg}")
+
             if attempt == 2:
                 payload["options"]["temperature"] = max(0.5, temperature)
                 payload["options"]["num_predict"] = max_tokens + 100
@@ -124,6 +166,29 @@ class LLMClient:
                         timeout=120,
                     )
                 latency_ms = int((time.monotonic() - t0) * 1000)
+
+                # Check for HTTP 429 or quota limit error strings
+                is_429 = resp.status_code == 429
+                is_quota_msg = any(kw in resp.text.lower() for kw in ["usage limit", "weekly limit", "quota", "upgrade for higher limits"])
+
+                if is_429 or is_quota_msg:
+                    err_text = resp.text[:300] if resp.text else f"HTTP {resp.status_code}"
+                    self.mark_quota_exceeded(err_text)
+                    last_error = LLMQuotaExceededError(f"HTTP 429 Quota Exceeded: {err_text}")
+                    if event_sink is not None:
+                        event_sink(latency_ms, False, str(last_error))
+                    if _LLM_DEBUG:
+                        _dump_failure(
+                            label="quota_exceeded_429",
+                            attempt=attempt,
+                            latency_ms=latency_ms,
+                            payload=payload,
+                            resp=resp,
+                            system=system,
+                        )
+                    # Instantly abort retries on quota exhaustion
+                    raise last_error
+
                 if resp.status_code == 200:
                     result = resp.json().get("response", "").strip()
                     if result:

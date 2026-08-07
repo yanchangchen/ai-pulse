@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 from config.themes import THEMES, THEME_ORDER
 from core.llm_client import LLMClient, LLMClientError
+import core.history_manager as history_manager
 from core.history_manager import get_recent_context, save_run_to_history
 
 logging.basicConfig(level=logging.INFO)
@@ -280,6 +281,14 @@ def _get_existing_article_hashes(theme_name: str) -> set:
         return set()
 
 
+def _extract_last_summaries(last_run: Optional[Dict]) -> Dict:
+    if not last_run:
+        return {}
+    if "data" in last_run and isinstance(last_run["data"], dict):
+        return last_run["data"].get("summaries", {})
+    return last_run.get("summaries", {})
+
+
 def generate_all_summaries(
     themed_articles: Dict[str, List[Dict]],
     full_articles: List[Dict]
@@ -295,18 +304,35 @@ def generate_all_summaries(
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
         article_counts[theme] = len(articles)
-        
-        # NEW: Check if articles are already summarized
+
+        # Check if LLM quota/rate limit was hit previously or on this run
+        if LLMClient.is_quota_exceeded():
+            logger.warning("LLM quota exceeded (HTTP 429). Loading cached summary for %s", theme)
+            last_run = history_manager.get_last_run()
+            last_summaries = _extract_last_summaries(last_run)
+            if theme in last_summaries:
+                cached = dict(last_summaries[theme])
+                summaries[theme] = cached
+            else:
+                summaries[theme] = {
+                    "what_is_happening": "⚠️ Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.",
+                    "engineering_tradeoffs": "Refer to previous run summaries.",
+                    "product_impact": "Refer to previous run summaries.",
+                    "why_it_matters": "Ollama Cloud weekly usage limit reached (HTTP 429).",
+                    "what_to_watch": "Check back when weekly quota resets.",
+                    "further_reading": ""
+                }
+            continue
+
         existing_hashes = _get_existing_article_hashes(theme)
         new_articles = [
             a for a in articles 
             if not a.get("content_hash") or a.get("content_hash") not in existing_hashes
         ]
-        
+
         if not new_articles and articles:
             logger.info("Skipping LLM summary for %s: all %d articles already summarized", 
                        theme, len(articles))
-            # Use a cached summary indicating no new articles
             summaries[theme] = {
                 "what_is_happening": f"No new articles this period. ({len(articles)} existing articles in database)",
                 "engineering_tradeoffs": "Refer to previous summaries.",
@@ -316,13 +342,39 @@ def generate_all_summaries(
                 "further_reading": ""
             }
             continue
-        
+
         logger.info("Generating summary for %s (%d new articles out of %d total)", 
                    theme, len(new_articles), len(articles))
-        
-        # Generate summary using new articles only (for better signal)
-        summary = generate_theme_summary(theme, new_articles if new_articles else articles)
-        summaries[theme] = summary
+
+        try:
+            summary = generate_theme_summary(theme, new_articles if new_articles else articles)
+            summaries[theme] = summary
+        except Exception as exc:
+            logger.error("Summary generation failed for %s: %s", theme, exc)
+            if LLMClient.is_quota_exceeded():
+                logger.warning("LLM quota exceeded during %s. Falling back to cached summary.", theme)
+                last_run = get_last_run()
+                last_summaries = last_run.get("data", {}).get("summaries", {}) if last_run else {}
+                if theme in last_summaries:
+                    summaries[theme] = dict(last_summaries[theme])
+                else:
+                    summaries[theme] = {
+                        "what_is_happening": f"⚠️ Ollama Cloud weekly rate limit reached (HTTP 429). {exc}",
+                        "engineering_tradeoffs": "Unable to analyze due to rate limit.",
+                        "product_impact": "Unable to analyze due to rate limit.",
+                        "why_it_matters": "Weekly quota reached.",
+                        "what_to_watch": "Check back when quota resets.",
+                        "further_reading": ""
+                    }
+            else:
+                summaries[theme] = {
+                    "what_is_happening": f"Error generating summary: {exc}",
+                    "engineering_tradeoffs": "Unable to analyze due to error.",
+                    "product_impact": "Unable to analyze due to error.",
+                    "why_it_matters": "Unable to analyze at this time.",
+                    "what_to_watch": "Please try again later.",
+                    "further_reading": ""
+                }
 
     # Save to memory/wiki
     try:

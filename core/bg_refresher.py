@@ -151,7 +151,15 @@ class BackgroundRefresher:
 
 def check_and_show_bg_status() -> None:
     """Helper to check background refresh status, display banners, and render control elements."""
-        
+    from core.llm_client import LLMClient
+    if LLMClient.is_quota_exceeded():
+        st.warning(
+            "⚠️ **Ollama Cloud Weekly Usage Limit Reached (HTTP 429)**: "
+            "Live LLM API calls are paused. Historical cached summaries are being displayed. "
+            "Information may be stale until quota resets.",
+            icon="⚠️"
+        )
+
     # 1. Top-of-page alert banner if new data is available in the persistence layer
     if st.session_state.get('data_loaded') and st.session_state.get('loaded_timestamp'):
         last_run = get_last_run()

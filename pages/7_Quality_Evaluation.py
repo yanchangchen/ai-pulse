@@ -530,6 +530,15 @@ else:
                     unsafe_allow_html=True,
                 )
 
+    from core.llm_client import LLMClient
+    if LLMClient.is_quota_exceeded() or raw_m_latest.get("categoriser", {}).get("quota_exceeded"):
+        st.warning(
+            "⚠️ **LLM Evaluation Judges Skipped / Halted (HTTP 429 Rate Limit)**: "
+            "The Ollama Cloud weekly rate limit was reached. LLM judge API calls were skipped, "
+            "and evaluation results were compiled using the **4 Deterministic Rule Checks** only.",
+            icon="⚠️"
+        )
+
     tab_llm_scores, tab_det_scores = st.tabs(["🤖 LLM Judge Metrics (3)", "⚡ Deterministic Rule Checks (4)"])
 
     with tab_llm_scores:

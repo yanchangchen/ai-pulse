@@ -1397,6 +1397,10 @@ def generate_keyword_suggestions(
     of any individual call degrades gracefully (that theme gets no
     suggestions, the rest still do).
     """
+    if LLMClient.is_quota_exceeded():
+        logger.warning("LLM quota exceeded. Skipping LLM keyword suggestions.")
+        return KeywordSuggestionReport(theme_suggestions={}, watchlist_suggestions=[])
+
     from config.themes import THEMES, THEME_ORDER
 
     threshold = report.threshold
@@ -1466,8 +1470,21 @@ def _execute_judges_and_build_report(
     """Run selected judges (all 7, 3 LLM only, or 4 deterministic only), assemble
     EvaluationReport, and persist results.
     """
-    llm_enabled = judge_selection in ("all", "llm")
-    deterministic_enabled = judge_selection in ("all", "deterministic")
+    quota_exceeded_before = LLMClient.is_quota_exceeded()
+    if quota_exceeded_before:
+        logger.warning("LLM quota exceeded prior to evaluation. Disabling LLM judges and enforcing deterministic judges.")
+        judge_selection = "deterministic"
+        _record_event(
+            judge="system",
+            run_id="",
+            item_id="",
+            latency_ms=0,
+            parse_ok=False,
+            score=0.0,
+        )
+
+    llm_enabled = judge_selection in ("all", "llm") and not LLMClient.is_quota_exceeded()
+    deterministic_enabled = (judge_selection in ("all", "deterministic")) or quota_exceeded_before
 
     results: Dict[str, Tuple] = {}
 
@@ -1491,14 +1508,22 @@ def _execute_judges_and_build_report(
                     results[name] = fut.result()
                 except Exception as exc:
                     logger.error("Judge %s failed: %s", name, exc)
-                    if name == "categoriser":
-                        results[name] = (0.0, {}, {})
+                    if LLMClient.is_quota_exceeded() or "429" in str(exc) or "quota" in str(exc).lower():
+                        LLMClient.mark_quota_exceeded(str(exc))
+                        deterministic_enabled = True
+                        if name == "categoriser":
+                            results[name] = (1.0, {}, {"skipped": True, "quota_exceeded": True})
+                        else:
+                            results[name] = (1.0, {"skipped": True, "quota_exceeded": True})
                     else:
-                        results[name] = (0.0, {})
+                        if name == "categoriser":
+                            results[name] = (0.0, {}, {})
+                        else:
+                            results[name] = (0.0, {})
     else:
-        results["categoriser"] = (1.0, {}, {"skipped": True})
-        results["faithfulness"] = (1.0, {"skipped": True})
-        results["uniqueness"] = (1.0, {"skipped": True})
+        results["categoriser"] = (1.0, {}, {"skipped": True, "quota_exceeded": quota_exceeded_before})
+        results["faithfulness"] = (1.0, {"skipped": True, "quota_exceeded": quota_exceeded_before})
+        results["uniqueness"] = (1.0, {"skipped": True, "quota_exceeded": quota_exceeded_before})
 
     classifier_score, per_theme_classifier, cat_raw = results.get("categoriser", (0.0, {}, {}))
     faithfulness_score, faith_raw = results.get("faithfulness", (0.0, {}))
