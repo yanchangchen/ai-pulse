@@ -292,14 +292,9 @@ class SupabaseManager:
         theme_filter: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        source_filter: Optional[str] = None,
         limit: int = 200,
     ) -> Optional[List[Dict]]:
-        """Retrieve theme summaries across all runs in chronological order.
-
-        Returns a flat list of summary dicts, each augmented with
-        ``run_timestamp`` and ``run_date`` from the parent trend_run.
-        Results are ordered oldest-first so callers can reason about
-        chronological progression.
         """Retrieve theme summaries across historical runs within an optional date range
         and theme/source filter.
 
@@ -327,7 +322,7 @@ class SupabaseManager:
             run_ids = list(run_lookup.keys())
 
             if source_filter:
-                art_resp = self.client.table("articles") \
+                art_resp = self.client.table("themed_articles") \
                     .select("run_id") \
                     .eq("source_name", source_filter) \
                     .in_("run_id", run_ids) \
