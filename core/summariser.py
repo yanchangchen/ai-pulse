@@ -310,7 +310,7 @@ def generate_all_summaries(
             logger.warning("LLM quota exceeded (HTTP 429). Loading cached summary for %s", theme)
             last_run = history_manager.get_last_run()
             last_summaries = _extract_last_summaries(last_run)
-            warning_prefix = "<small style='color: #d97706; display: block; margin-bottom: 8px;'>⚠️ Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.</small>"
+            warning_prefix = "⚠️ *Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.*"
             if theme in last_summaries:
                 cached = dict(last_summaries[theme])
                 orig_text = cached.get("what_is_happening", "")
@@ -359,7 +359,7 @@ def generate_all_summaries(
                 logger.warning("LLM quota exceeded during %s. Falling back to cached summary.", theme)
                 last_run = history_manager.get_last_run()
                 last_summaries = _extract_last_summaries(last_run)
-                warning_prefix = "<small style='color: #d97706; display: block; margin-bottom: 8px;'>⚠️ Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.</small>"
+                warning_prefix = "⚠️ *Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.*"
                 if theme in last_summaries:
                     cached = dict(last_summaries[theme])
                     orig_text = cached.get("what_is_happening", "")
