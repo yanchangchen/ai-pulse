@@ -310,12 +310,16 @@ def generate_all_summaries(
             logger.warning("LLM quota exceeded (HTTP 429). Loading cached summary for %s", theme)
             last_run = history_manager.get_last_run()
             last_summaries = _extract_last_summaries(last_run)
+            warning_prefix = "<small style='color: #d97706; display: block; margin-bottom: 8px;'>⚠️ Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.</small>"
             if theme in last_summaries:
                 cached = dict(last_summaries[theme])
+                orig_text = cached.get("what_is_happening", "")
+                if warning_prefix not in orig_text:
+                    cached["what_is_happening"] = f"{warning_prefix}\n\n{orig_text}"
                 summaries[theme] = cached
             else:
                 summaries[theme] = {
-                    "what_is_happening": "⚠️ Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.",
+                    "what_is_happening": f"{warning_prefix}\n\nNo historical cached summary available.",
                     "engineering_tradeoffs": "Refer to previous run summaries.",
                     "product_impact": "Refer to previous run summaries.",
                     "why_it_matters": "Ollama Cloud weekly usage limit reached (HTTP 429).",
@@ -353,13 +357,18 @@ def generate_all_summaries(
             logger.error("Summary generation failed for %s: %s", theme, exc)
             if LLMClient.is_quota_exceeded():
                 logger.warning("LLM quota exceeded during %s. Falling back to cached summary.", theme)
-                last_run = get_last_run()
-                last_summaries = last_run.get("data", {}).get("summaries", {}) if last_run else {}
+                last_run = history_manager.get_last_run()
+                last_summaries = _extract_last_summaries(last_run)
+                warning_prefix = "<small style='color: #d97706; display: block; margin-bottom: 8px;'>⚠️ Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.</small>"
                 if theme in last_summaries:
-                    summaries[theme] = dict(last_summaries[theme])
+                    cached = dict(last_summaries[theme])
+                    orig_text = cached.get("what_is_happening", "")
+                    if warning_prefix not in orig_text:
+                        cached["what_is_happening"] = f"{warning_prefix}\n\n{orig_text}"
+                    summaries[theme] = cached
                 else:
                     summaries[theme] = {
-                        "what_is_happening": f"⚠️ Ollama Cloud weekly rate limit reached (HTTP 429). {exc}",
+                        "what_is_happening": f"{warning_prefix}\n\nUnable to generate new summary.",
                         "engineering_tradeoffs": "Unable to analyze due to rate limit.",
                         "product_impact": "Unable to analyze due to rate limit.",
                         "why_it_matters": "Weekly quota reached.",

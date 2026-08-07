@@ -75,7 +75,8 @@ def test_summariser_fallback_to_cache_on_quota():
             summaries = generate_all_summaries(themed_articles, full_articles)
 
     assert "Agentic Systems & DevTools" in summaries
-    assert summaries["Agentic Systems & DevTools"]["what_is_happening"] == "Cached signal statement."
+    assert "Cached signal statement." in summaries["Agentic Systems & DevTools"]["what_is_happening"]
+    assert "Ollama Cloud weekly quota limit reached" in summaries["Agentic Systems & DevTools"]["what_is_happening"]
 
 
 def test_evaluator_runs_deterministic_only_on_quota():
