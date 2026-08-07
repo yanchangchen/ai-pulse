@@ -300,12 +300,8 @@ class SupabaseManager:
         ``run_timestamp`` and ``run_date`` from the parent trend_run.
         Results are ordered oldest-first so callers can reason about
         chronological progression.
-
-        Args:
-            theme_filter: Optional theme name to restrict results to.
-            date_from: ISO date lower bound on the run timestamp.
-            date_to: ISO date upper bound on the run timestamp.
-            limit: Max rows to return.
+        """Retrieve theme summaries across historical runs within an optional date range
+        and theme/source filter.
 
         Returns:
             List of summary dicts (with run_timestamp/run_date), or None on failure.
@@ -329,6 +325,18 @@ class SupabaseManager:
 
             run_lookup = {r["id"]: r for r in runs_resp.data}
             run_ids = list(run_lookup.keys())
+
+            if source_filter:
+                art_resp = self.client.table("articles") \
+                    .select("run_id") \
+                    .eq("source_name", source_filter) \
+                    .in_("run_id", run_ids) \
+                    .execute()
+                if art_resp.data:
+                    matching_run_ids = set(a["run_id"] for a in art_resp.data)
+                    run_ids = [rid for rid in run_ids if rid in matching_run_ids]
+                else:
+                    return []
 
             # Step 2 – fetch summaries for those runs
             # Supabase .in_() has a practical limit; chunk if necessary

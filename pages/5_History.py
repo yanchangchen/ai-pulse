@@ -122,7 +122,7 @@ def main() -> None:
     # TAB 1: ASK SAGE
     # =========================================================================
     with tab_sage:
-        _render_sage_tab(supabase, theme_filter_val, date_from_val, date_to_val)
+        _render_sage_tab(supabase, theme_filter_val, date_from_val, date_to_val, source_filter_val)
 
     # =========================================================================
     # TAB 2: MEMORY TIMELINE
@@ -134,14 +134,14 @@ def main() -> None:
     # TAB 3: COMPARE RUNS
     # =========================================================================
     with tab_compare:
-        _render_compare_tab(supabase)
+        _render_compare_tab(supabase, selected_theme, source_filter_val)
 
 
 # ---------------------------------------------------------------------------
 # Sage chat tab
 # ---------------------------------------------------------------------------
 
-def _render_sage_tab(supabase, theme_filter, date_from, date_to):
+def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=None):
     """Render the Ask Sage conversational chat interface."""
     from core.sage_agent import SAGE_INTRO, build_wiki_context, chat_with_sage
     from core.llm_client import LLMClient
@@ -165,8 +165,9 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to):
             st.session_state.sage_messages = []
             st.rerun()
     with col_info:
-        filter_label = theme_filter if theme_filter else "All Themes"
-        st.caption(f"📌 Context: **{filter_label}** | {date_from} → {date_to}")
+        theme_label = theme_filter if theme_filter else "All Themes"
+        source_label = source_filter if source_filter else "All Sources"
+        st.caption(f"📌 Context: **Theme: {theme_label} | Source: {source_label}** | {date_from} → {date_to}")
 
     st.divider()
 
@@ -195,6 +196,7 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to):
                     theme_filter=theme_filter,
                     date_from=date_from,
                     date_to=date_to,
+                    source_filter=source_filter,
                 )
 
                 # Call LLM
@@ -309,7 +311,7 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
 # Compare tab
 # ---------------------------------------------------------------------------
 
-def _render_compare_tab(supabase):
+def _render_compare_tab(supabase, selected_theme="All Themes", source_filter_val=None):
     """Render the side-by-side run comparison tool."""
     st.subheader("⚖️ Compare Two Runs Side-by-Side")
     st.caption("Select two different runs below to compare their theme summaries side-by-side.")
@@ -338,7 +340,9 @@ def _render_compare_tab(supabase):
 
         st.divider()
 
-        for theme in THEME_ORDER:
+        themes_to_compare = THEME_ORDER if selected_theme == "All Themes" else [selected_theme]
+
+        for theme in themes_to_compare:
             if theme in sum1_dict or theme in sum2_dict:
                 theme_color = THEME_COLORS.get(theme, "#666")
 

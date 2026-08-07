@@ -140,6 +140,7 @@ def build_wiki_context(
     theme_filter: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    source_filter: Optional[str] = None,
     history: Optional[Dict] = None,
     max_chars: int = 12_000,
 ) -> str:
@@ -163,6 +164,7 @@ def build_wiki_context(
             theme_filter=theme_filter,
             date_from=date_from,
             date_to=date_to,
+            source_filter=source_filter,
             limit=200,
         )
         if raw:
