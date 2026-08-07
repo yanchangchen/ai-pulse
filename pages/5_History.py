@@ -12,6 +12,8 @@ from core.history_manager import load_full_history
 from core.shared_sidebar import render_sidebar_nav
 from core.supabase_client import get_supabase_manager
 
+from core.design_system import apply_design_system
+
 # Page configuration
 st.set_page_config(
     page_title="Memory Wiki - AI Pulse",
@@ -19,45 +21,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for the Wiki look
-st.markdown("""
-<style>
-    .wiki-date {
-        font-size: 22px;
-        font-weight: bold;
-        color: #e0e0e0;
-        margin-top: 20px;
-        margin-bottom: 15px;
-        border-bottom: 2px solid #3b3e4a;
-        padding-bottom: 5px;
-    }
-    .theme-pill {
-        display: inline-block;
-        padding: 2px 10px;
-        border-radius: 15px;
-        font-size: 12px;
-        font-weight: bold;
-        margin-right: 5px;
-        color: white;
-    }
-    .sage-intro {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        border: 1px solid #2a2a4a;
-        border-radius: 12px;
-        padding: 20px 24px;
-        margin-bottom: 20px;
-    }
-    .sage-intro h3 {
-        margin: 0 0 8px 0;
-        color: #c4b5fd;
-    }
-    .sage-intro p {
-        margin: 0;
-        color: #d1d5db;
-        font-style: italic;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Apply central design system
+apply_design_system()
 
 def main() -> None:
     from core.bg_refresher import check_and_show_bg_status

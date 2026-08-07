@@ -8,6 +8,9 @@ import pandas as pd
 
 from config.sources import SOURCES
 from config.themes import THEME_ORDER, THEME_COLORS
+from core.design_system import apply_design_system
+from core.shared_sidebar import render_sidebar_nav
+from core.bg_refresher import check_and_show_bg_status
 
 # Page configuration
 st.set_page_config(
@@ -15,6 +18,9 @@ st.set_page_config(
     page_icon="⚡",
     layout="wide"
 )
+
+# Apply central design system
+apply_design_system()
 
 
 def get_session_data():
@@ -30,19 +36,16 @@ def main() -> None:
     """Main sources page."""
     articles = get_session_data()
 
-    from core.bg_refresher import check_and_show_bg_status
-    from core.shared_sidebar import render_sidebar_nav
-
-    # 1. Top of page alert if background update finished
+    # Top of page alert if background update finished
     check_and_show_bg_status()
 
     # Sidebar Navigation
     render_sidebar_nav()
 
     # Header
-    st.title("📰 Sources")
-    st.markdown("### All News Sources and Their Articles")
-    st.markdown("---")
+    st.title("📰 Sources Explorer")
+    st.markdown("### Registered Engineering Blogs & RSS Feeds")
+    st.divider()
 
     # Source statistics
     source_stats = {}
@@ -51,7 +54,6 @@ def main() -> None:
         if source not in source_stats:
             source_stats[source] = {'count': 0, 'url': ''}
 
-        # Try to find URL from config
         for s in SOURCES:
             if s['name'] == source:
                 source_stats[source]['url'] = s.get('url', '')
@@ -62,9 +64,8 @@ def main() -> None:
         source_stats[source]['count'] += 1
 
     # Sources table
-    st.subheader("📊 Source Overview")
+    st.subheader("📊 Source Coverage Overview")
 
-    # Create DataFrame for sources
     source_data = []
     for source_name, stats in sorted(source_stats.items(), key=lambda x: x[1]['count'], reverse=True):
         source_data.append({
@@ -88,26 +89,30 @@ def main() -> None:
                 "Link": st.column_config.LinkColumn("Link to Feed", width="small", display_text="🔗")
             },
             hide_index=True,
-            width="stretch"
+            use_container_width=True
         )
 
-    st.markdown("---")
+    st.divider()
 
     # Articles by source
-    st.subheader("📋 Articles by Source")
+    col_s_head, col_s_reset = st.columns([4, 1])
+    with col_s_head:
+        st.subheader("📋 Articles by Source")
+    with col_s_reset:
+        if st.button("🔄 Reset Source Filter", key="btn_reset_source_filter"):
+            if "sel_source_filter" in st.session_state:
+                del st.session_state["sel_source_filter"]
+            st.rerun()
 
-    # Group articles by source
     sources_sorted = sorted(source_stats.items(), key=lambda x: x[1]['count'], reverse=True)
-
-    # Source selector
     source_names = [s[0] for s in sources_sorted]
     selected_source = st.selectbox(
-        "Select a source:",
-        ["All Sources"] + source_names
+        "Select a source to filter:",
+        ["All Sources"] + source_names,
+        key="sel_source_filter"
     )
 
     if selected_source == "All Sources":
-        # Show all articles grouped by source
         for source_name, stats in sources_sorted:
             source_articles = [a for a in articles if a.get('source_name') == source_name]
 
@@ -116,38 +121,27 @@ def main() -> None:
 
             st.markdown(f"### 📌 {source_name} ({len(source_articles)} articles)")
 
-            # Show theme badges for this source
             theme_counts = {}
             for a in source_articles:
                 theme = a.get('theme', 'Unknown')
                 theme_counts[theme] = theme_counts.get(theme, 0) + 1
 
-            # Display theme badges
-            theme_badge_cols = st.columns(len(theme_counts))
-            for j, (theme, count) in enumerate(theme_counts.items()):
-                color = THEME_COLORS.get(theme, '#666')
-                with theme_badge_cols[j]:
-                    st.markdown(f"<span style='background-color: {color}20; color: {color}; padding: 5px 10px; border-radius: 5px; font-size: 12px;'>{theme.split()[0]}: {count}</span>", unsafe_allow_html=True)
-
-            # Show articles
-            for article in source_articles[:10]:  # Limit to 10 per source
+            for article in source_articles[:10]:
                 theme = article.get('theme', 'Unknown')
                 theme_color = THEME_COLORS.get(theme, '#666')
 
                 with st.expander(f"📰 {article.get('title', 'Untitled')[:80]}..."):
-                    st.markdown(f"**Theme:** <span style='color: {theme_color};'>{theme}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**Theme:** <span class='theme-pill' style='background-color: {theme_color};'>{theme}</span>", unsafe_allow_html=True)
                     st.markdown(f"**Date:** {article.get('published_date', 'Unknown')[:10]}")
                     if article.get('summary'):
                         st.markdown(f"**Summary:** {article['summary']}")
                     if article.get('link'):
                         st.markdown(f"[Read Full Article]({article['link']})")
 
-            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     else:
-        # Show articles for selected source
         source_articles = [a for a in articles if a.get('source_name') == selected_source]
 
-        # Theme breakdown
         theme_counts = {}
         for a in source_articles:
             theme = a.get('theme', 'Unknown')
@@ -155,54 +149,17 @@ def main() -> None:
 
         st.markdown(f"### 📌 {selected_source} ({len(source_articles)} articles)")
 
-        # Theme badges
-        theme_cols = st.columns(len(theme_counts))
-        for j, (theme, count) in enumerate(theme_counts.items()):
-            color = THEME_COLORS.get(theme, '#666')
-            with theme_cols[j]:
-                st.markdown(f"<span style='background-color: {color}20; color: {color}; padding: 5px 10px; border-radius: 5px;'>{theme.split()[0]}: {count}</span>", unsafe_allow_html=True)
+        for article in source_articles:
+            theme = article.get('theme', 'Unknown')
+            theme_color = THEME_COLORS.get(theme, '#666')
 
-        st.markdown("---")
-
-        # Article table
-        df_source_articles = pd.DataFrame([
-            {
-                "Title": a.get('title', 'Untitled'),
-                "Theme": a.get('theme', 'Unknown'),
-                "Date": a.get('published_date', 'Unknown')[:10] if a.get('published_date') else 'Unknown',
-                "Summary": (a.get('summary', '')[:100] + '...') if a.get('summary') else '',
-                "URL": a.get('link', '')
-            }
-            for a in source_articles
-        ])
-
-        st.dataframe(
-            df_source_articles,
-            column_config={
-                "Title": "Article Title",
-                "Theme": "Theme",
-                "Date": "Date",
-                "Summary": "Summary",
-                "URL": st.column_config.LinkColumn("Link", display_text="🔗")
-            },
-            hide_index=True,
-            width="stretch"
-        )
-
-    st.markdown("---")
-
-    # Navigation
-    st.markdown("### 🔗 Quick Navigation")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.page_link("app.py", label="Back to Dashboard", icon="🏠")
-
-    with col2:
-        st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
-
-    with col3:
-        st.page_link("pages/2_Deep_Dive.py", label="Deep Dive", icon="🔍")
+            with st.expander(f"📰 {article.get('title', 'Untitled')}"):
+                st.markdown(f"**Theme:** <span class='theme-pill' style='background-color: {theme_color};'>{theme}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Date:** {article.get('published_date', 'Unknown')[:10]}")
+                if article.get('summary'):
+                    st.markdown(f"**Summary:** {article['summary']}")
+                if article.get('link'):
+                    st.markdown(f"[Read Full Article]({article['link']})")
 
 
 if __name__ == "__main__":

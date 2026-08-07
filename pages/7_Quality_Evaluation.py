@@ -27,7 +27,12 @@ from core.evaluator import (
     reset_judge_events,
 )
 
+from core.design_system import apply_design_system
+
 st.set_page_config(page_title="Quality Evaluation - AI Pulse", page_icon="🔬", layout="wide")
+
+# Apply central design system
+apply_design_system()
 
 
 # ---------------------------------------------------------------------------
@@ -525,16 +530,20 @@ else:
                     unsafe_allow_html=True,
                 )
 
-    c1, c2, c3, c4 = st.columns(4)
-    _score_tile(c1, "Classifier", latest["classifier_score"], threshold, skipped=cat_sk)
-    _score_tile(c2, "Faithfulness", latest["faithfulness_score"], threshold, skipped=faith_sk)
-    _score_tile(c3, "Uniqueness", latest["uniqueness_score"], threshold, skipped=uniq_sk)
-    _score_tile(c4, "Grounding", latest.get("grounding_score", 1.0), threshold, skipped=ground_sk)
+    tab_llm_scores, tab_det_scores = st.tabs(["🤖 LLM Judge Metrics (3)", "⚡ Deterministic Rule Checks (4)"])
 
-    c5, c6, c7, _ = st.columns(4)
-    _score_tile(c5, "Structural Compliance", latest.get("structural_compliance_score", 1.0), threshold, skipped=struct_sk)
-    _score_tile(c6, "Coverage", latest.get("coverage_score", 1.0), threshold, skipped=cov_sk)
-    _score_tile(c7, "Temporal Coherence", latest.get("temporal_coherence_score", 1.0), threshold, skipped=temp_sk)
+    with tab_llm_scores:
+        c1, c2, c3 = st.columns(3)
+        _score_tile(c1, "Classifier Accuracy", latest["classifier_score"], threshold, skipped=cat_sk)
+        _score_tile(c2, "Faithfulness Score", latest["faithfulness_score"], threshold, skipped=faith_sk)
+        _score_tile(c3, "Uniqueness Score", latest["uniqueness_score"], threshold, skipped=uniq_sk)
+
+    with tab_det_scores:
+        c4, c5, c6, c7 = st.columns(4)
+        _score_tile(c4, "Grounding Citation Match", latest.get("grounding_score", 1.0), threshold, skipped=ground_sk)
+        _score_tile(c5, "Structural Compliance", latest.get("structural_compliance_score", 1.0), threshold, skipped=struct_sk)
+        _score_tile(c6, "Coverage (Article Recall)", latest.get("coverage_score", 1.0), threshold, skipped=cov_sk)
+        _score_tile(c7, "Temporal Coherence", latest.get("temporal_coherence_score", 1.0), threshold, skipped=temp_sk)
 
     st.caption(
         f"Generated at: {latest['generated_at']}  •  "
@@ -727,10 +736,20 @@ with tab_kw:
             with c_group[j]:
                 col_lbl, col_btn = st.columns([4, 1])
                 col_lbl.markdown(f"`{kw_name}` *(wt: {kw_wt})*")
-                if col_btn.button("❌", key=f"del_{selected_theme}_{kw_name}", help=f"Remove '{kw_name}'"):
-                    remove_keyword_from_theme(selected_theme, kw_name)
-                    st.toast(f"Removed '{kw_name}' from {selected_theme}!", icon="🗑️")
-                    st.rerun()
+                del_key = f"del_confirm_{selected_theme}_{kw_name}"
+                if del_key not in st.session_state:
+                    st.session_state[del_key] = False
+
+                if not st.session_state[del_key]:
+                    if col_btn.button("❌", key=f"del_{selected_theme}_{kw_name}", help=f"Remove '{kw_name}'"):
+                        st.session_state[del_key] = True
+                        st.rerun()
+                else:
+                    if col_btn.button("Confirm Delete?", key=f"confirm_del_{selected_theme}_{kw_name}", type="primary"):
+                        remove_keyword_from_theme(selected_theme, kw_name)
+                        st.session_state[del_key] = False
+                        st.toast(f"Removed '{kw_name}' from {selected_theme}!", icon="🗑️")
+                        st.rerun()
 
 with tab_sum:
     from config.settings import get_summariser_settings, update_summariser_settings

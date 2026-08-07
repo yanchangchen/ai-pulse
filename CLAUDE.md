@@ -79,7 +79,7 @@ RLS is enabled with read-only public access. Run `supabase_schema.sql` and `supa
 - `4_Sources.py` — full source list with links
 - `5_History.py` — Memory Wiki with 3 tabs: **🔮 Ask Sage** (conversational chat agent grounded in wiki data with chronological citations, powered by `core/sage_agent.py`), 📖 Memory Timeline, ⚖️ Compare Runs
 - `6_Trend_Analytics.py` — historical thematic momentum & theme drilldown timeline
-- `8_Quality_Evaluation.py` — weekly automated quality evaluation engine scoring 7 metrics with live progress panel, in-app theme keyword manager, 1-click apply buttons, and summariser tuner
+- `7_Quality_Evaluation.py` — weekly automated quality evaluation engine scoring 7 metrics with live progress panel, in-app theme keyword manager, 1-click apply buttons, and summariser tuner
 
 ## Project Structure
 

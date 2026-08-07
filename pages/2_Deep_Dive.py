@@ -1,20 +1,25 @@
 """
 AI Pulse - Deep Dive Page
-Shows detailed view for each theme with full summaries and article tables.
+Detailed analysis and article list for each thematic area.
 """
 
 import streamlit as st
-from datetime import datetime
 import pandas as pd
 
 from config.themes import THEME_ORDER, THEME_COLORS
+from core.design_system import apply_design_system
+from core.shared_sidebar import render_sidebar_nav
+from core.bg_refresher import check_and_show_bg_status
 
 # Page configuration
 st.set_page_config(
     page_title="Deep Dive - AI Pulse",
-    page_icon="⚡",
+    page_icon="🔍",
     layout="wide"
 )
+
+# Apply central design system
+apply_design_system()
 
 
 def get_session_data():
@@ -30,87 +35,104 @@ def main() -> None:
     """Main deep dive page."""
     themed_articles, summaries = get_session_data()
 
-    from core.bg_refresher import check_and_show_bg_status
-    from core.shared_sidebar import render_sidebar_nav
-
-    # 1. Top of page alert if background update finished
+    # Top of page alert if background update finished
     check_and_show_bg_status()
 
     # Sidebar Navigation
     render_sidebar_nav()
 
     # Header
-    st.title("🔍 Deep Dive")
-    st.markdown("### Detailed Theme Analysis")
-    st.markdown("---")
+    st.title("🔍 Thematic Deep Dive")
+    st.markdown("### Granular Analysis & Article Explorer")
+    st.divider()
 
     # Theme selector
-    selected_theme = st.selectbox(
-        "Select a theme to explore:",
-        THEME_ORDER,
-        index=0
-    )
+    col_sel, col_export = st.columns([3, 1])
+    with col_sel:
+        selected_theme = st.selectbox(
+            "Select Strategic Theme",
+            THEME_ORDER,
+            index=0,
+            key="deep_dive_theme_select"
+        )
+    with col_export:
+        # Multi-theme export support
+        all_export_rows = []
+        for th, arts in themed_articles.items():
+            for a in arts:
+                all_export_rows.append({
+                    "Theme": th,
+                    "Title": a.get("title", ""),
+                    "Source": a.get("source", ""),
+                    "URL": a.get("link", ""),
+                    "Published": a.get("published", "")
+                })
+        if all_export_rows:
+            df_all = pd.DataFrame(all_export_rows)
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            st.download_button(
+                "📥 Export All Themes CSV",
+                df_all.to_csv(index=False).encode("utf-8"),
+                f"ai_pulse_all_themes.csv",
+                "text/csv",
+                key="btn_export_all_csv",
+                help="Export all tracked articles across all themes as CSV."
+            )
 
-    # Get theme data
-    theme_articles = themed_articles.get(selected_theme, [])
-    theme_summary = summaries.get(selected_theme, {})
     theme_color = THEME_COLORS.get(selected_theme, '#1f77b4')
+    theme_summary = summaries.get(selected_theme, {})
+    theme_articles = themed_articles.get(selected_theme, [])
 
-    # Article count warning
     if len(theme_articles) < 3:
-        st.warning(f"⚠️ Limited coverage this week with only {len(theme_articles)} articles for this theme.")
+        st.warning(f"⚠️ Limited coverage this period with only {len(theme_articles)} articles for this theme.")
 
-    st.markdown("---")
+    st.divider()
 
-    # Summary sections
-    st.markdown(f"<h2 style='color: {theme_color};'>{selected_theme}</h2>", unsafe_allow_html=True)
+    # Summary header tile
+    col_header, col_count = st.columns([3, 1])
+    with col_header:
+        st.markdown(f"<h2 style='color: {theme_color}; margin-top:0;'>{selected_theme}</h2>", unsafe_allow_html=True)
+    with col_count:
+        st.markdown(f"""
+        <div class="metric-card" style="text-align: center; border-color: {theme_color}40 !important;">
+            <div style="font-size: 30px; font-weight: bold; color: {theme_color};">{len(theme_articles)}</div>
+            <div class="card-meta">Articles Tracked</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # What is happening
-    st.subheader("📰 What is happening")
+    st.subheader("📰 The Signal (What is Happening)")
     if theme_summary.get('what_is_happening'):
         st.markdown(theme_summary['what_is_happening'])
     else:
         st.info("No summary available for this theme.")
 
-    st.markdown("---")
+    st.divider()
 
-    # Why it matters
-    col1, col2 = st.columns([2, 1])
+    # Strategic Significance & Impact
+    st.subheader("🎯 Strategic Significance & Impact")
+    has_eng = bool(theme_summary.get('engineering_tradeoffs') and theme_summary['engineering_tradeoffs'] != "No engineering tradeoffs analyzed.")
+    has_prod = bool(theme_summary.get('product_impact') and theme_summary['product_impact'] != "No product impact analyzed.")
 
-    with col1:
-        st.subheader("🎯 Why it matters")
-        
-        has_eng = bool(theme_summary.get('engineering_tradeoffs') and theme_summary['engineering_tradeoffs'] != "No engineering tradeoffs analyzed.")
-        has_prod = bool(theme_summary.get('product_impact') and theme_summary['product_impact'] != "No product impact analyzed.")
-        
-        if has_eng or has_prod:
-            subcol1, subcol2 = st.columns(2)
-            with subcol1:
-                st.markdown("##### 🛠️ Engineering Blueprint")
-                st.info(theme_summary.get('engineering_tradeoffs', 'No engineering tradeoffs analyzed.'))
-            with subcol2:
-                st.markdown("##### 💼 Product Feasibility")
-                st.success(theme_summary.get('product_impact', 'No product impact analyzed.'))
+    if has_eng or has_prod:
+        col_eng, col_prod = st.columns(2)
+        with col_eng:
+            st.markdown("##### 🛠️ Engineering Blueprint")
+            st.info(theme_summary.get('engineering_tradeoffs', 'No engineering tradeoffs analyzed.'))
+        with col_prod:
+            st.markdown("##### 💼 Product Feasibility")
+            st.success(theme_summary.get('product_impact', 'No product impact analyzed.'))
+    else:
+        if theme_summary.get('why_it_matters'):
+            st.markdown(theme_summary['why_it_matters'])
         else:
-            if theme_summary.get('why_it_matters'):
-                st.markdown(theme_summary['why_it_matters'])
-            else:
-                st.info("No analysis available.")
+            st.info("No analysis available.")
 
-    with col2:
-        st.markdown(f"""
-        <div style="text-align: center; padding: 20px; background-color: #1e2130; border: 1px solid #333; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            <div style="font-size: 36px; font-weight: bold; color: {theme_color};">{len(theme_articles)}</div>
-            <div style="font-size: 14px; color: #aaa;">Articles Tracked</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("---")
+    st.divider()
 
     # What to watch
-    st.subheader("👁️ What to watch")
+    st.subheader("👁️ Watchlist (Future Outlook)")
     if theme_summary.get('what_to_watch'):
-        # Parse bullet points
         watch_text = theme_summary['what_to_watch']
         if '\n' in watch_text:
             for line in watch_text.split('\n'):
@@ -121,72 +143,53 @@ def main() -> None:
     else:
         st.info("No items to watch.")
 
-    st.markdown("---")
+    st.divider()
 
     # Further reading
-    st.subheader("📚 Further Reading")
+    st.subheader("📚 Cited Sources & Further Reading")
     if theme_summary.get('further_reading'):
         st.markdown(theme_summary['further_reading'])
     else:
         st.info("No further reading suggestions available.")
 
-    st.markdown("---")
+    st.divider()
 
-    # Article table
-    st.subheader("📋 All Articles in This Theme")
+    # Article table & CSV Download
+    st.subheader("📋 Tracked Source Articles")
 
     if theme_articles:
-        # Create DataFrame
         df_articles = pd.DataFrame([
             {
-                "Title": a.get('title', 'Untitled'),
-                "Source": a.get('source_name', 'Unknown'),
-                "Date": a.get('published_date', 'Unknown')[:10] if a.get('published_date') else 'Unknown',
-                "Summary": (a.get('summary', '')[:150] + '...') if a.get('summary') else '',
-                "URL": a.get('link', '')
+                "Title": a.get("title", ""),
+                "Source": a.get("source", ""),
+                "Published": a.get("published", ""),
+                "Link": a.get("link", "")
             }
             for a in theme_articles
         ])
 
-        # Display with column configuration
         st.dataframe(
             df_articles,
             column_config={
                 "Title": st.column_config.TextColumn("Title", width="medium"),
                 "Source": st.column_config.TextColumn("Source", width="small"),
-                "Date": st.column_config.TextColumn("Date", width="small"),
-                "Summary": st.column_config.TextColumn("Summary", width="large"),
-                "URL": st.column_config.LinkColumn("URL", width="small", display_text="🔗 Link")
+                "Published": st.column_config.TextColumn("Published", width="small"),
+                "Link": st.column_config.LinkColumn("Link", width="medium")
             },
             hide_index=True,
-            width="stretch"
+            use_container_width=True
         )
 
-        # Export option
-        csv = df_articles.to_csv(index=False)
+        csv = df_articles.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="📥 Download as CSV",
+            label=f"📥 Download {selected_theme} CSV",
             data=csv,
-            file_name=f"{selected_theme.replace(' ', '_')}_articles.csv",
-            mime="text/csv"
+            file_name=f"ai_pulse_{selected_theme.lower().replace(' ', '_')}.csv",
+            mime="text/csv",
+            key="btn_export_single_csv"
         )
     else:
         st.info("No articles found for this theme.")
-
-    st.markdown("---")
-
-    # Navigation
-    st.markdown("### 🔗 Quick Navigation")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.page_link("app.py", label="Back to Dashboard", icon="🏠")
-
-    with col2:
-        st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
-
-    with col3:
-        st.page_link("pages/3_Keyword_Analysis.py", label="Keyword Analysis", icon="🔑")
 
 
 if __name__ == "__main__":

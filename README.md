@@ -124,7 +124,7 @@ The classifier processes articles through a **4-pass waterfall pipeline** (`core
 3. **Pass 3 (Batched Ollama LLM)**: Batched LLM requests reserved strictly for remaining ambiguous items (< 5% of items).
 4. **Pass 4 (Soft-Match Heuristic)**: Guaranteed fuzzy token/substring fallback to ensure 100% coverage.
 
-Gate breakdown metrics (Pass 1/2/3/4 item counts and percentages) are tracked automatically and rendered on the **Quality Evaluation** page (`pages/8_Quality_Evaluation.py`) to monitor gate efficiency over time.
+Gate breakdown metrics (Pass 1/2/3/4 item counts and percentages) are tracked automatically and rendered on the **Quality Evaluation** page (`pages/7_Quality_Evaluation.py`) to monitor gate efficiency over time.
 
 ### 🔬 Quality Evaluation Suite & Judge Metrics
 
@@ -157,7 +157,7 @@ The evaluation suite (`core/evaluator.py`) runs **7 automated checks** to ensure
 
 ### 🛠️ In-App Remediation & Guidance (No Backend Code Edits Needed)
 
-When evaluation scores fall below threshold targets, users do **not** need to edit Python files on the backend. The **Quality Evaluation** page (`pages/8_Quality_Evaluation.py`) includes built-in interactive controls to fix issues directly inside the Streamlit UI:
+When evaluation scores fall below threshold targets, users do **not** need to edit Python files on the backend. The **Quality Evaluation** page (`pages/7_Quality_Evaluation.py`) includes built-in interactive controls to fix issues directly inside the Streamlit UI:
 
 1. **⚡ 1-Click "Apply All Suggested Keywords"**:
    - When **Categoriser Accuracy** is low for a specific theme, the evaluation engine identifies missing high-signal keywords.

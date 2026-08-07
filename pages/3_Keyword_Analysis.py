@@ -15,6 +15,9 @@ from core.visualiser import (
 )
 from core.history_manager import load_full_history
 from core.supabase_client import get_supabase_manager
+from core.design_system import apply_design_system, get_plotly_theme_layout
+from core.shared_sidebar import render_sidebar_nav
+from core.bg_refresher import check_and_show_bg_status
 
 # Page configuration
 st.set_page_config(
@@ -22,6 +25,9 @@ st.set_page_config(
     page_icon="🔑",
     layout="wide"
 )
+
+# Apply central design system
+apply_design_system()
 
 
 def get_session_data():
@@ -41,12 +47,10 @@ def get_top_10_keywords_for_theme(theme_name: str, themed_articles: dict) -> lis
             top_tuples = get_top_words_for_theme(theme_name, articles, 10)
             if top_tuples:
                 return [w[0] for w in top_tuples[:10]]
-        # Fallback to configured theme keywords in THEMES
         theme_kws = THEMES.get(theme_name, {}).get("keywords", {})
         sorted_kws = sorted(theme_kws.items(), key=lambda kv: (-kv[1], kv[0]))
         return [w[0] for w in sorted_kws[:10]]
     else:
-        # Global top 10 keywords across all themes
         all_articles = []
         for arts in themed_articles.values():
             all_articles.extend(arts)
@@ -58,7 +62,7 @@ def get_top_10_keywords_for_theme(theme_name: str, themed_articles: dict) -> lis
 
 
 def load_keyword_data(supabase, selected_keywords, theme_filter=None, history=None):
-    """Load keyword counts per run, combining singular/plural variants (e.g. agent + agents)."""
+    """Load keyword counts per run, combining singular/plural variants."""
     if not selected_keywords:
         return pd.DataFrame()
 
@@ -86,7 +90,6 @@ def load_keyword_data(supabase, selected_keywords, theme_filter=None, history=No
                 df_keywords = df_keywords.sort_values("timestamp")
             return df_keywords
 
-    # Local fallback
     if not history:
         history = load_full_history()
 
@@ -98,25 +101,17 @@ def load_keyword_data(supabase, selected_keywords, theme_filter=None, history=No
         date = entry.get("date", ts[:10])
         full_text = ""
         articles = entry.get("full_articles", [])
-        if theme_filter and theme_filter != "All Themes (No Filter)":
-            articles = [a for a in articles if a.get("theme") == theme_filter or a.get("category") == theme_filter]
+        for a in articles:
+            full_text += " " + a.get("title", "") + " " + a.get("summary", "")
 
-        for article in articles:
-            full_text += f" {article.get('title', '')} {article.get('summary', '')}"
-        full_text = full_text.lower()
+        from core.visualiser import canonicalize_word
+        text_words = [canonicalize_word(w) for w in full_text.lower().split()]
 
-        kw_row = {"timestamp": ts, "date": date}
+        row = {"timestamp": ts, "date": date}
         for kw in selected_keywords:
-            kw_lower = kw.lower().strip()
-            c_kw = canonicalize_word(kw_lower)
-            # Count exact keyword + variant singular/plural
-            cnt = full_text.count(kw_lower)
-            if c_kw == kw_lower and not kw_lower.endswith("s"):
-                cnt += full_text.count(kw_lower + "s")
-            elif kw_lower.endswith("s") and len(kw_lower) > 3:
-                cnt += full_text.count(kw_lower[:-1])
-            kw_row[kw] = cnt
-        keyword_data.append(kw_row)
+            kw_can = canonicalize_word(kw)
+            row[kw] = text_words.count(kw_can)
+        keyword_data.append(row)
 
     df_keywords = pd.DataFrame(keyword_data)
     if not df_keywords.empty:
@@ -128,25 +123,29 @@ def main() -> None:
     """Main keyword analysis page."""
     themed_articles = get_session_data()
 
-    from core.bg_refresher import check_and_show_bg_status
-    from core.shared_sidebar import render_sidebar_nav
-
     check_and_show_bg_status()
     render_sidebar_nav()
 
     supabase = get_supabase_manager()
     history = load_full_history()
 
-    # Page Header
+    # Header
     st.title("🔑 Keyword Analysis")
     st.markdown("### Keyword Velocity Analytics, Topic Word Clouds & Signal Frequency")
-    st.markdown("---")
+    st.divider()
 
-    # ---------------------------------------------------------------------------
-    # 1. FIRST GRAPH: Keyword Velocity Analytics
-    # ---------------------------------------------------------------------------
-    st.subheader("🚀 Keyword Velocity Analytics")
-    st.caption("Track the mention frequency and velocity of top AI keywords over time")
+    # 1. Keyword Velocity Analytics
+    col_v_head, col_v_reset = st.columns([4, 1])
+    with col_v_head:
+        st.subheader("🚀 Keyword Velocity Analytics")
+        st.caption("Track the mention frequency and velocity of top AI keywords over time")
+    with col_v_reset:
+        if st.button("🔄 Reset Filters", key="btn_reset_kw_filters"):
+            if "_prev_kw_theme_filter" in st.session_state:
+                del st.session_state["_prev_kw_theme_filter"]
+            if "kw_velocity_multiselect" in st.session_state:
+                del st.session_state["kw_velocity_multiselect"]
+            st.rerun()
 
     col_filter, col_custom = st.columns([1, 1])
 
@@ -157,10 +156,8 @@ def main() -> None:
             key="kw_velocity_theme_filter"
         )
 
-    # Derive top 10 keywords for the selected theme filter
     top_10_kws = get_top_10_keywords_for_theme(theme_filter, themed_articles)
 
-    # Automatically reset multiselect selection to the new theme's top 10 keywords when theme filter changes
     last_theme = st.session_state.get("_prev_kw_theme_filter", None)
     if last_theme != theme_filter:
         st.session_state["_prev_kw_theme_filter"] = theme_filter
@@ -173,7 +170,6 @@ def main() -> None:
             key="kw_velocity_custom_kws"
         )
 
-    # Ensure all selected keywords and top 10 options are in options_list
     current_selected = st.session_state.get("kw_velocity_multiselect", top_10_kws)
     options_list = list(dict.fromkeys(top_10_kws + current_selected))
     if custom_kws:
@@ -204,102 +200,89 @@ def main() -> None:
                 markers=True,
                 title=f"Keyword Velocity — {theme_filter}"
             )
-            fig_kw.update_layout(
-                template="plotly_dark",
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                xaxis_title="Run Date",
-                yaxis_title="Mention Count",
-                legend=dict(
+            # Apply adaptive layout (no hardcoded dark mode contrast clash)
+            theme_layout = get_plotly_theme_layout()
+            theme_layout.update({
+                "xaxis_title": "Run Date",
+                "yaxis_title": "Mention Count",
+                "legend": dict(
                     orientation="h",
                     yanchor="top",
                     y=-0.25,
                     xanchor="center",
                     x=0.5
                 ),
-                margin=dict(l=0, r=0, t=40, b=60)
-            )
+                "margin": dict(l=0, r=0, t=40, b=60)
+            })
+            fig_kw.update_layout(**theme_layout)
             st.plotly_chart(fig_kw, width="stretch")
         else:
             st.info("No matching mentions found for the selected keywords across runs.")
     else:
         st.warning("Please select or configure at least one keyword.")
 
-    st.markdown("---")
+    st.divider()
 
-    # ---------------------------------------------------------------------------
     # 2. Word Clouds & Frequency Analysis
-    # ---------------------------------------------------------------------------
     st.subheader("☁️ Theme Word Clouds & Frequency Distributions")
 
     view_mode = st.radio(
-        "View Mode:",
-        ["All Word Clouds", "Single Theme Enlarged"],
+        "Visualisation View",
+        ["Word Clouds", "Top Frequency Bar Charts"],
         horizontal=True
     )
 
-    if view_mode == "Single Theme Enlarged":
-        selected_theme = st.selectbox(
-            "Select a theme:",
-            THEME_ORDER
-        )
+    if view_mode == "Word Clouds":
+        st.markdown("#### ☁️ Theme Word Clouds")
 
-        articles = themed_articles.get(selected_theme, [])
+        theme_options = ["All Themes"] + THEME_ORDER
+        selected_cloud_theme = st.selectbox("Select Theme for Word Cloud", theme_options)
 
-        if not articles:
-            st.warning(f"No articles found for {selected_theme}.")
+        if selected_cloud_theme == "All Themes":
+            all_articles = []
+            for articles_list in themed_articles.values():
+                all_articles.extend(articles_list)
+
+            if all_articles:
+                img_buf = generate_wordcloud("All Themes", all_articles)
+                if img_buf:
+                    st.image(img_buf, width="stretch")
+                else:
+                    st.warning("Could not generate word cloud for All Themes.")
+            else:
+                st.info("No articles available for word cloud generation.")
         else:
-            st.markdown(f"### {selected_theme}")
-            img = generate_wordcloud(selected_theme, articles)
-            if img:
-                st.image(img, width="stretch")
+            articles = themed_articles.get(selected_cloud_theme, [])
+            if articles:
+                img_buf = generate_wordcloud(selected_cloud_theme, articles)
+                if img_buf:
+                    st.image(img_buf, width="stretch")
+                else:
+                    st.warning(f"Could not generate word cloud for {selected_cloud_theme}.")
             else:
-                st.warning("Unable to generate word cloud for this theme.")
+                st.info(f"No articles available for {selected_cloud_theme}.")
 
-            st.markdown("---")
+        st.divider()
 
-            top_words = get_top_words_for_theme(selected_theme, articles, 20)
-            if top_words:
-                st.subheader(f"Top 20 Trending Words: {selected_theme}")
-                chart_img = create_word_frequency_chart(top_words, selected_theme)
-                if chart_img:
-                    st.image(chart_img, width="stretch")
-            else:
-                st.info("No trending words found.")
+        with st.expander("🖼️ View All 7 Theme Word Clouds Side-by-Side"):
+            row1_col1, row1_col2 = st.columns(2)
+
+            for i, theme in enumerate(THEME_ORDER):
+                target_col = row1_col1 if i % 2 == 0 else row1_col2
+                articles = themed_articles.get(theme, [])
+
+                with target_col:
+                    st.markdown(f"##### {theme}")
+                    if articles:
+                        img_buf = generate_wordcloud(theme, articles)
+                        if img_buf:
+                            st.image(img_buf, width="stretch")
+                        else:
+                            st.caption("Insufficient text for word cloud.")
+                    else:
+                        st.caption("No articles available.")
 
     else:
-        st.markdown("#### 📊 All Theme Word Clouds")
-
-        for i in range(0, len(THEME_ORDER), 2):
-            col1, col2 = st.columns(2)
-
-            theme1 = THEME_ORDER[i]
-            articles1 = themed_articles.get(theme1, [])
-
-            with col1:
-                st.markdown(f"**{theme1}** ({len(articles1)} articles)")
-                if articles1:
-                    img1 = generate_wordcloud(theme1, articles1)
-                    if img1:
-                        st.image(img1, width="stretch")
-                else:
-                    st.info("No articles")
-
-            if i + 1 < len(THEME_ORDER):
-                theme2 = THEME_ORDER[i + 1]
-                articles2 = themed_articles.get(theme2, [])
-
-                with col2:
-                    st.markdown(f"**{theme2}** ({len(articles2)} articles)")
-                    if articles2:
-                        img2 = generate_wordcloud(theme2, articles2)
-                        if img2:
-                            st.image(img2, width="stretch")
-                    else:
-                        st.info("No articles")
-
-            st.markdown("---")
-
         st.markdown("#### 📈 Top 20 Keywords by Theme")
 
         theme_selector = st.selectbox(
@@ -329,22 +312,6 @@ def main() -> None:
         else:
             st.info("No keywords found.")
 
-    st.markdown("---")
-
-    # Navigation
-    st.markdown("### 🔗 Quick Navigation")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.page_link("app.py", label="Back to Dashboard", icon="🏠")
-
-    with col2:
-        st.page_link("pages/1_Overview.py", label="Overview", icon="📋")
-
-    with col3:
-        st.page_link("pages/2_Deep_Dive.py", label="Deep Dive", icon="🔍")
-
 
 if __name__ == "__main__":
     main()
-
