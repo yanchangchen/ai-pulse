@@ -219,3 +219,14 @@ def render_sidebar_info() -> None:
         elif status_info["status"] == "completed" and status_info["completed_timestamp"]:
             st.sidebar.caption(f"Last update finished: {status_info['completed_timestamp']}")
 
+
+def is_cache_expired(max_age_hours: float = 6.0) -> bool:
+    """Check if the history cache is missing or older than max_age_hours."""
+    from core.history_manager import get_last_run_time
+    last_run_time = get_last_run_time()
+    if not last_run_time:
+        return True
+    hours_since = (datetime.now() - last_run_time).total_seconds() / 3600
+    return hours_since >= max_age_hours
+
+
