@@ -194,8 +194,11 @@ def build_wiki_context(
     if not summaries:
         return "[No wiki data available for the selected filters.]"
 
+    from core.design_system import sanitize_summary_html
+
     # ------- Score & select -------
     for s in summaries:
+        s["what_is_happening"] = sanitize_summary_html(s.get("what_is_happening", ""))
         s["_relevance"] = score_summary_relevance(s, question_kws)
 
     # Ensure the most recent run is always included (anchor)

@@ -12,7 +12,7 @@ from core.history_manager import load_full_history
 from core.shared_sidebar import render_sidebar_nav
 from core.supabase_client import get_supabase_manager
 
-from core.design_system import apply_design_system
+from core.design_system import apply_design_system, sanitize_summary_html
 
 # Page configuration
 st.set_page_config(
@@ -262,7 +262,7 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
 
                         with col_details:
                             st.markdown("**WHAT HAPPENED**")
-                            st.write(s.get('what_is_happening', 'No data.'))
+                            st.markdown(sanitize_summary_html(s.get('what_is_happening', 'No data.')))
 
                             st.markdown("**SIGNIFICANCE**")
                             st.write(s.get('why_it_matters', 'No analysis.'))
@@ -354,7 +354,7 @@ def _render_compare_tab(supabase, selected_theme="All Themes", source_filter_val
                     if theme in sum1_dict:
                         s1 = sum1_dict[theme]
                         st.markdown("**What is Happening:**")
-                        st.write(s1.get("what_is_happening", ""))
+                        st.markdown(sanitize_summary_html(s1.get("what_is_happening", "")))
                         st.markdown("**Significance:**")
                         st.write(s1.get("why_it_matters", ""))
                         st.markdown("**Watchlist:**")
@@ -367,7 +367,7 @@ def _render_compare_tab(supabase, selected_theme="All Themes", source_filter_val
                     if theme in sum2_dict:
                         s2 = sum2_dict[theme]
                         st.markdown("**What is Happening:**")
-                        st.write(s2.get("what_is_happening", ""))
+                        st.markdown(sanitize_summary_html(s2.get("what_is_happening", "")))
                         st.markdown("**Significance:**")
                         st.write(s2.get("why_it_matters", ""))
                         st.markdown("**Watchlist:**")
