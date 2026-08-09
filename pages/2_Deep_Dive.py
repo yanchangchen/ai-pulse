@@ -60,12 +60,16 @@ def main() -> None:
         all_export_rows = []
         for th, arts in themed_articles.items():
             for a in arts:
+                src = a.get("source_name") or a.get("source") or "Unknown Source"
+                pub = a.get("published_date") or a.get("published_at") or a.get("published") or ""
+                if pub and len(pub) >= 10:
+                    pub = pub[:10]
                 all_export_rows.append({
                     "Theme": th,
                     "Title": a.get("title", ""),
-                    "Source": a.get("source", ""),
+                    "Source": src,
                     "URL": a.get("link", ""),
-                    "Published": a.get("published", "")
+                    "Published": pub
                 })
         if all_export_rows:
             df_all = pd.DataFrame(all_export_rows)
@@ -158,15 +162,19 @@ def main() -> None:
     st.subheader("📋 Tracked Source Articles")
 
     if theme_articles:
-        df_articles = pd.DataFrame([
-            {
+        rows = []
+        for a in theme_articles:
+            src = a.get("source_name") or a.get("source") or "Unknown Source"
+            pub = a.get("published_date") or a.get("published_at") or a.get("published") or ""
+            if pub and len(pub) >= 10:
+                pub = pub[:10]
+            rows.append({
                 "Title": a.get("title", ""),
-                "Source": a.get("source", ""),
-                "Published": a.get("published", ""),
+                "Source": src,
+                "Published": pub,
                 "Link": a.get("link", "")
-            }
-            for a in theme_articles
-        ])
+            })
+        df_articles = pd.DataFrame(rows)
 
         st.dataframe(
             df_articles,
