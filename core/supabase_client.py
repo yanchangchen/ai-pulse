@@ -287,6 +287,33 @@ class SupabaseManager:
             logger.error(f"Failed to get summaries for run {run_id}: {e}")
             return None
 
+    def get_summaries_by_run(self, run_id: str) -> Dict[str, Dict]:
+        """
+        Retrieve theme summaries for a run, keyed by theme_name.
+        
+        Args:
+            run_id: UUID of the trend run
+            
+        Returns:
+            Dict mapping theme_name -> summary dict, or empty dict if none/failed
+        """
+        summaries = self.get_summaries_for_run(run_id)
+        if not summaries:
+            return {}
+        return {s["theme_name"]: s for s in summaries if "theme_name" in s}
+
+    def get_runs_summary(self, limit: int = 10) -> Optional[List[Dict]]:
+        """
+        Retrieve a summary of recent trend runs.
+        
+        Args:
+            limit: Maximum number of runs to retrieve.
+            
+        Returns:
+            List of run records, or None if failed.
+        """
+        return self.get_all_runs(limit=limit)
+
     def get_summaries_across_runs(
         self,
         theme_filter: Optional[str] = None,
