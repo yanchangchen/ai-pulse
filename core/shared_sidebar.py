@@ -20,6 +20,7 @@ def render_sidebar_nav() -> None:
         st.page_link("pages/5_History.py", label="Memory Wiki", icon="🧠")
         st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
         st.page_link("pages/7_Quality_Evaluation.py", label="Quality Evaluation", icon="🔬")
+        st.page_link("pages/8_Feedback_&_Roadmap.py", label="Feedback & Roadmap", icon="💡")
 
         # Background status tracker
         render_sidebar_info()

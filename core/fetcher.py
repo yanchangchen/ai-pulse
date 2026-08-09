@@ -189,12 +189,16 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
         # Create unique ID for deduplication
         item_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
 
+        # Use extracted publish date, defaulting to current crawl timestamp if missing
+        crawl_dt = datetime.now(timezone.utc)
+        pub_date_str = (dt or crawl_dt).isoformat()
+
         item = {
             'id': item_id,
             'title': title,
             'summary': summary[:500] if summary else '',
             'link': link,
-            'published_date': dt.isoformat() if dt else None,
+            'published_date': pub_date_str,
             'source_name': source_name
         }
         items.append(item)

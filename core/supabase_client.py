@@ -5,9 +5,11 @@ Gracefully degrades if Supabase is unavailable.
 """
 
 import os
+import json
+import uuid
 import logging
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -153,14 +155,17 @@ class SupabaseManager:
                 if content_hash:
                     seen_hashes.add(content_hash)
                 
+                pub_at = article.get("published_at") or article.get("published_date") or datetime.now(timezone.utc).isoformat()
+                src_name = article.get("source_name") or "Unknown Source"
+                
                 rows.append({
                     "run_id": run_id,
                     "theme_name": theme_name,
                     "title": article.get("title", "")[:500],  # Limit title length
                     "summary": article.get("summary", ""),
-                    "source_name": article.get("source_name", ""),
+                    "source_name": src_name,
                     "link": article.get("link", ""),
-                    "published_at": article.get("published_at"),
+                    "published_at": pub_at,
                     "content_hash": content_hash
                 })
             
@@ -812,6 +817,167 @@ class SupabaseManager:
             stats["errors"].append(str(e))
         
         return stats
+
+    # ------------------------------------------------------------------
+    # User Feedback & Feature Requests (with local JSON fallback)
+    # ------------------------------------------------------------------
+
+    def save_feedback(self, category: str, title: str, description: str, status: str = "open") -> Optional[Dict]:
+        """Save a new user feedback/feature/bug item to Supabase or local fallback."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        feedback_data = {
+            "category": category.lower(),
+            "title": title[:255],
+            "description": description,
+            "status": status.lower(),
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+
+        if self.available:
+            try:
+                response = self.client.table("user_feedback").insert(feedback_data).execute()
+                if response.data:
+                    logger.info(f"Saved user feedback to Supabase: {response.data[0]['id']}")
+                    return response.data[0]
+            except Exception as e:
+                logger.error(f"Failed to save feedback to Supabase: {e}")
+
+        # Fallback to local storage
+        return _save_local_feedback_item(feedback_data)
+
+    def get_all_feedback(self, category_filter: Optional[str] = None,
+                         status_filter: Optional[str] = None,
+                         limit: int = 100) -> List[Dict]:
+        """Retrieve user feedback items, filtered by category or status."""
+        if self.available:
+            try:
+                q = self.client.table("user_feedback").select("*").order("created_at", desc=True).limit(limit)
+                if category_filter and category_filter.lower() != "all":
+                    q = q.eq("category", category_filter.lower())
+                if status_filter and status_filter.lower() != "all":
+                    q = q.eq("status", status_filter.lower())
+                resp = q.execute()
+                if resp.data is not None:
+                    return resp.data
+            except Exception as e:
+                logger.error(f"Failed to get user feedback from Supabase: {e}")
+
+        # Fallback to local storage
+        return _get_local_feedback(category_filter=category_filter, status_filter=status_filter, limit=limit)
+
+    def update_feedback_status(self, feedback_id: str, new_status: str) -> Optional[Dict]:
+        """Update status of a feedback item (e.g., 'open', 'in_progress', 'resolved', 'closed')."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if self.available:
+            try:
+                resp = self.client.table("user_feedback").update({
+                    "status": new_status.lower(),
+                    "updated_at": now_iso
+                }).eq("id", feedback_id).execute()
+                if resp.data:
+                    return resp.data[0]
+            except Exception as e:
+                logger.error(f"Failed to update feedback status in Supabase: {e}")
+
+        return _update_local_feedback_status(feedback_id, new_status)
+
+    def delete_feedback(self, feedback_id: str) -> bool:
+        """Delete a feedback item."""
+        if self.available:
+            try:
+                self.client.table("user_feedback").delete().eq("id", feedback_id).execute()
+                return True
+            except Exception as e:
+                logger.error(f"Failed to delete feedback in Supabase: {e}")
+
+        return _delete_local_feedback(feedback_id)
+
+
+# ------------------------------------------------------------------
+# Local JSON Fallback Helpers for User Feedback
+# ------------------------------------------------------------------
+
+LOCAL_FEEDBACK_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "feedback.json")
+
+
+def _ensure_local_feedback_file() -> List[Dict]:
+    """Ensure data/feedback.json exists and return items."""
+    os.makedirs(os.path.dirname(LOCAL_FEEDBACK_FILE), exist_ok=True)
+    if not os.path.exists(LOCAL_FEEDBACK_FILE):
+        with open(LOCAL_FEEDBACK_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f)
+        return []
+    try:
+        with open(LOCAL_FEEDBACK_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error reading local feedback file: {e}")
+        return []
+
+
+def _save_local_feedback_item(item: Dict) -> Dict:
+    """Save item to local feedback.json."""
+    items = _ensure_local_feedback_file()
+    item_copy = dict(item)
+    if "id" not in item_copy:
+        item_copy["id"] = str(uuid.uuid4())
+    items.insert(0, item_copy)
+    try:
+        with open(LOCAL_FEEDBACK_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving to local feedback file: {e}")
+    return item_copy
+
+
+def _get_local_feedback(category_filter: Optional[str] = None,
+                         status_filter: Optional[str] = None,
+                         limit: int = 100) -> List[Dict]:
+    """Get items from local feedback.json with optional filters."""
+    items = _ensure_local_feedback_file()
+    filtered = []
+    for item in items:
+        if category_filter and category_filter.lower() != "all":
+            if item.get("category", "").lower() != category_filter.lower():
+                continue
+        if status_filter and status_filter.lower() != "all":
+            if item.get("status", "").lower() != status_filter.lower():
+                continue
+        filtered.append(item)
+    return filtered[:limit]
+
+
+def _update_local_feedback_status(feedback_id: str, new_status: str) -> Optional[Dict]:
+    """Update status of item in local feedback.json."""
+    items = _ensure_local_feedback_file()
+    updated_item = None
+    for item in items:
+        if str(item.get("id")) == str(feedback_id):
+            item["status"] = new_status.lower()
+            item["updated_at"] = datetime.now(timezone.utc).isoformat()
+            updated_item = item
+            break
+    if updated_item:
+        try:
+            with open(LOCAL_FEEDBACK_FILE, "w", encoding="utf-8") as f:
+                json.dump(items, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error updating local feedback file: {e}")
+    return updated_item
+
+
+def _delete_local_feedback(feedback_id: str) -> bool:
+    """Delete item from local feedback.json."""
+    items = _ensure_local_feedback_file()
+    new_items = [i for i in items if str(i.get("id")) != str(feedback_id)]
+    try:
+        with open(LOCAL_FEEDBACK_FILE, "w", encoding="utf-8") as f:
+            json.dump(new_items, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting from local feedback file: {e}")
+        return False
 
 
 # Singleton instance
