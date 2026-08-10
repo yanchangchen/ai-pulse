@@ -100,8 +100,8 @@ SOURCES = [
     },
     {
         "name": "Stripe Engineering",
-        "url": "https://stripe.com/blog/engineering/rss",
-        "type": "rss",
+        "url": "https://stripe.com/blog",
+        "type": "web",
         "category": "blog"
     },
     {
@@ -142,15 +142,15 @@ SOURCES = [
         "category": "blog"
     },
     {
-        "name": "Meta AI Blog",
-        "url": "https://ai.meta.com/blog/rss/",
+        "name": "Meta Engineering & AI",
+        "url": "https://engineering.fb.com/feed/",
         "type": "rss",
         "category": "blog"
     },
     # Agent & Framework Engineering (Tier 1 — Appendix C2)
     {
-        "name": "Weights & Biases Fully Connected",
-        "url": "https://wandb.ai/fully-connected/rss.xml",
+        "name": "Berkeley AI Research (BAIR)",
+        "url": "https://bair.berkeley.edu/blog/feed.xml",
         "type": "rss",
         "category": "blog"
     },
@@ -239,5 +239,10 @@ WEB_SCRAPE_SOURCES = [
         "name": "Ethan Mollick",
         "url": "https://www.oneusefulthing.org",
         "selectors": {"title": "h2, h3", "summary": "p", "link": "a"},
+    },
+    {
+        "name": "Stripe Engineering",
+        "url": "https://stripe.com/blog",
+        "selectors": {"title": "a[href*='/blog/']", "summary": "p", "link": "a[href*='/blog/']"},
     },
 ]
