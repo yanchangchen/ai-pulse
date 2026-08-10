@@ -8,9 +8,18 @@ import streamlit as st
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import importlib
+import core.fetcher
+
+if not hasattr(core.fetcher, "diagnose_source"):
+    try:
+        importlib.reload(core.fetcher)
+    except Exception:
+        pass
+
+from core.fetcher import diagnose_source
 from config.sources import SOURCES
 from config.themes import THEME_COLORS
-from core.fetcher import diagnose_source
 from core.design_system import apply_design_system
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
