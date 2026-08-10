@@ -384,3 +384,120 @@ def get_source_stats(all_items: List[Dict]) -> Dict[str, int]:
         source = item['source_name']
         stats[source] = stats.get(source, 0) + 1
     return stats
+
+
+def diagnose_source(source: Dict) -> Dict:
+    """
+    Perform a deep diagnostic probe on a news source to evaluate health, HTTP status,
+    Content-Type, RSS/HTML structure, and generate plain-English troubleshooting advice.
+    """
+    source_name = source["name"]
+    url = source["url"]
+    source_type = source.get("type", "rss")
+    
+    start_time = time.time()
+    result = {
+        "name": source_name,
+        "url": url,
+        "type": source_type,
+        "status_code": None,
+        "latency_ms": 0,
+        "content_type": "",
+        "content_length": 0,
+        "items_found": 0,
+        "healthy": False,
+        "error_summary": "",
+        "explanation": "",
+        "recommendation": ""
+    }
+    
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml, application/atom+xml, text/html, application/xhtml+xml, */*;q=0.8"
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
+        latency = int((time.time() - start_time) * 1000)
+        result["latency_ms"] = latency
+        result["status_code"] = resp.status_code
+        result["content_type"] = resp.headers.get("Content-Type", "")
+        result["content_length"] = len(resp.content)
+
+        if resp.status_code != 200:
+            result["healthy"] = False
+            result["error_summary"] = f"HTTP {resp.status_code} Error"
+            if resp.status_code == 404:
+                result["explanation"] = "The server returned 404 Not Found. The feed or blog endpoint URL has been moved or deprecated by the content publisher."
+                result["recommendation"] = "Search the provider's website for an updated RSS endpoint URL or switch to web scraping mode with CSS selectors."
+            elif resp.status_code == 403:
+                result["explanation"] = "The server returned 403 Forbidden. The provider blocks automated scraping or requires specific headers/cookies."
+                result["recommendation"] = "Verify User-Agent header rules or check if the site uses Cloudflare anti-bot protection."
+            elif resp.status_code >= 500:
+                result["explanation"] = f"The publisher's server encountered an internal error (HTTP {resp.status_code})."
+                result["recommendation"] = "This is typically a transient server failure. Retry later."
+            else:
+                result["explanation"] = f"Unexpected HTTP response code {resp.status_code}."
+                result["recommendation"] = "Inspect response headers and authentication requirements."
+            return result
+
+        # Processing HTTP 200 response
+        if source_type == "rss":
+            feed = feedparser.parse(resp.content)
+            entries_count = len(feed.entries)
+            result["items_found"] = entries_count
+
+            if entries_count > 0:
+                result["healthy"] = True
+                result["error_summary"] = "None (Healthy)"
+                result["explanation"] = f"Successfully parsed {entries_count} RSS/Atom feed entries."
+                result["recommendation"] = "No action needed."
+            else:
+                result["healthy"] = False
+                if feed.bozo:
+                    result["error_summary"] = "Malformed XML Feed"
+                    result["explanation"] = "The URL returned HTTP 200, but the body contains HTML or malformed XML rather than valid RSS/Atom tags."
+                    result["recommendation"] = "Switch source type to 'web' with CSS selectors or check for dedicated XML feed endpoint."
+                else:
+                    result["error_summary"] = "0 Feed Entries Found"
+                    result["explanation"] = "Valid XML feed structure returned, but contains 0 active article entries."
+                    result["recommendation"] = "Check if articles fall outside the lookback window or if feed requires parameters."
+
+        elif source_type == "web":
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            selectors = _get_scrape_selectors(source_name)
+            
+            if selectors:
+                title_elems = soup.select(selectors.get("title", "h2, h3"))
+                found_titles = [t.get_text(strip=True) for t in title_elems if len(t.get_text(strip=True)) > 10]
+                result["items_found"] = len(found_titles)
+            else:
+                article_elements = soup.find_all(['article', 'div', 'li', 'a'])
+                result["items_found"] = min(len(article_elements), 20)
+
+            if result["items_found"] > 0:
+                result["healthy"] = True
+                result["error_summary"] = "None (Healthy)"
+                result["explanation"] = f"Successfully scraped {result['items_found']} article elements using BeautifulSoup."
+                result["recommendation"] = "No action needed."
+            else:
+                result["healthy"] = False
+                result["error_summary"] = "0 Scraped Elements"
+                result["explanation"] = "The page loaded HTTP 200, but no HTML elements matched the configured CSS selectors. The site may render content dynamically via client-side JavaScript (Next.js/React)."
+                result["recommendation"] = "Update CSS selectors in config/sources.py (WEB_SCRAPE_SOURCES)."
+
+    except requests.exceptions.Timeout:
+        result["healthy"] = False
+        result["error_summary"] = "Request Timeout"
+        result["explanation"] = "The connection timed out after 12 seconds."
+        result["recommendation"] = "Check publisher server uptime or increase timeout configuration."
+    except Exception as exc:
+        result["healthy"] = False
+        result["error_summary"] = f"Fetch Error: {type(exc).__name__}"
+        result["explanation"] = f"An exception occurred while querying source: {exc}"
+        result["recommendation"] = "Inspect network connection or endpoint configuration."
+
+    return result

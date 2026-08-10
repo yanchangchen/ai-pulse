@@ -113,9 +113,6 @@ class TestRssFetchTransport:
         assert isinstance(items, list)
 
     def test_propagates_http_error(self):
-        # A 4xx response should cause the fetcher to retry and then
-        # return an empty list (the same behaviour as a connection
-        # failure).
         mock_resp = MagicMock()
         mock_resp.status_code = 404
         mock_resp.raise_for_status.side_effect = Exception("HTTP 404")
@@ -126,3 +123,33 @@ class TestRssFetchTransport:
                 "type": "rss",
             })
         assert items == []
+
+
+def test_diagnose_source_healthy():
+    from core.fetcher import diagnose_source
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = b"<rss><channel><item><title>Test Article</title></item></channel></rss>"
+    mock_resp.headers = {"Content-Type": "application/rss+xml"}
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        source = {"name": "Test Feed", "url": "https://example.com/rss", "type": "rss"}
+        diag = diagnose_source(source)
+        assert diag["healthy"] is True
+        assert diag["status_code"] == 200
+        assert diag["items_found"] > 0
+
+
+def test_diagnose_source_404_error():
+    from core.fetcher import diagnose_source
+    mock_resp = MagicMock()
+    mock_resp.status_code = 404
+    mock_resp.headers = {"Content-Type": "text/html"}
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        source = {"name": "Broken Feed", "url": "https://example.com/404", "type": "rss"}
+        diag = diagnose_source(source)
+        assert diag["healthy"] is False
+        assert diag["status_code"] == 404
+        assert "404 Not Found" in diag["explanation"]
+
