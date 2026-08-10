@@ -82,6 +82,10 @@ class BackgroundRefresher:
     @classmethod
     def _run_pipeline(cls) -> None:
         try:
+            from core.llm_client import LLMClient
+            # Reset LLM quota status at start of run so fresh calls/retries are attempted
+            LLMClient.reset_quota_status()
+
             cls.update_progress("[ENGINE] Starting background news intelligence engine...")
             
             # Direct imports of the core logic to bypass Streamlit's @st.cache_data
@@ -211,17 +215,21 @@ def render_sidebar_info() -> None:
                 st.sidebar.success(f"✅ Cache up-to-date ({int(hours_since)}h ago)")
             else:
                 st.sidebar.warning(f"⚠️ Cache expired ({int(hours_since)}h old)")
-                # If cache is expired and not running, allow manual trigger
-                if st.sidebar.button("⚡ Force Refresh Now", key="bg_refresher_trigger_btn", width="stretch"):
-                    st.session_state.force_refresh = True
-                    BackgroundRefresher.start()
-                    st.rerun()
         else:
             st.sidebar.info("No cached data found.")
-            if st.sidebar.button("⚡ Trigger Initial Load", key="bg_refresher_trigger_btn", width="stretch"):
-                BackgroundRefresher.start()
-                st.rerun()
-                
+
+        # ALWAYS show manual trigger button so user can fetch new articles & refresh quota anytime
+        if st.sidebar.button("⚡ Fetch & Refresh Now", key="bg_refresher_trigger_btn", use_container_width=True, type="primary"):
+            from core.llm_client import LLMClient
+            LLMClient.reset_quota_status()
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+            st.session_state.force_refresh = True
+            BackgroundRefresher.start()
+            st.rerun()
+
         if status_info["status"] == "failed":
             st.sidebar.error(f"Last update failed: {status_info['error']}")
         elif status_info["status"] == "completed" and status_info["completed_timestamp"]:

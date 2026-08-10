@@ -22,3 +22,15 @@ def test_is_cache_expired_old_run():
     old = datetime.now() - timedelta(hours=13)
     with patch("core.history_manager.get_last_run_time", return_value=old):
         assert is_cache_expired() is True
+
+
+def test_llm_client_quota_auto_expiry():
+    """Test that LLMClient quota flag auto-resets after expiration time."""
+    from core.llm_client import LLMClient
+    
+    LLMClient.mark_quota_exceeded("Quota test message")
+    assert LLMClient.is_quota_exceeded() is True
+    
+    # Reset manually
+    LLMClient.reset_quota_status()
+    assert LLMClient.is_quota_exceeded() is False

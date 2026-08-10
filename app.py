@@ -85,6 +85,7 @@ def load_data() -> None:
         st.session_state.articles = data['full_articles']
         st.session_state.themed_articles = data.get('themed_articles', {})
         st.session_state.summaries = data.get('summaries', {})
+        st.session_state.loaded_timestamp = last_run['timestamp']
         st.session_state.data_loaded = True
         logger.info(f"Loaded {len(st.session_state.articles)} articles from history cache.")
     else:
@@ -114,12 +115,26 @@ def main() -> None:
         load_data()
 
     # Main Dashboard Header
-    st.title("⚡ AI Pulse")
-    st.markdown("### High-Signal AI Industry Intelligence Engine")
-
-    last_time = get_last_run_time()
-    if last_time:
-        st.caption(f"📅 Last Intelligence Run: **{last_time}** (Auto-refreshes every 12 hours)")
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.title("⚡ AI Pulse")
+        st.markdown("### High-Signal AI Industry Intelligence Engine")
+        last_time = get_last_run_time()
+        if last_time:
+            st.caption(f"📅 Last Intelligence Run: **{last_time}** (Auto-refreshes every 12 hours)")
+    with col_h2:
+        st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
+        if st.button("⚡ Fetch & Refresh Now", key="main_header_refresh_btn", type="primary", use_container_width=True):
+            from core.llm_client import LLMClient
+            LLMClient.reset_quota_status()
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+            st.session_state.force_refresh = True
+            BackgroundRefresher.start()
+            st.toast("⚡ Started fresh intelligence pipeline!")
+            st.rerun()
 
     st.divider()
 

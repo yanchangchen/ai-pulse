@@ -46,6 +46,7 @@ class LLMQuotaExceededError(LLMClientError):
 
 _QUOTA_EXCEEDED_FLAG = "_aipulse_llm_quota_exceeded"
 _QUOTA_MSG_FLAG = "_aipulse_llm_quota_message"
+_QUOTA_TIME_FLAG = "_aipulse_llm_quota_time"
 
 
 class LLMClient:
@@ -70,7 +71,14 @@ class LLMClient:
     @classmethod
     def is_quota_exceeded(cls) -> bool:
         """Return True if the LLM API rate limit / weekly quota has been exceeded."""
-        return getattr(sys, _QUOTA_EXCEEDED_FLAG, False)
+        flag = getattr(sys, _QUOTA_EXCEEDED_FLAG, False)
+        if flag:
+            # Auto-reset quota flag after 1 hour (3600 seconds) so system automatically retries
+            quota_time = getattr(sys, _QUOTA_TIME_FLAG, 0)
+            if time.time() - quota_time > 3600:
+                cls.reset_quota_status()
+                return False
+        return flag
 
     @classmethod
     def get_quota_message(cls) -> str:
@@ -81,15 +89,18 @@ class LLMClient:
     def mark_quota_exceeded(cls, msg: str = "") -> None:
         """Mark LLM API quota as exceeded to stop further LLM calls across threads/session."""
         setattr(sys, _QUOTA_EXCEEDED_FLAG, True)
+        setattr(sys, _QUOTA_TIME_FLAG, time.time())
         if msg:
             setattr(sys, _QUOTA_MSG_FLAG, msg)
         logger.error("LLM Quota Exceeded flag set: %s", msg)
 
     @classmethod
     def reset_quota_status(cls) -> None:
-        """Reset quota exceeded flag (e.g. for testing or manual recovery)."""
+        """Reset quota exceeded flag (e.g. for testing, manual refresh, or pipeline restart)."""
         setattr(sys, _QUOTA_EXCEEDED_FLAG, False)
         setattr(sys, _QUOTA_MSG_FLAG, "")
+        setattr(sys, _QUOTA_TIME_FLAG, 0)
+        logger.info("LLM Quota Exceeded status reset.")
 
     # ------------------------------------------------------------------
     # Public helpers
