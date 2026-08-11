@@ -101,6 +101,13 @@ def main() -> None:
         m3.metric("Sources with 0 Coverage", len(zero_coverage_sources))
 
         st.markdown("#### Registered Sources Overview")
+        from core.design_system import format_display_timestamp
+        loaded_ts = st.session_state.get('loaded_timestamp')
+        if loaded_ts:
+            st.caption(f"📅 Data from latest intelligence crawl: **{format_display_timestamp(loaded_ts)}**")
+        else:
+            st.caption("📅 Displaying metrics from the latest intelligence crawl run.")
+
         if registered_sources_data:
             df_sources = pd.DataFrame(registered_sources_data)
             st.dataframe(
