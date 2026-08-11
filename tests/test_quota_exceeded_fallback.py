@@ -61,7 +61,7 @@ def test_summariser_fallback_to_extractive_on_quota():
         summaries = generate_all_summaries(themed_articles, full_articles)
 
     assert "Agentic Systems & DevTools" in summaries
-    assert "ℹ️" in summaries["Agentic Systems & DevTools"]["what_is_happening"]
+    assert "⚡" in summaries["Agentic Systems & DevTools"]["what_is_happening"]
     assert "Non-LLM Extractive Summary" in summaries["Agentic Systems & DevTools"]["what_is_happening"]
 
 

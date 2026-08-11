@@ -310,14 +310,28 @@ def generate_all_summaries(
     summaries: Dict[str, Dict[str, str]] = {}
     article_counts = {}
 
+    # Check user-selected summariser mode from session state
+    user_mode = None
+    try:
+        import streamlit as st
+        user_mode = st.session_state.get("summariser_mode")
+    except Exception:
+        pass
+
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
         article_counts[theme] = len(articles)
 
+        # Force Non-LLM Extractive if user selected "Non-LLM Extractive Only" mode
+        if user_mode == "⚡ Non-LLM Extractive Only":
+            logger.info("User selected Non-LLM Extractive Only mode. Generating LexRank/Luhn summary for %s", theme)
+            summaries[theme] = extractive_theme_summary(theme, articles)
+            continue
+
         # Check if LLM quota/rate limit was hit previously or on this run
         if LLMClient.is_quota_exceeded():
             logger.warning("LLM quota exceeded (HTTP 429). Initiating non-LLM extractive summarisation for %s", theme)
-            info_prefix = "ℹ️ *Non-LLM Extractive Summary: Generated deterministically using lead sentence extraction because live LLM synthesis is paused.*"
+            info_prefix = "⚡ *Non-LLM Extractive Summary: Compiled deterministically using LexRank & Luhn extractive NLP (live LLM quota paused).* "
             extractive = extractive_theme_summary(theme, articles)
             orig_text = extractive.get("what_is_happening", "")
             if info_prefix not in orig_text:

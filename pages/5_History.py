@@ -267,10 +267,13 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
         for run in runs:
             run_id = run["id"]
             run_ts = run["run_timestamp"]
-            total_arts = run["total_articles"]
+            run_articles_all = supabase.get_articles_for_run(run_id) or []
+            total_arts = run.get("total_articles", 0)
+            if total_arts == 0:
+                total_arts = len(run_articles_all)
 
             st.markdown(
-                f'<div class="wiki-date">📅 Run: {format_display_timestamp(run_ts)} <span style="font-size:14px;font-weight:normal;color:#aaa;">({total_arts} total articles)</span></div>',
+                f'<div class="wiki-date">📅 Run: {format_display_timestamp(run_ts)} <span style="font-size:14px;font-weight:normal;color:#aaa;">({total_arts} total articles tracked)</span></div>',
                 unsafe_allow_html=True
             )
 
@@ -283,7 +286,15 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
                 if theme in summaries_dict:
                     s = _ensure_extractive_summary(summaries_dict[theme], supabase, run_id, theme)
                     color = THEME_COLORS.get(theme, "#666")
+
+                    # Fetch actual articles for this theme
+                    articles = supabase.get_articles_for_run(run_id, theme) or []
+                    if source_filter_val:
+                        articles = [a for a in articles if a.get("source_name") == source_filter_val]
+
                     article_count = s.get("article_count", 0)
+                    if article_count == 0:
+                        article_count = len(articles)
 
                     with st.expander(f"🔹 {theme} ({article_count} articles)"):
                         col_details, col_articles = st.columns([2, 1])
@@ -300,12 +311,6 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
 
                         with col_articles:
                             st.markdown("**TRACKED ARTICLES**")
-                            articles = supabase.get_articles_for_run(run_id, theme) or []
-
-                            # Apply filters on client-side if loaded from runs
-                            if source_filter_val:
-                                articles = [a for a in articles if a["source_name"] == source_filter_val]
-
                             if articles:
                                 for a in articles:
                                     st.markdown(f"• **{a['title']}**")
