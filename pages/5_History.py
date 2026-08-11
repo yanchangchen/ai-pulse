@@ -12,7 +12,7 @@ from core.history_manager import load_full_history
 from core.shared_sidebar import render_sidebar_nav
 from core.supabase_client import get_supabase_manager
 
-from core.design_system import apply_design_system, sanitize_summary_html
+from core.design_system import apply_design_system, sanitize_summary_html, format_display_timestamp
 
 # Page configuration
 st.set_page_config(
@@ -82,7 +82,7 @@ def main() -> None:
         summaries = entry.get("summaries", {})
         counts = entry.get("counts", {})
 
-        st.markdown(f'<div class="wiki-date">📅 Latest Cache: {latest_ts}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="wiki-date">📅 Latest Cache: {format_display_timestamp(latest_ts)}</div>', unsafe_allow_html=True)
 
         themes_to_show = THEME_ORDER if selected_theme == "All Themes" else [selected_theme]
         cols = st.columns(min(len(themes_to_show), 2))
@@ -242,7 +242,7 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
             total_arts = run["total_articles"]
 
             st.markdown(
-                f'<div class="wiki-date">📅 Run: {run_ts} <span style="font-size:14px;font-weight:normal;color:#aaa;">({total_arts} total articles)</span></div>',
+                f'<div class="wiki-date">📅 Run: {format_display_timestamp(run_ts)} <span style="font-size:14px;font-weight:normal;color:#aaa;">({total_arts} total articles)</span></div>',
                 unsafe_allow_html=True
             )
 
@@ -319,7 +319,7 @@ def _render_compare_tab(supabase, selected_theme="All Themes", source_filter_val
     # Load up to 30 recent runs for selection
     all_runs_for_comp = supabase.get_all_runs(limit=30)
     if all_runs_for_comp and len(all_runs_for_comp) >= 2:
-        run_options = {f"{r['run_timestamp']} (Articles: {r['total_articles']})": r for r in all_runs_for_comp}
+        run_options = {f"{format_display_timestamp(r['run_timestamp'])} (Articles: {r['total_articles']})": r for r in all_runs_for_comp}
         options_keys = list(run_options.keys())
 
         c_run1, c_run2 = st.columns(2)
@@ -350,7 +350,7 @@ def _render_compare_tab(supabase, selected_theme="All Themes", source_filter_val
                 col_run_a, col_run_b = st.columns(2)
 
                 with col_run_a:
-                    st.subheader(f"📅 Run: {run1['run_timestamp']}")
+                    st.subheader(f"📅 Run: {format_display_timestamp(run1['run_timestamp'])}")
                     if theme in sum1_dict:
                         s1 = sum1_dict[theme]
                         st.markdown("**What is Happening:**")
@@ -363,7 +363,7 @@ def _render_compare_tab(supabase, selected_theme="All Themes", source_filter_val
                         st.info("Theme not found in this run.")
 
                 with col_run_b:
-                    st.subheader(f"📅 Run: {run2['run_timestamp']}")
+                    st.subheader(f"📅 Run: {format_display_timestamp(run2['run_timestamp'])}")
                     if theme in sum2_dict:
                         s2 = sum2_dict[theme]
                         st.markdown("**What is Happening:**")

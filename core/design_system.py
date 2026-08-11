@@ -132,3 +132,34 @@ def sanitize_summary_html(text: str) -> str:
     cleaned = re.sub(r"<small[^>]*>(.*?)</small>", r"\1", text, flags=re.DOTALL)
     cleaned = re.sub(r"</?small[^>]*>", "", cleaned)
     return cleaned.strip()
+
+
+def format_display_timestamp(ts: Any) -> str:
+    """Format any timestamp string or datetime object into DD/MM/YYYY HH:MM:SS format.
+    Strips GMT/UTC timezone offset suffixes (e.g. +00:00 or Z).
+    """
+    from datetime import datetime
+    if not ts:
+        return ""
+    if isinstance(ts, datetime):
+        return ts.strftime("%d/%m/%Y %H:%M:%S")
+
+    ts_str = str(ts).strip()
+    try:
+        # Standardize ISO string by replacing Z with +00:00 if needed
+        clean_str = ts_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        return dt.strftime("%d/%m/%Y %H:%M:%S")
+    except Exception:
+        pass
+
+    # Try common string formats if fromisoformat fails
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            clean_token = ts_str.split(".")[0].split("+")[0].replace("T", " ")
+            dt = datetime.strptime(clean_token, fmt)
+            return dt.strftime("%d/%m/%Y %H:%M:%S")
+        except Exception:
+            continue
+
+    return ts_str

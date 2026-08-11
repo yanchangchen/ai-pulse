@@ -164,7 +164,8 @@ def check_and_show_bg_status() -> None:
             loaded_ts = st.session_state.get('loaded_timestamp')
             
             if last_ts > loaded_ts:
-                st.info(f"📢 **New intelligence insights are ready!** (Generated at {last_ts})")
+                from core.design_system import format_display_timestamp
+                st.info(f"📢 **New intelligence insights are ready!** (Generated at {format_display_timestamp(last_ts)})")
                 if st.button("💡 Load New Insights Now", key="bg_refresher_load_btn", width="stretch"):
                     # Load the new data directly into session state
                     st.session_state.articles = last_run['data']['full_articles']
@@ -225,7 +226,8 @@ def render_sidebar_info() -> None:
         if status_info["status"] == "failed":
             st.sidebar.error(f"Last update failed: {status_info['error']}")
         elif status_info["status"] == "completed" and status_info["completed_timestamp"]:
-            st.sidebar.caption(f"Last update finished: {status_info['completed_timestamp']}")
+            from core.design_system import format_display_timestamp
+            st.sidebar.caption(f"Last update finished: {format_display_timestamp(status_info['completed_timestamp'])}")
 
 
 def is_cache_expired(max_age_hours: float = 12.0) -> bool:

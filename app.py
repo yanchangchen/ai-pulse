@@ -119,9 +119,10 @@ def main() -> None:
     with col_h1:
         st.title("⚡ AI Pulse")
         st.markdown("### High-Signal AI Industry Intelligence Engine")
+        from core.design_system import apply_design_system, format_display_timestamp
         last_time = get_last_run_time()
         if last_time:
-            st.caption(f"📅 Last Intelligence Run: **{last_time}** (Auto-refreshes every 12 hours)")
+            st.caption(f"📅 Last Intelligence Run: **{format_display_timestamp(last_time)}** (Auto-refreshes every 12 hours)")
     with col_h2:
         st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
         if st.button("⚡ Fetch & Refresh Now", key="main_header_refresh_btn", type="primary", use_container_width=True):

@@ -108,3 +108,13 @@ def test_evaluator_runs_deterministic_only_on_quota():
     assert report.structural_compliance_score >= 0.0
     assert report.coverage_score >= 0.0
     assert report.temporal_coherence_score >= 0.0
+
+
+def test_format_display_timestamp():
+    from core.design_system import format_display_timestamp
+    
+    assert format_display_timestamp("2026-08-11T11:04:58+00:00") == "11/08/2026 11:04:58"
+    assert format_display_timestamp("2026-08-11 11:04:58") == "11/08/2026 11:04:58"
+    assert format_display_timestamp("2026-08-11T11:04:58Z") == "11/08/2026 11:04:58"
+    assert format_display_timestamp("") == ""
+    assert format_display_timestamp(None) == ""

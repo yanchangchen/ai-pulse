@@ -10,7 +10,7 @@ import plotly.express as px
 from config.themes import THEME_ORDER, THEME_COLORS
 from core.history_manager import load_full_history
 from core.supabase_client import get_supabase_manager
-from core.design_system import apply_design_system, get_plotly_theme_layout, sanitize_summary_html
+from core.design_system import apply_design_system, get_plotly_theme_layout, sanitize_summary_html, format_display_timestamp
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
 
@@ -138,8 +138,9 @@ def main() -> None:
                 st.markdown("### Chronological Summaries (Newest First)")
                 for summary in history_summaries:
                     run_record = supabase.get_run_by_id(summary["run_id"])
-                    run_date = run_record.get("run_date", "Unknown Date") if run_record else "Unknown Date"
-                    with st.expander(f"📅 Run Date: {run_date} ({summary.get('article_count', 0)} articles)"):
+                    raw_date = run_record.get("run_timestamp", run_record.get("run_date", "Unknown Date")) if run_record else "Unknown Date"
+                    disp_date = format_display_timestamp(raw_date)
+                    with st.expander(f"📅 Run Date: {disp_date} ({summary.get('article_count', 0)} articles)"):
                         st.markdown(f"**The Signal:** {sanitize_summary_html(summary.get('what_is_happening', ''))}")
                         st.markdown(f"**Significance:** {summary.get('why_it_matters', '')}")
                         st.markdown(f"**Watchlist:** {summary.get('what_to_watch', '')}")
