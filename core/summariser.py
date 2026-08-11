@@ -291,50 +291,11 @@ def _extract_last_summaries(last_run: Optional[Dict]) -> Dict:
 
 def extractive_theme_summary(theme_name: str, articles: List[Dict]) -> Dict[str, str]:
     """Non-LLM Extractive Summarisation algorithm.
-    Extracts top news items using sentence extraction and headline aggregation.
-    Executes in <1ms with 0 LLM API calls and 0% hallucination risk.
+    Extracts top news items using LexRank sentence centrality and Luhn keyword scoring.
+    Executes in <10ms with 0 LLM API calls and 0% hallucination risk.
     """
-    if not articles:
-        return {
-            "what_is_happening": "No articles available for extractive summarisation.",
-            "why_it_matters": "No news coverage.",
-            "what_to_watch": "Monitor for new updates.",
-            "further_reading": ""
-        }
-
-    top_articles = articles[:5]
-    summary_sentences = []
-    watchlist_items = []
-    reading_items = []
-
-    for idx, a in enumerate(top_articles, 1):
-        title = a.get("title", "Untitled")
-        summ = a.get("summary", "").strip()
-        source = a.get("source_name", "Unknown Source")
-        link = a.get("link", "")
-
-        first_sentence = summ.split(". ")[0] if ". " in summ else summ
-        if first_sentence and len(first_sentence) > 10:
-            summary_sentences.append(f"• **{title}**: {first_sentence}.")
-        else:
-            summary_sentences.append(f"• **{title}** ({source})")
-
-        if idx <= 3:
-            watchlist_items.append(f"- **[{title[:40]}...]** — Track technical updates from {source}.")
-
-        if link:
-            reading_items.append(f"- **{title}** | {source} | {link}")
-
-    what_happened_text = "\n\n".join(summary_sentences[:3]) if summary_sentences else "Extractive summary unavailable."
-
-    return {
-        "what_is_happening": f"**Extractive Intelligence Brief ({len(articles)} tracked articles):**\n\n{what_happened_text}",
-        "engineering_tradeoffs": f"Extractive summary compiled from {len(articles)} tracked engineering articles.",
-        "product_impact": f"Extractive summary compiled from {len(articles)} tracked engineering articles.",
-        "why_it_matters": f"Extracted core signals from {len(top_articles)} primary industry sources.",
-        "what_to_watch": "\n".join(watchlist_items) if watchlist_items else "Monitor for new developments.",
-        "further_reading": "\n".join(reading_items)
-    }
+    from core.non_llm_summariser import generate_non_llm_theme_summary
+    return generate_non_llm_theme_summary(theme_name, articles)
 
 
 def generate_all_summaries(
