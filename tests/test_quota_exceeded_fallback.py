@@ -51,32 +51,18 @@ def test_llm_client_fast_abort_when_quota_flag_active():
         mock_post.assert_not_called()
 
 
-def test_summariser_fallback_to_cache_on_quota():
+def test_summariser_fallback_to_extractive_on_quota():
     LLMClient.mark_quota_exceeded("Quota test")
 
-    mock_history = {
-        "data": {
-            "summaries": {
-                "Agentic Systems & DevTools": {
-                    "what_is_happening": "Cached signal statement.",
-                    "why_it_matters": "Cached significance.",
-                    "what_to_watch": "Cached watchlist.",
-                    "further_reading": ""
-                }
-            }
-        }
-    }
-
-    themed_articles = {"Agentic Systems & DevTools": [{"title": "Art 1"}]}
+    themed_articles = {"Agentic Systems & DevTools": [{"title": "Art 1", "summary": "Extractive sentence summary."}]}
     full_articles = [{"title": "Art 1"}]
 
-    with patch("core.history_manager.get_last_run", return_value=mock_history):
-        with patch("core.summariser.save_run_to_history"):
-            summaries = generate_all_summaries(themed_articles, full_articles)
+    with patch("core.summariser.save_run_to_history"):
+        summaries = generate_all_summaries(themed_articles, full_articles)
 
     assert "Agentic Systems & DevTools" in summaries
-    assert "Cached signal statement." in summaries["Agentic Systems & DevTools"]["what_is_happening"]
-    assert "Ollama Cloud weekly quota limit reached" in summaries["Agentic Systems & DevTools"]["what_is_happening"]
+    assert "ℹ️" in summaries["Agentic Systems & DevTools"]["what_is_happening"]
+    assert "Non-LLM Extractive Summary" in summaries["Agentic Systems & DevTools"]["what_is_happening"]
 
 
 def test_evaluator_runs_deterministic_only_on_quota():

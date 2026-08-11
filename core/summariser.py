@@ -355,20 +355,13 @@ def generate_all_summaries(
 
         # Check if LLM quota/rate limit was hit previously or on this run
         if LLMClient.is_quota_exceeded():
-            logger.warning("LLM quota exceeded (HTTP 429). Loading cached/extractive summary for %s", theme)
-            last_run = history_manager.get_last_run()
-            last_summaries = _extract_last_summaries(last_run)
-            warning_prefix = "⚠️ *Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.*"
-            if theme in last_summaries:
-                cached = dict(last_summaries[theme])
-                orig_text = cached.get("what_is_happening", "")
-                if warning_prefix not in orig_text:
-                    cached["what_is_happening"] = f"{warning_prefix}\n\n{orig_text}"
-                summaries[theme] = cached
-            else:
-                extractive = extractive_theme_summary(theme, articles)
-                extractive["what_is_happening"] = f"{warning_prefix}\n\n{extractive['what_is_happening']}"
-                summaries[theme] = extractive
+            logger.warning("LLM quota exceeded (HTTP 429). Initiating non-LLM extractive summarisation for %s", theme)
+            info_prefix = "ℹ️ *Non-LLM Extractive Summary: Generated deterministically using lead sentence extraction because live LLM synthesis is paused.*"
+            extractive = extractive_theme_summary(theme, articles)
+            orig_text = extractive.get("what_is_happening", "")
+            if info_prefix not in orig_text:
+                extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
+            summaries[theme] = extractive
             continue
 
         existing_hashes = _get_existing_article_hashes(theme)
@@ -399,20 +392,13 @@ def generate_all_summaries(
         except Exception as exc:
             logger.error("Summary generation failed for %s: %s", theme, exc)
             if LLMClient.is_quota_exceeded():
-                logger.warning("LLM quota exceeded during %s. Falling back to cached summary.", theme)
-                last_run = history_manager.get_last_run()
-                last_summaries = _extract_last_summaries(last_run)
-                warning_prefix = "⚠️ *Ollama Cloud weekly quota limit reached (HTTP 429). Live LLM synthesis paused. Information may be stale.*"
-                if theme in last_summaries:
-                    cached = dict(last_summaries[theme])
-                    orig_text = cached.get("what_is_happening", "")
-                    if warning_prefix not in orig_text:
-                        cached["what_is_happening"] = f"{warning_prefix}\n\n{orig_text}"
-                    summaries[theme] = cached
-                else:
-                    extractive = extractive_theme_summary(theme, articles)
-                    extractive["what_is_happening"] = f"{warning_prefix}\n\n{extractive['what_is_happening']}"
-                    summaries[theme] = extractive
+                logger.warning("LLM quota exceeded during %s. Initiating non-LLM extractive summarisation.", theme)
+                info_prefix = "ℹ️ *Non-LLM Extractive Summary: Generated deterministically using lead sentence extraction because live LLM synthesis is paused.*"
+                extractive = extractive_theme_summary(theme, articles)
+                orig_text = extractive.get("what_is_happening", "")
+                if info_prefix not in orig_text:
+                    extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
+                summaries[theme] = extractive
             else:
                 summaries[theme] = {
                     "what_is_happening": f"Error generating summary: {exc}",
