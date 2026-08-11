@@ -60,6 +60,44 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### ⚡ Dual-Engine Summarization Architecture
+
+```mermaid
+flowchart TD
+    subgraph Ingestion ["1. Ingestion & Categorization"]
+        RSS["RSS Feeds & Web Scrapers"] --> Ingest["Raw Articles (250+)"]
+        Ingest --> Classifier["4-Pass Waterfall Classifier\n(Keywords → TF-IDF → LLM → Soft Match)"]
+        Classifier --> Themed["7 Strategic Themes"]
+    end
+
+    subgraph Summariser ["2. Dual-Engine Summariser Pipeline"]
+        Themed --> ModeCheck{"Engine Mode / Quota Status"}
+        
+        ModeCheck -- "LLM Synthesis (Default)" --> Ollama["Ollama LLM API"]
+        Ollama -- "Success" --> StructOut["Structured Brief (JSON)"]
+        Ollama -- "Quota Exceeded (HTTP 429) / Offline" --> NonLLMFallback["⚡ Non-LLM Extractive Engine"]
+        
+        ModeCheck -- "Non-LLM Extractive Mode" --> NonLLMFallback
+        
+        subgraph NonLLMEngine ["Non-LLM Extractive Engine (< 50ms, 0-Cost, 100% Faithful)"]
+            NonLLMFallback --> LexRank["LexRank Graph Centrality\n(Cosine Vector Similarity Matrix)"]
+            NonLLMFallback --> Luhn["Luhn Keyword Cluster Scoring\n(Domain Engineering Density)"]
+            NonLLMFallback --> Keyphrase["NLU n-Gram Keyphrase Extraction\n(Unigram + Bigram Watchlist)"]
+            
+            LexRank --> Signal["The Signal (what_is_happening)"]
+            Luhn --> TechTradeoffs["Engineering Tradeoffs & Product Impact"]
+            Keyphrase --> Watchlist["Actionable Watchlist"]
+        end
+    end
+
+    subgraph Storage ["3. Memory Wiki & Cloud Persistence"]
+        StructOut --> Wiki["Memory Wiki & Supabase (theme_summaries)"]
+        Signal --> Wiki
+        TechTradeoffs --> Wiki
+        Watchlist --> Wiki
+    end
+```
+
 ## 📦 Setup & Deployment
 
 ### 1. Install Dependencies
