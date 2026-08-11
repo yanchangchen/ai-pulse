@@ -150,7 +150,7 @@ def check_and_show_bg_status() -> None:
     from core.llm_client import LLMClient
     if LLMClient.is_quota_exceeded():
         st.warning(
-            "⚠️ **Ollama Cloud Weekly Usage Limit Reached (HTTP 429)**: "
+            "**Ollama Cloud Weekly Usage Limit Reached (HTTP 429)**: "
             "Live LLM API calls are paused. Historical cached summaries are being displayed. "
             "Information may be stale until quota resets.",
             icon="⚠️"
