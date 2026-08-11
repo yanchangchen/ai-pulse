@@ -210,7 +210,5 @@ class WeeklyEvaluator:
 
 
 def maybe_start_weekly_evaluator() -> None:
-    """Convenience entry point for `bg_refresher.py` to call after a pipeline
-    run finishes.  Safe to call repeatedly.
-    """
-    WeeklyEvaluator.start()
+    """Evaluations are user-triggered on-demand only via the Quality Evaluation page."""
+    logger.info("Automatic background evaluation is disabled. Quality evaluation runs strictly on-demand when triggered by user.")
