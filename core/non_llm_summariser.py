@@ -1,7 +1,7 @@
 """
 Non-LLM Extractive Summarization Module for AI Pulse.
-Provides fast, 0-cost, sub-second, and 100% faithful extractive summarization
-using LexRank sentence centrality, Luhn keyword scoring, and keyphrase NLU heuristics.
+Provides ultra-fast, 0-cost, sub-second, and 100% faithful extractive summarization
+using optimized LexRank sentence centrality, Luhn keyword scoring, and n-gram keyphrase extraction.
 """
 
 import re
@@ -14,12 +14,10 @@ def _split_into_sentences(text: str) -> List[str]:
     """Split clean text into individual sentences."""
     if not text:
         return []
-    # Split by period/exclamation/question mark followed by space or newline
     raw_sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     sentences = []
     for s in raw_sentences:
         clean_s = s.strip()
-        # Keep sentences with reasonable word count (>= 5 words)
         if len(clean_s.split()) >= 5:
             sentences.append(clean_s)
     return sentences
@@ -50,60 +48,64 @@ STOPWORDS = {
     'weren\'t', 'what', 'what\'s', 'when', 'when\'s', 'where', 'where\'s', 'which',
     'while', 'who', 'who\'s', 'whom', 'why', 'why\'s', 'with', 'won\'t', 'would',
     'wouldn\'t', 'you', 'you\'d', 'you\'ll', 'you\'re', 'you\'ve', 'your', 'yours',
-    'yourself', 'yourselves'
+    'yourself', 'yourselves', 'also', 'using', 'used', 'new', 'built', 'showed'
 }
-
-
-def _cosine_similarity(vec1: Counter, vec2: Counter) -> float:
-    """Compute cosine similarity between two word frequency vectors."""
-    intersection = set(vec1.keys()) & set(vec2.keys())
-    numerator = sum(vec1[x] * vec2[x] for x in intersection)
-
-    sum1 = sum(v**2 for v in vec1.values())
-    sum2 = sum(v**2 for v in vec2.values())
-    denominator = math.sqrt(sum1) * math.sqrt(sum2)
-
-    if not denominator:
-        return 0.0
-    return numerator / denominator
 
 
 def lexrank_sentences(sentences: List[str], top_n: int = 3) -> List[str]:
     """
-    Graph-based sentence ranking algorithm (LexRank/TextRank).
-    Ranks sentences by centrality using sentence cosine similarity graph.
+    Optimized Graph-based sentence ranking algorithm (LexRank/TextRank).
+    Pre-computes vector norms to achieve O(N^2) fast similarity graph construction.
     """
     if not sentences:
         return []
     if len(sentences) <= top_n:
         return sentences
 
-    # Compute sentence vectors (word frequencies ignoring stopwords)
-    vectors = []
+    # Precompute sentence word counts and vector norms once
+    vec_data = []
     for s in sentences:
         words = [w for w in _tokenize(s) if w not in STOPWORDS]
-        vectors.append(Counter(words))
+        counts = Counter(words)
+        norm = math.sqrt(sum(v * v for v in counts.values()))
+        vec_data.append((counts, norm))
 
-    # Build similarity matrix and compute centrality score (degree centrality)
     scores = [0.0] * len(sentences)
-    threshold = 0.1
+    threshold = 0.08
 
-    for i in range(len(sentences)):
-        for j in range(i + 1, len(sentences)):
-            sim = _cosine_similarity(vectors[i], vectors[j])
+    # Pairwise similarity with pre-computed norms
+    n = len(sentences)
+    for i in range(n):
+        counts1, norm1 = vec_data[i]
+        if norm1 == 0:
+            continue
+        for j in range(i + 1, n):
+            counts2, norm2 = vec_data[j]
+            if norm2 == 0:
+                continue
+
+            # Intersect keys
+            intersection = set(counts1.keys()) & set(counts2.keys())
+            if not intersection:
+                continue
+
+            num = sum(counts1[w] * counts2[w] for w in intersection)
+            sim = num / (norm1 * norm2)
+
             if sim > threshold:
                 scores[i] += sim
                 scores[j] += sim
 
-    # Sort sentences by centrality score
-    ranked_indices = sorted(range(len(sentences)), key=lambda i: scores[i], reverse=True)
+    # Rank and pick top_n preserving original document order
+    ranked_indices = sorted(range(n), key=lambda i: scores[i], reverse=True)
     selected_indices = sorted(ranked_indices[:top_n])
     return [sentences[i] for i in selected_indices]
 
 
 def luhn_sentences(sentences: List[str], keywords: List[str], top_n: int = 2) -> List[str]:
     """
-    Luhn algorithm: Scores sentences based on density of domain keywords.
+    Luhn algorithm: Scores sentences based on keyword cluster density.
+    O(N * W) optimized with pre-stemmed keyword sets.
     """
     if not sentences:
         return []
@@ -116,8 +118,9 @@ def luhn_sentences(sentences: List[str], keywords: List[str], top_n: int = 2) ->
         if not words:
             scores.append(0.0)
             continue
-        kw_count = sum(1 for w in words if w in target_keywords or any(tk in w for tk in target_keywords))
-        score = (kw_count ** 2) / float(len(words))
+
+        kw_matches = sum(1 for w in words if w in target_keywords or any(tk in w for tk in target_keywords))
+        score = (kw_matches ** 2) / float(len(words))
         scores.append(score)
 
     ranked_indices = sorted(range(len(sentences)), key=lambda i: scores[i], reverse=True)
@@ -126,11 +129,34 @@ def luhn_sentences(sentences: List[str], keywords: List[str], top_n: int = 2) ->
 
 
 def extract_keyphrases(text: str, top_n: int = 4) -> List[str]:
-    """Extract top domain keyphrases from article collection."""
-    words = [w for w in _tokenize(text) if w not in STOPWORDS and len(w) > 3]
-    counts = Counter(words)
-    common = [w.title() for w, _ in counts.most_common(top_n)]
-    return common
+    """
+    Extracts high-signal unigrams and bigrams (e.g. 'Hybrid Reasoning', 'Model Weights').
+    """
+    words = [w for w in _tokenize(text) if w not in STOPWORDS and len(w) > 2]
+    if not words:
+        return []
+
+    # Extract bigrams
+    bigrams = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1) if len(words[i]) > 3 and len(words[i+1]) > 3]
+
+    counts_unigrams = Counter(words)
+    counts_bigrams = Counter(bigrams)
+
+    keyphrases = []
+    # Pick top bigrams first for higher signal
+    for bg, count in counts_bigrams.most_common(2):
+        if count >= 2:
+            keyphrases.append(bg.title())
+
+    # Fill remaining slots with unigrams
+    for ug, _ in counts_unigrams.most_common(top_n * 2):
+        formatted = ug.title()
+        if not any(ug in kp.lower() for kp in keyphrases):
+            keyphrases.append(formatted)
+        if len(keyphrases) >= top_n:
+            break
+
+    return keyphrases[:top_n]
 
 
 def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dict[str, str]:
@@ -148,7 +174,6 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
             "further_reading": ""
         }
 
-    # Gather all text (titles + summaries)
     all_sentences = []
     for a in articles:
         title = a.get("title", "").strip()
@@ -158,7 +183,7 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
         if summary:
             all_sentences.extend(_split_into_sentences(summary))
 
-    # Deduplicate sentences while maintaining order
+    # Deduplicate while preserving order
     seen = set()
     unique_sentences = []
     for s in all_sentences:
@@ -170,7 +195,7 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
     top_central = lexrank_sentences(unique_sentences, top_n=3)
     what_happening = " ".join(top_central) if top_central else (articles[0].get("title", "") + ".")
 
-    # 2. ENGINEERING TRADEOFFS (Luhn Keyword Scoring)
+    # 2. ENGINEERING TRADEOFFS (Luhn Technical Keyword Scoring)
     eng_keywords = ["architecture", "api", "performance", "latency", "memory", "weights", "gpu", "model", "token", "framework", "kernel", "cuda", "open-source"]
     top_eng = luhn_sentences(unique_sentences, eng_keywords, top_n=2)
     eng_text = " ".join(top_eng) if top_eng else "Technical implementations focus on model optimization, API integration, and inference performance."
