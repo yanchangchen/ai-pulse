@@ -163,20 +163,33 @@ def extract_keyphrases(text: str, top_n: int = 4) -> List[str]:
 def _best_sentence_for_article(article: Dict, theme_keywords: Optional[Dict[str, int]] = None) -> str:
     """
     Extract the single most central sentence for an article using LexRank per-article.
-    If no summary sentences exist, falls back to the article title.
+    Trims redundant title repetitions and falls back to the title if summary is empty.
     """
     title = article.get("title", "").strip()
     summary = article.get("summary", "").strip()
 
     sentences = _split_into_sentences(summary) if summary else []
 
+    selected = ""
     if sentences:
         # Run LexRank per-article to select the single best lead sentence
         top_sentences = lexrank_sentences(sentences, top_n=1)
         if top_sentences:
-            return top_sentences[0]
+            selected = top_sentences[0]
 
-    return title if title.endswith(".") or not title else f"{title}."
+    if not selected:
+        selected = title if title.endswith(".") or not title else f"{title}."
+
+    # Trim leading redundant title text from sentence if sentence starts with title
+    clean_title = re.sub(r'^\s*Release:\s*', '', title, flags=re.IGNORECASE).strip()
+    clean_title_bare = clean_title.rstrip(".").strip()
+
+    if clean_title_bare and len(clean_title_bare) >= 5 and selected.lower().startswith(clean_title_bare.lower()):
+        trimmed = selected[len(clean_title_bare):].lstrip(".:;-\n ").capitalize()
+        if len(trimmed.split()) >= 4:
+            selected = trimmed
+
+    return selected if selected else (title if title.endswith(".") or not title else f"{title}.")
 
 
 def _score_article_relevance(article: Dict, theme_keywords: Optional[Dict[str, int]] = None) -> float:
@@ -202,7 +215,8 @@ def _score_article_relevance(article: Dict, theme_keywords: Optional[Dict[str, i
 def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dict[str, str]:
     """
     Generates a complete, structured non-LLM theme summary using per-article LexRank,
-    relevance article ranking, and Luhn keyword scoring. Guaranteed 100% faithful and sub-second.
+    relevance article ranking, topic diversity filtering, and Luhn keyword scoring.
+    Guaranteed 100% faithful and sub-second.
     """
     if not articles:
         return {
@@ -233,8 +247,34 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
         reverse=True
     )
 
-    # 1. WHAT IS HAPPENING (Per-article LexRank for top 3 articles)
-    top_articles = ranked_articles[:3]
+    # 1. WHAT IS HAPPENING (Diverse per-article selection across top articles)
+    top_articles = []
+    seen_sources = set()
+    seen_prefixes = set()
+
+    for a in ranked_articles:
+        title = a.get("title", "").strip()
+        src = a.get("source_name") or a.get("source") or "Tracked Source"
+        words = _tokenize(title)
+        topic_prefix = words[0] if words else title[:10].lower()
+
+        # Prioritize articles from distinct sources or distinct topic prefixes
+        if src not in seen_sources or topic_prefix not in seen_prefixes:
+            top_articles.append(a)
+            seen_sources.add(src)
+            seen_prefixes.add(topic_prefix)
+
+        if len(top_articles) >= 3:
+            break
+
+    # Fallback to remaining ranked articles if diversity filter returned fewer than 3
+    if len(top_articles) < 3:
+        for a in ranked_articles:
+            if a not in top_articles:
+                top_articles.append(a)
+            if len(top_articles) >= 3:
+                break
+
     what_happening_items = []
     for a in top_articles:
         best_sentence = _best_sentence_for_article(a, theme_keywords)
