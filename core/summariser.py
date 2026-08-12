@@ -423,3 +423,37 @@ def parse_further_reading(further_reading_text: str) -> List[Dict]:
             })
 
     return articles
+
+
+def ensure_extractive_summary(s: dict, supabase=None, run_id: str = "", theme: str = "", articles: list = None) -> dict:
+    """If ANY historical summary contains legacy quota warning text or older extractive phrasing,
+    dynamically generate a fresh non-LLM extractive summary using the per-article LexRank algorithm.
+    Applies universally across all runs and themes.
+    """
+    if not s:
+        return s
+
+    text = s.get("what_is_happening", "")
+    legacy_indicators = [
+        "Ollama Cloud weekly quota limit reached",
+        "Unable to generate new summary",
+        "Live LLM synthesis paused",
+        "quota limit reached",
+        "Compiled deterministically using LexRank & Luhn",
+        "live LLM quota paused",
+        "Extractive summary unavailable",
+    ]
+
+    if any(ind.lower() in text.lower() for ind in legacy_indicators):
+        if not articles and supabase and run_id and theme:
+            articles = supabase.get_articles_for_run(run_id, theme) or []
+
+        if articles:
+            info_prefix = "ℹ️ *Non-LLM Extractive Summary: Generated deterministically using lead sentence extraction because live LLM synthesis was paused.*"
+            extractive = extractive_theme_summary(theme, articles)
+            orig_text = extractive.get("what_is_happening", "")
+            extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
+            return extractive
+
+    return s
+

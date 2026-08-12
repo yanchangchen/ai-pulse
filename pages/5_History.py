@@ -9,6 +9,7 @@ import pandas as pd
 
 from config.themes import THEME_ORDER, THEME_COLORS
 from core.history_manager import load_full_history
+from core.summariser import ensure_extractive_summary
 from core.shared_sidebar import render_sidebar_nav
 from core.supabase_client import get_supabase_manager
 
@@ -90,7 +91,7 @@ def main() -> None:
         col_idx = 0
         for theme in themes_to_show:
             if theme in summaries:
-                summary = _ensure_extractive_summary(summaries[theme], articles=entry.get("themed_articles", {}).get(theme, []))
+                summary = ensure_extractive_summary(summaries[theme], articles=entry.get("themed_articles", {}).get(theme, []))
                 color = THEME_COLORS.get(theme, "#666")
                 count = counts.get(theme, 0)
 
@@ -213,38 +214,7 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
         st.rerun()
 
 
-def _ensure_extractive_summary(s: dict, supabase=None, run_id: str = "", theme: str = "", articles: list = None) -> dict:
-    """If ANY historical summary contains legacy quota warning text or older extractive phrasing,
-    dynamically generate a fresh non-LLM extractive summary using the per-article LexRank algorithm.
-    Applies universally across all runs and themes.
-    """
-    if not s:
-        return s
 
-    text = s.get("what_is_happening", "")
-    legacy_indicators = [
-        "Ollama Cloud weekly quota limit reached",
-        "Unable to generate new summary",
-        "Live LLM synthesis paused",
-        "quota limit reached",
-        "Compiled deterministically using LexRank & Luhn",
-        "live LLM quota paused",
-        "Extractive summary unavailable",
-    ]
-
-    if any(ind.lower() in text.lower() for ind in legacy_indicators):
-        if not articles and supabase and run_id and theme:
-            articles = supabase.get_articles_for_run(run_id, theme) or []
-
-        if articles:
-            from core.summariser import extractive_theme_summary
-            info_prefix = "ℹ️ *Non-LLM Extractive Summary: Generated deterministically using lead sentence extraction because live LLM synthesis was paused.*"
-            extractive = extractive_theme_summary(theme, articles)
-            orig_text = extractive.get("what_is_happening", "")
-            extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
-            return extractive
-
-    return s
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +260,7 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
 
             for theme in themes_to_show:
                 if theme in summaries_dict:
-                    s = _ensure_extractive_summary(summaries_dict[theme], supabase, run_id, theme)
+                    s = ensure_extractive_summary(summaries_dict[theme], supabase, run_id, theme)
                     color = THEME_COLORS.get(theme, "#666")
 
                     # Fetch actual articles for this theme
@@ -391,7 +361,7 @@ def _render_compare_tab(supabase, selected_theme="All Themes", source_filter_val
                 with col_run_a:
                     st.subheader(f"📅 Run: {format_display_timestamp(run1['run_timestamp'])}")
                     if theme in sum1_dict:
-                        s1 = _ensure_extractive_summary(sum1_dict[theme], supabase, run1['id'], theme)
+                        s1 = ensure_extractive_summary(sum1_dict[theme], supabase, run1['id'], theme)
                         st.markdown("**What is Happening:**")
                         st.markdown(sanitize_summary_html(s1.get("what_is_happening", "")))
                         st.markdown("**Significance:**")
@@ -404,7 +374,7 @@ def _render_compare_tab(supabase, selected_theme="All Themes", source_filter_val
                 with col_run_b:
                     st.subheader(f"📅 Run: {format_display_timestamp(run2['run_timestamp'])}")
                     if theme in sum2_dict:
-                        s2 = _ensure_extractive_summary(sum2_dict[theme], supabase, run2['id'], theme)
+                        s2 = ensure_extractive_summary(sum2_dict[theme], supabase, run2['id'], theme)
                         st.markdown("**What is Happening:**")
                         st.markdown(sanitize_summary_html(s2.get("what_is_happening", "")))
                         st.markdown("**Significance:**")
