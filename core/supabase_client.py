@@ -263,8 +263,32 @@ class SupabaseManager:
                 return response.data[0]
             return None
         except Exception as e:
-            logger.error(f"Failed to get run {run_id}: {e}")
+            logger.error(f"Failed to get run by ID {run_id}: {e}")
             return None
+
+    def delete_run(self, run_id: str) -> bool:
+        """
+        Purge a trend run and all associated theme summaries, articles, and metrics.
+        """
+        if not self.available or not run_id:
+            return False
+        try:
+            self.client.table("theme_summaries").delete().eq("run_id", run_id).execute()
+            self.client.table("articles").delete().eq("run_id", run_id).execute()
+            try:
+                self.client.table("trend_metrics").delete().eq("run_id", run_id).execute()
+            except Exception:
+                pass
+            try:
+                self.client.table("quality_evaluations").delete().eq("run_id", run_id).execute()
+            except Exception:
+                pass
+            self.client.table("trend_runs").delete().eq("id", run_id).execute()
+            logger.info("Successfully deleted trend run ID '%s' and associated records.", run_id)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete run {run_id}: {e}")
+            return False
     
     def get_summaries_for_run(self, run_id: str) -> Optional[List[Dict]]:
         """

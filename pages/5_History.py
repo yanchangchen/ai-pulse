@@ -227,6 +227,18 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
 
     if total_runs == 0:
         st.warning("No runs found in Supabase. Run a data refresh on the main dashboard to populate the database.")
+    # Auto-purge specified low-article runs if present
+    TARGET_PURGE_TIMES = ["23:34:29", "23:10:42", "23:10:21", "22:35:44", "22:25:28", "22:20:47"]
+    all_recent_runs = supabase.get_all_runs(limit=50) or []
+    for r in all_recent_runs:
+        ts_str = str(r.get("run_timestamp", ""))
+        if any(t in ts_str for t in TARGET_PURGE_TIMES):
+            supabase.delete_run(r["id"])
+
+    # Re-query total runs after auto-purge
+    total_runs = supabase.get_total_runs_count()
+    if total_runs == 0:
+        st.info("No runs found in Memory Wiki timeline.")
         return
 
     if 'wiki_page_index' not in st.session_state:
@@ -248,10 +260,17 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
             if total_arts == 0:
                 total_arts = len(run_articles_all)
 
-            st.markdown(
-                f'<div class="wiki-date">📅 Run: {format_display_timestamp(run_ts)} <span style="font-size:14px;font-weight:normal;color:#aaa;">({total_arts} total articles tracked)</span></div>',
-                unsafe_allow_html=True
-            )
+            col_hdr, col_btn = st.columns([5, 1])
+            with col_hdr:
+                st.markdown(
+                    f'<div class="wiki-date">📅 Run: {format_display_timestamp(run_ts)} <span style="font-size:14px;font-weight:normal;color:#aaa;">({total_arts} total articles tracked)</span></div>',
+                    unsafe_allow_html=True
+                )
+            with col_btn:
+                if st.button("🗑️ Purge Run", key=f"purge_{run_id}"):
+                    if supabase.delete_run(run_id):
+                        st.success(f"Purged run {format_display_timestamp(run_ts)}")
+                        st.rerun()
 
             summaries = supabase.get_summaries_for_run(run_id) or []
             summaries_dict = {s["theme_name"]: s for s in summaries}
