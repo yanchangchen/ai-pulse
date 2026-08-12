@@ -150,7 +150,7 @@ def check_and_show_bg_status() -> None:
     from core.llm_client import LLMClient
     if LLMClient.is_quota_exceeded():
         st.info(
-            "⚡ **Active Non-LLM Extractive Engine**: Live Ollama LLM quota limit reached (HTTP 429). "
+            "**Active Non-LLM Extractive Engine**: Live Ollama LLM quota limit reached (HTTP 429). "
             "Executive summaries are automatically & deterministically compiled using LexRank & Luhn extractive NLP (0-cost, sub-second & 100% faithful).",
             icon="⚡"
         )
