@@ -236,7 +236,7 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
             supabase.delete_run(r["id"])
 
     # Re-query total runs after auto-purge
-    total_runs = supabase.get_total_runs_count()
+    total_runs = supabase.get_total_run_count()
     if total_runs == 0:
         st.info("No runs found in Memory Wiki timeline.")
         return
