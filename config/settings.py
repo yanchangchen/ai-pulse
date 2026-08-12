@@ -81,6 +81,7 @@ FETCH_WORKERS: int = 8
 # transient errors before being skipped.
 RSS_FETCH_TIMEOUT: int = 10
 RSS_FETCH_RETRIES: int = 2
+RSS_SUMMARY_MAX_CHARS: int = int(_get_secret("RSS_SUMMARY_MAX_CHARS", "1500"))
 
 # ---------------------------------------------------------------------------
 # Weekly quality evaluation

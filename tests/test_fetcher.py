@@ -153,3 +153,46 @@ def test_diagnose_source_404_error():
         assert diag["status_code"] == 404
         assert "404 Not Found" in diag["explanation"]
 
+
+def test_rss_summary_max_chars_respected():
+    from core.fetcher import fetch_rss_feed
+    long_desc = "Word " * 500  # ~2500 chars
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = f"""<rss><channel><item>
+        <title>Long RSS Feed Item Title</title>
+        <description>{long_desc}</description>
+        <link>https://example.com/item1</link>
+    </item></channel></rss>""".encode()
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        items = fetch_rss_feed({"name": "Test Feed", "url": "https://example.com/rss", "type": "rss"})
+        assert len(items) == 1
+        assert len(items[0]["summary"]) <= 1500
+        assert len(items[0]["summary"]) > 500
+
+
+def test_scrape_web_source_summary_extraction():
+    from core.fetcher import scrape_web_source
+    mock_html = """
+    <html>
+      <body>
+        <div>
+          <h2><a href="https://example.com/post1">Anthropic Engineering Breakthrough</a></h2>
+          <p>We are introducing a novel architectural optimization for frontier LLM reasoning.</p>
+        </div>
+      </body>
+    </html>
+    """
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = mock_html.encode()
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        source = {"name": "Anthropic Engineering", "url": "https://www.anthropic.com/engineering", "type": "web"}
+        items = scrape_web_source(source)
+        assert len(items) >= 1
+        assert "introducing a novel architectural optimization" in items[0]["summary"]
+
+

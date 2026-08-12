@@ -21,6 +21,7 @@ from config.settings import (
     FETCH_WORKERS,
     RSS_FETCH_RETRIES,
     RSS_FETCH_TIMEOUT,
+    RSS_SUMMARY_MAX_CHARS,
 )
 from config.sources import SOURCES, WEB_SCRAPE_SOURCES
 
@@ -196,7 +197,7 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
         item = {
             'id': item_id,
             'title': title,
-            'summary': summary[:500] if summary else '',
+            'summary': summary[:RSS_SUMMARY_MAX_CHARS] if summary else '',
             'link': link,
             'published_date': pub_date_str,
             'source_name': source_name
@@ -272,12 +273,27 @@ def scrape_web_source(source: Dict) -> List[Dict]:
                 if not is_within_range(dt):
                     continue
 
+                # Extract summary/dek text
+                summary = ""
+                summary_sel = selectors.get("summary")
+                container = parent_a if parent_a else title_elem.parent
+
+                if summary_sel and container:
+                    sum_elem = container.find(summary_sel) or container.find_next_sibling(summary_sel)
+                    if sum_elem and sum_elem != title_elem:
+                        summary = sum_elem.get_text(separator=' ', strip=True)
+
+                if not summary and container:
+                    p_elem = container.find('p') or container.find_next_sibling('p')
+                    if p_elem:
+                        summary = p_elem.get_text(separator=' ', strip=True)
+
                 item_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
 
                 items.append({
                     'id': item_id,
                     'title': title,
-                    'summary': '',
+                    'summary': summary[:RSS_SUMMARY_MAX_CHARS] if summary else '',
                     'link': link,
                     'published_date': dt.isoformat(),
                     'source_name': source_name,
@@ -323,12 +339,17 @@ def scrape_web_source(source: Dict) -> List[Dict]:
                 if not is_within_range(dt):
                     continue
 
+                summary = ""
+                p_elem = elem.find('p')
+                if p_elem:
+                    summary = p_elem.get_text(separator=' ', strip=True)
+
                 item_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
 
                 items.append({
                     'id': item_id,
                     'title': title,
-                    'summary': '',
+                    'summary': summary[:RSS_SUMMARY_MAX_CHARS] if summary else '',
                     'link': link,
                     'published_date': dt.isoformat(),
                     'source_name': source_name,

@@ -1,13 +1,14 @@
-"""
-Non-LLM Extractive Summarization Module for AI Pulse.
-Provides ultra-fast, 0-cost, sub-second, and 100% faithful extractive summarization
-using optimized LexRank sentence centrality, Luhn keyword scoring, and n-gram keyphrase extraction.
-"""
-
+import os
 import re
 import math
+import logging
 from collections import Counter
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from config.themes import THEMES
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def _split_into_sentences(text: str) -> List[str]:
@@ -159,10 +160,49 @@ def extract_keyphrases(text: str, top_n: int = 4) -> List[str]:
     return keyphrases[:top_n]
 
 
+def _best_sentence_for_article(article: Dict, theme_keywords: Optional[Dict[str, int]] = None) -> str:
+    """
+    Extract the single most central sentence for an article using LexRank per-article.
+    If no summary sentences exist, falls back to the article title.
+    """
+    title = article.get("title", "").strip()
+    summary = article.get("summary", "").strip()
+
+    sentences = _split_into_sentences(summary) if summary else []
+
+    if sentences:
+        # Run LexRank per-article to select the single best lead sentence
+        top_sentences = lexrank_sentences(sentences, top_n=1)
+        if top_sentences:
+            return top_sentences[0]
+
+    return title if title.endswith(".") or not title else f"{title}."
+
+
+def _score_article_relevance(article: Dict, theme_keywords: Optional[Dict[str, int]] = None) -> float:
+    """
+    Scores an article by keyword weight sum against theme keywords.
+    """
+    if not theme_keywords:
+        return 1.0
+
+    text = f"{article.get('title', '')} {article.get('summary', '')}".lower()
+    score = 0.0
+    for kw, weight in theme_keywords.items():
+        if kw.lower() in text:
+            score += float(weight)
+
+    # Base score boost if summary is present
+    if article.get("summary"):
+        score += 0.5
+
+    return score
+
+
 def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dict[str, str]:
     """
-    Generates a complete, structured non-LLM theme summary using LexRank, Luhn,
-    and Extractive NLU heuristics. Guaranteed 100% faithful and sub-second.
+    Generates a complete, structured non-LLM theme summary using per-article LexRank,
+    relevance article ranking, and Luhn keyword scoring. Guaranteed 100% faithful and sub-second.
     """
     if not articles:
         return {
@@ -174,6 +214,37 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
             "further_reading": ""
         }
 
+    # Debug observability (R5)
+    if os.environ.get("SUMMARISER_DEBUG") or os.environ.get("LLM_DEBUG"):
+        summaries_present = [a for a in articles if a.get("summary")]
+        avg_len = sum(len(a.get("summary", "")) for a in articles) / max(1, len(articles))
+        logger.info(
+            "SUMMARISER_DEBUG [%s]: Total articles=%d, with_summary=%d, avg_summary_len=%.1f",
+            theme_name, len(articles), len(summaries_present), avg_len
+        )
+
+    theme_data = THEMES.get(theme_name, {})
+    theme_keywords = theme_data.get("keywords", {})
+
+    # Rank articles by relevance score
+    ranked_articles = sorted(
+        articles,
+        key=lambda a: _score_article_relevance(a, theme_keywords),
+        reverse=True
+    )
+
+    # 1. WHAT IS HAPPENING (Per-article LexRank for top 3 articles)
+    top_articles = ranked_articles[:3]
+    what_happening_items = []
+    for a in top_articles:
+        best_sentence = _best_sentence_for_article(a, theme_keywords)
+        title = a.get("title", "Untitled")
+        src = a.get("source_name") or a.get("source") or "Tracked Source"
+        what_happening_items.append(f"• **{title}** ({src}): {best_sentence}")
+
+    what_happening = "\n\n".join(what_happening_items) if what_happening_items else (articles[0].get("title", "") + ".")
+
+    # Pooling sentences for Luhn section scoring (R4)
     all_sentences = []
     for a in articles:
         title = a.get("title", "").strip()
@@ -183,17 +254,12 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
         if summary:
             all_sentences.extend(_split_into_sentences(summary))
 
-    # Deduplicate while preserving order
     seen = set()
     unique_sentences = []
     for s in all_sentences:
         if s.lower() not in seen:
             seen.add(s.lower())
             unique_sentences.append(s)
-
-    # 1. WHAT IS HAPPENING (LexRank Centrality)
-    top_central = lexrank_sentences(unique_sentences, top_n=3)
-    what_happening = " ".join(top_central) if top_central else (articles[0].get("title", "") + ".")
 
     # 2. ENGINEERING TRADEOFFS (Luhn Technical Keyword Scoring)
     eng_keywords = ["architecture", "api", "performance", "latency", "memory", "weights", "gpu", "model", "token", "framework", "kernel", "cuda", "open-source"]

@@ -58,7 +58,7 @@ def test_generate_non_llm_theme_summary():
         }
     ]
 
-    summary = generate_non_llm_theme_summary("Agentic AI & Coding Assistants", articles)
+    summary = generate_non_llm_theme_summary("Agentic Systems & DevTools", articles)
 
     assert "what_is_happening" in summary
     assert "engineering_tradeoffs" in summary
@@ -68,4 +68,23 @@ def test_generate_non_llm_theme_summary():
     assert "further_reading" in summary
 
     assert len(summary["what_is_happening"]) > 10
-    assert "Claude" in summary["what_is_happening"] or "DeepMind" in summary["what_is_happening"]
+    assert "• **" in summary["what_is_happening"]
+
+
+def test_best_sentence_for_article():
+    from core.non_llm_summariser import _best_sentence_for_article
+
+    article_with_summary = {
+        "title": "New Frontier Model Released",
+        "summary": "The research team published a 70B parameter model. It outperforms GPT-4 on coding benchmarks."
+    }
+    best_sent = _best_sentence_for_article(article_with_summary)
+    assert "model" in best_sent.lower() or "gpt-4" in best_sent.lower()
+
+    article_title_only = {
+        "title": "Title Only Article Announcement",
+        "summary": ""
+    }
+    title_sent = _best_sentence_for_article(article_title_only)
+    assert "Title Only Article Announcement" in title_sent
+

@@ -90,7 +90,7 @@ def main() -> None:
         col_idx = 0
         for theme in themes_to_show:
             if theme in summaries:
-                summary = summaries[theme]
+                summary = _ensure_extractive_summary(summaries[theme], articles=entry.get("themed_articles", {}).get(theme, []))
                 color = THEME_COLORS.get(theme, "#666")
                 count = counts.get(theme, 0)
 
@@ -213,9 +213,10 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
         st.rerun()
 
 
-def _ensure_extractive_summary(s: dict, supabase, run_id: str, theme: str) -> dict:
-    """If a historical summary contains legacy quota warning text,
+def _ensure_extractive_summary(s: dict, supabase=None, run_id: str = "", theme: str = "", articles: list = None) -> dict:
+    """If ANY historical summary contains legacy quota warning text,
     dynamically generate a fresh non-LLM extractive summary from the run's tracked articles.
+    Applies universally across all runs and themes.
     """
     if not s:
         return s
@@ -229,7 +230,9 @@ def _ensure_extractive_summary(s: dict, supabase, run_id: str, theme: str) -> di
     ]
 
     if any(ind.lower() in text.lower() for ind in legacy_indicators):
-        articles = supabase.get_articles_for_run(run_id, theme) or []
+        if not articles and supabase and run_id and theme:
+            articles = supabase.get_articles_for_run(run_id, theme) or []
+
         if articles:
             from core.summariser import extractive_theme_summary
             info_prefix = "ℹ️ *Non-LLM Extractive Summary: Generated deterministically using lead sentence extraction because live LLM synthesis was paused.*"

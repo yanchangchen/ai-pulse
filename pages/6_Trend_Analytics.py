@@ -140,10 +140,12 @@ def main() -> None:
                     run_record = supabase.get_run_by_id(summary["run_id"])
                     raw_date = run_record.get("run_timestamp", run_record.get("run_date", "Unknown Date")) if run_record else "Unknown Date"
                     disp_date = format_display_timestamp(raw_date)
-                    with st.expander(f"📅 Run Date: {disp_date} ({summary.get('article_count', 0)} articles)"):
-                        st.markdown(f"**The Signal:** {sanitize_summary_html(summary.get('what_is_happening', ''))}")
-                        st.markdown(f"**Significance:** {summary.get('why_it_matters', '')}")
-                        st.markdown(f"**Watchlist:** {summary.get('what_to_watch', '')}")
+                    from pages.5_History import _ensure_extractive_summary
+                    s = _ensure_extractive_summary(summary, supabase, summary.get("run_id", ""), selected_drilldown_theme)
+                    with st.expander(f"📅 Run Date: {disp_date} ({s.get('article_count', 0)} articles)"):
+                        st.markdown(f"**The Signal:** {sanitize_summary_html(s.get('what_is_happening', ''))}")
+                        st.markdown(f"**Significance:** {s.get('why_it_matters', '')}")
+                        st.markdown(f"**Watchlist:** {s.get('what_to_watch', '')}")
             else:
                 st.info(f"No historical summaries found for {selected_drilldown_theme}.")
         else:
