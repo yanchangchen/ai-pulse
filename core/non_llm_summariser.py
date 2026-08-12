@@ -11,8 +11,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+BOILERPLATE_PATTERNS = [
+    r'\bsubscribe\b', r'\bnewsletter\b', r'\bcopyright\b', r'\ball rights reserved\b',
+    r'\bclick here\b', r'\bsign up\b', r'\bterms of service\b', r'\bprivacy policy\b'
+]
+
+
 def _split_into_sentences(text: str) -> List[str]:
-    """Split clean text into individual sentences."""
+    """Split clean text into individual sentences, filtering common site boilerplate."""
     if not text:
         return []
     raw_sentences = re.split(r'(?<=[.!?])\s+', text.strip())
@@ -20,7 +26,9 @@ def _split_into_sentences(text: str) -> List[str]:
     for s in raw_sentences:
         clean_s = s.strip()
         if len(clean_s.split()) >= 5:
-            sentences.append(clean_s)
+            # Skip promotional & copyright boilerplate lines
+            if not any(re.search(pat, clean_s, re.IGNORECASE) for pat in BOILERPLATE_PATTERNS):
+                sentences.append(clean_s)
     return sentences
 
 

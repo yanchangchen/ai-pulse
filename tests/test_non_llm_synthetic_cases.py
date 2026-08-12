@@ -223,3 +223,91 @@ def test_synthetic_non_llm_summarisation_use_cases(use_case):
     # 5. Verify 'further_reading' cites the input sources and links
     for a in articles:
         assert a["title"] in summary["further_reading"]
+
+
+def test_synthetic_topic_diversity_filtering():
+    """Verify that multiple release notes from the same source/topic do not monopolize the top summary bullets."""
+    articles = [
+        {
+            "title": "Datasette 1.0a38 Released",
+            "summary": "Datasette 1.0a38 fixes a SQL injection security issue in permission handling.",
+            "source_name": "Simon Willison",
+            "link": "https://example.com/datasette-1"
+        },
+        {
+            "title": "Datasette 0.65.3 Released",
+            "summary": "Datasette 0.65.3 backports the SQL injection security fix for older Python environments.",
+            "source_name": "Simon Willison",
+            "link": "https://example.com/datasette-2"
+        },
+        {
+            "title": "Malicious PyPI Package Injects Backdoor in CI Pipelines",
+            "summary": "Security researchers discovered a supply chain attack targeting GitHub Actions workflows.",
+            "source_name": "Cloudflare Security",
+            "link": "https://example.com/pypi-malware"
+        },
+        {
+            "title": "Zoom Discloses Zero-Day Remote Code Execution Vulnerability",
+            "summary": "Zoom issued an emergency advisory for an authenticated RCE flaw.",
+            "source_name": "Wired Security",
+            "link": "https://example.com/zoom-zero-day"
+        }
+    ]
+
+    summary = generate_non_llm_theme_summary("AI Security & Trust", articles)
+    signal = summary["what_is_happening"]
+
+    # Must contain both Datasette AND PyPI or Zoom (diversity enforced)
+    assert "Datasette" in signal
+    assert "PyPI" in signal or "Zoom" in signal
+
+
+def test_synthetic_title_redundancy_trimming():
+    """Verify that redundant leading title text is stripped from the lead sentence body."""
+    from core.non_llm_summariser import _best_sentence_for_article
+
+    article = {
+        "title": "Datasette 1.0a38 Released",
+        "summary": "Datasette 1.0a38 Released. Fixes a SQL injection security issue affecting permission handling."
+    }
+
+    lead = _best_sentence_for_article(article)
+    # The lead sentence should be stripped of the leading title repetition
+    assert not lead.startswith("Datasette 1.0a38 Released. Datasette")
+    assert "SQL injection" in lead
+
+
+def test_synthetic_empty_and_noisy_summary_edge_cases():
+    """Verify graceful handling of 0-length summaries, HTML noise, and missing titles."""
+    articles = [
+        {
+            "title": "Empty Summary Article Announcement",
+            "summary": "",
+            "source_name": "Test Source",
+            "link": "https://example.com/empty"
+        },
+        {
+            "title": "HTML Tags Only Article",
+            "summary": "<p></p><div><span></span></div>",
+            "source_name": "Test Source 2",
+            "link": "https://example.com/html"
+        }
+    ]
+
+    summary = generate_non_llm_theme_summary("AI-Assisted Software Engineering", articles)
+    assert "Empty Summary Article Announcement" in summary["what_is_happening"]
+    assert "HTML Tags Only Article" in summary["what_is_happening"]
+
+
+def test_synthetic_boilerplate_noise_filtering():
+    """Verify that site footer boilerplate is ignored in favor of high-signal sentences."""
+    article = {
+        "title": "Frontier AI Benchmarks",
+        "summary": "Subscribe to our daily AI newsletter for $5/month. OpenAI released GPT-5 scoring 98% on coding benchmarks. Copyright 2026 Tech News Inc."
+    }
+
+    from core.non_llm_summariser import _best_sentence_for_article
+    lead = _best_sentence_for_article(article)
+
+    assert "GPT-5" in lead or "Frontier AI Benchmarks" in lead
+
