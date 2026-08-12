@@ -311,3 +311,25 @@ def test_synthetic_boilerplate_noise_filtering():
 
     assert "GPT-5" in lead or "Frontier AI Benchmarks" in lead
 
+
+def test_synthetic_incomplete_truncated_sentence_sanitization():
+    """Verify that RSS descriptions ending in trailing ellipsis and incomplete fragments are sanitized."""
+    from core.non_llm_summariser import _best_sentence_for_article, _sanitize_full_sentence
+
+    article = {
+        "title": "Managing AI Coding Costs at Scale",
+        "summary": "AI coding tools deliver immense value: at Databricks, agentic coding has measurably..."
+    }
+
+    lead = _best_sentence_for_article(article)
+    assert not lead.endswith("measurably...")
+    assert not lead.endswith("measurably.")
+    assert lead.endswith(".")
+    assert "agentic coding" in lead or "Managing AI Coding Costs at Scale" in lead
+
+    raw_truncated = "AI coding tools deliver immense value: at Databricks, agentic coding has measurably..."
+    cleaned = _sanitize_full_sentence(raw_truncated, article["title"])
+    assert "measurably" not in cleaned
+    assert cleaned.endswith(".")
+
+

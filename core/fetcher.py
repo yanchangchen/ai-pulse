@@ -194,10 +194,20 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
         crawl_dt = datetime.now(timezone.utc)
         pub_date_str = (dt or crawl_dt).isoformat()
 
+        # Clean summary truncation to last complete sentence boundary
+        clean_summary = ''
+        if summary:
+            if len(summary) > RSS_SUMMARY_MAX_CHARS:
+                truncated = summary[:RSS_SUMMARY_MAX_CHARS]
+                last_punct = max(truncated.rfind('. '), truncated.rfind('! '), truncated.rfind('? '))
+                clean_summary = truncated[:last_punct + 1].strip() if last_punct > 200 else truncated.strip()
+            else:
+                clean_summary = summary.strip()
+
         item = {
             'id': item_id,
             'title': title,
-            'summary': summary[:RSS_SUMMARY_MAX_CHARS] if summary else '',
+            'summary': clean_summary,
             'link': link,
             'published_date': pub_date_str,
             'source_name': source_name

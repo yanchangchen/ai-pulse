@@ -168,20 +168,59 @@ def extract_keyphrases(text: str, top_n: int = 4) -> List[str]:
     return keyphrases[:top_n]
 
 
+def _sanitize_full_sentence(text: str, title: str = "") -> str:
+    """
+    Ensure extracted text forms a 100% complete sentence with proper grammar,
+    removing any truncated RSS fragments, dangling prepositions/adverbs, or trailing ellipsis.
+    """
+    if not text:
+        return title if title.endswith(".") else f"{title}."
+
+    # 1. Remove trailing ellipsis, dots, commas, colons
+    text = re.sub(r'(\.\.\.|…|\.|\,|\:|\;)+$', '', text).strip()
+
+    # 2. Repeatedly strip dangling trailing prepositions, conjunctions, auxiliary verbs, or truncated adverbs
+    dangling_pattern = r'\b(measurably|substantially|significantly|incrementally|and|or|but|with|without|of|in|to|for|on|at|by|from|is|are|was|were|has|have|had|been|the|a|an|that|which|who)\s*$'
+    for _ in range(5):
+        if re.search(dangling_pattern, text, re.IGNORECASE):
+            text = re.sub(dangling_pattern, '', text, flags=re.IGNORECASE).strip()
+            text = re.sub(r'[\,\:\;\-]+$', '', text).strip()
+        else:
+            break
+
+    # 3. If trimming left text shorter than 4 words, fall back to title
+    if len(text.split()) < 4:
+        text = title if title.endswith(".") else f"{title}."
+
+    # 4. Enforce terminal period
+    if not text.endswith(('.', '!', '?')):
+        text += "."
+
+    return text
+
+
 def _best_sentence_for_article(article: Dict, theme_keywords: Optional[Dict[str, int]] = None) -> str:
     """
-    Extract the single most central sentence for an article using LexRank per-article.
-    Trims redundant title repetitions and falls back to the title if summary is empty.
+    Extract the single most central complete sentence for an article using LexRank per-article.
+    Trims redundant title repetitions, avoids truncated trailing ellipsis, and enforces proper sentence boundaries.
     """
     title = article.get("title", "").strip()
     summary = article.get("summary", "").strip()
 
     sentences = _split_into_sentences(summary) if summary else []
 
+    # Prefer complete sentences over truncated RSS fragments (sentences ending in '...' or '…')
+    complete_sentences = [
+        s for s in sentences
+        if not re.search(r'(\.\.\.|…|\b(measurably|and|or|with|the|a|an|of|in|to|is|are|was|were|has|have|been)\b\s*$)', s.strip(), re.IGNORECASE)
+    ]
+
+    candidate_sentences = complete_sentences if complete_sentences else sentences
+
     selected = ""
-    if sentences:
+    if candidate_sentences:
         # Run LexRank per-article to select the single best lead sentence
-        top_sentences = lexrank_sentences(sentences, top_n=1)
+        top_sentences = lexrank_sentences(candidate_sentences, top_n=1)
         if top_sentences:
             selected = top_sentences[0]
 
@@ -197,7 +236,8 @@ def _best_sentence_for_article(article: Dict, theme_keywords: Optional[Dict[str,
         if len(trimmed.split()) >= 4:
             selected = trimmed
 
-    return selected if selected else (title if title.endswith(".") or not title else f"{title}.")
+    # Ensure selected sentence is 100% complete and never ends in incomplete trailing words or ellipsis
+    return _sanitize_full_sentence(selected, title)
 
 
 def _score_article_relevance(article: Dict, theme_keywords: Optional[Dict[str, int]] = None) -> float:
