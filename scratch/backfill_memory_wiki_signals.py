@@ -54,6 +54,8 @@ def run_signal_backfill():
                 is_stub = (
                     not current_signal
                     or "Non-LLM Extractive Summary: Generated deterministically" in current_signal
+                    or "Compiled deterministically using LexRank & Luhn" in current_signal
+                    or "live LLM quota paused" in current_signal
                     or "Extractive summary unavailable" in current_signal
                     or "No articles available" in current_signal
                     or current_signal.startswith("Error generating summary")
@@ -107,6 +109,8 @@ def run_signal_backfill():
                 is_stub = (
                     not current_signal
                     or "Non-LLM Extractive Summary: Generated deterministically" in current_signal
+                    or "Compiled deterministically using LexRank & Luhn" in current_signal
+                    or "live LLM quota paused" in current_signal
                     or "Extractive summary unavailable" in current_signal
                     or "No articles available" in current_signal
                     or current_signal.startswith("Error generating summary")

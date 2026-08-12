@@ -214,8 +214,8 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
 
 
 def _ensure_extractive_summary(s: dict, supabase=None, run_id: str = "", theme: str = "", articles: list = None) -> dict:
-    """If ANY historical summary contains legacy quota warning text,
-    dynamically generate a fresh non-LLM extractive summary from the run's tracked articles.
+    """If ANY historical summary contains legacy quota warning text or older extractive phrasing,
+    dynamically generate a fresh non-LLM extractive summary using the per-article LexRank algorithm.
     Applies universally across all runs and themes.
     """
     if not s:
@@ -227,6 +227,9 @@ def _ensure_extractive_summary(s: dict, supabase=None, run_id: str = "", theme: 
         "Unable to generate new summary",
         "Live LLM synthesis paused",
         "quota limit reached",
+        "Compiled deterministically using LexRank & Luhn",
+        "live LLM quota paused",
+        "Extractive summary unavailable",
     ]
 
     if any(ind.lower() in text.lower() for ind in legacy_indicators):
