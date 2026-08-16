@@ -236,12 +236,50 @@ class TestChatWithSage:
 
     def test_llm_failure_returns_error_message(self):
         mock_llm = MagicMock()
+        mock_llm.is_quota_exceeded.return_value = False
         mock_llm.generate.side_effect = Exception("LLM down")
 
+        mock_gemini = MagicMock()
+        mock_gemini.is_configured.return_value = False
+
         messages = [{"role": "user", "content": "anything"}]
-        result = chat_with_sage(mock_llm, messages, "context")
+        result = chat_with_sage(mock_llm, messages, "context", gemini_client=mock_gemini)
 
         assert "trouble connecting" in result
+
+    def test_sage_fallback_to_gemini_on_quota_exceeded(self):
+        from core.llm_client import LLMClient
+        LLMClient.mark_quota_exceeded("test quota")
+
+        mock_llm = MagicMock()
+        mock_gemini = MagicMock()
+        mock_gemini.is_configured.return_value = True
+        mock_gemini.default_model = "gemini-3.7-flash"
+        mock_gemini.generate_content.return_value = "Sage grounded answer from Gemini fallback."
+
+        messages = [{"role": "user", "content": "What happened with Claude 3.7?"}]
+        result = chat_with_sage(mock_llm, messages, "context", gemini_client=mock_gemini)
+
+        assert result == "Sage grounded answer from Gemini fallback."
+        mock_gemini.generate_content.assert_called_once()
+        # Verify primary LLM was bypassed because quota was exceeded
+        mock_llm.generate.assert_not_called()
+
+    def test_sage_fallback_to_gemini_on_primary_exception(self):
+        mock_llm = MagicMock()
+        mock_llm.is_quota_exceeded.return_value = False
+        mock_llm.generate.side_effect = Exception("Ollama HTTP 500")
+
+        mock_gemini = MagicMock()
+        mock_gemini.is_configured.return_value = True
+        mock_gemini.default_model = "gemini-3.7-flash"
+        mock_gemini.generate_content.return_value = "Recovered response via Gemini."
+
+        messages = [{"role": "user", "content": "Tell me about reasoning models"}]
+        result = chat_with_sage(mock_llm, messages, "context", gemini_client=mock_gemini)
+
+        assert result == "Recovered response via Gemini."
+        mock_gemini.generate_content.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

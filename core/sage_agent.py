@@ -245,8 +245,10 @@ def chat_with_sage(
     llm_client: LLMClient,
     messages: List[Dict[str, str]],
     wiki_context: str,
+    gemini_client: Optional[Any] = None,
+    gemini_model: Optional[str] = None,
 ) -> str:
-    """Build a multi-turn prompt and call the LLM.
+    """Build a multi-turn prompt and call the LLM with automatic Google Gemini fallback.
 
     ``messages`` is a list of ``{"role": "user"|"assistant", "content": "..."}``
     dicts representing the conversation so far (the latest user message is the
@@ -254,6 +256,8 @@ def chat_with_sage(
 
     Returns Sage's text response.
     """
+    from core.gemini_client import GeminiClient, GeminiQuotaError, GeminiClientError
+
     # Build the full system prompt with wiki context injected
     system = f"{SAGE_SYSTEM_PROMPT}\n\n{wiki_context}"
 
@@ -265,17 +269,53 @@ def chat_with_sage(
 
     prompt = "\n\n".join(prompt_parts) + "\n\nSage:"
 
+    # 1. Attempt primary Ollama LLM if quota is not flagged
+    quota_active = False
     try:
-        response = llm_client.generate(
-            prompt=prompt,
-            system=system,
-            temperature=0.4,
-            max_tokens=2000,
-        )
-        return response.strip()
-    except Exception as e:
-        logger.error(f"Sage LLM call failed: {e}")
-        return (
-            "I'm having trouble connecting to my analysis engine right now. "
-            "Please try again in a moment."
-        )
+        from core.llm_client import LLMClient as _LLMClient
+        quota_active = _LLMClient.is_quota_exceeded()
+    except Exception:
+        pass
+
+    if not quota_active:
+        try:
+            response = llm_client.generate(
+                prompt=prompt,
+                system=system,
+                temperature=0.4,
+                max_tokens=2000,
+            )
+            if response and response.strip():
+                return response.strip()
+        except Exception as e:
+            logger.warning("Sage primary LLM failed (%s). Attempting Gemini fallback...", e)
+
+    # 2. Seamless Fallback to Google Gemini
+    g_client = gemini_client if gemini_client is not None else GeminiClient()
+    if g_client.is_configured():
+        target_model = gemini_model or g_client.default_model
+        try:
+            logger.info("Sage querying Google Gemini fallback with model '%s'...", target_model)
+            gemini_resp = g_client.generate_content(
+                prompt=prompt,
+                system_instruction=system,
+                model=target_model,
+                temperature=0.4,
+                max_output_tokens=2000,
+                timeout=30,
+            )
+            if gemini_resp and gemini_resp.strip():
+                return gemini_resp.strip()
+        except GeminiQuotaError as q_err:
+            logger.warning("Sage Gemini fallback hit quota: %s", q_err)
+            return (
+                f"⚠️ *Sage Notice: Primary LLM quota is paused, and Google Gemini quota limit (HTTP 429) "
+                f"was reached for model `{target_model}`. Please consider checking API quota or selecting another model ID.*"
+            )
+        except Exception as g_err:
+            logger.error("Sage Gemini fallback failed: %s", g_err)
+
+    return (
+        "I'm having trouble connecting to my analysis engine right now. "
+        "Please try again in a moment."
+    )

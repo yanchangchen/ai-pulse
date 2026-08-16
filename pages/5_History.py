@@ -172,6 +172,9 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
 
     st.divider()
 
+    if LLMClient.is_quota_exceeded():
+        st.info("⚡ **Live Gemini Fallback Active**: Primary Ollama quota is paused. Sage conversations are powered by Google Gemini.", icon="⚡")
+
     # Render conversation history
     for msg in st.session_state.sage_messages:
         avatar = "🔮" if msg["role"] == "assistant" else "👤"
