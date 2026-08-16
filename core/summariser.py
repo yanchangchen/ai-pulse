@@ -186,54 +186,71 @@ Writing style rules:
 
 
 def _parse_summary_sections(content: str) -> Dict[str, str]:
-    """Parse structured markdown response into summary dictionary sections."""
+    """Parse structured markdown response into summary dictionary sections.
+
+    Preserves newline structure so that bullet lists, paragraph breaks,
+    and markdown formatting survive into the UI.
+    """
+    # Map of keyword fragments → internal section key
+    _SECTION_MARKERS = [
+        ('WHAT IS HAPPENING',           'what_is_happening'),
+        ('ENGINEERING TRADEOFFS',       'engineering_tradeoffs'),
+        ('ENGINEERING BLUEPRINT',       'engineering_tradeoffs'),
+        ('PRODUCT IMPACT',              'product_impact'),
+        ('PRODUCT FEASIBILITY',         'product_impact'),
+        ('WHY IT MATTERS',              'why_it_matters'),
+        ('ACTIONABLE WATCHLIST',        'what_to_watch'),
+        ('WHAT TO WATCH',               'what_to_watch'),
+        ('STRATEGIC FURTHER READING',   'further_reading'),
+        ('FURTHER READING',             'further_reading'),
+    ]
+
     sections: Dict[str, str] = {}
     current_section: Optional[str] = None
     current_content: List[str] = []
 
-    for line in content.split('\n'):
-        line = line.strip()
+    def _flush():
+        """Save accumulated lines to the current section."""
+        nonlocal current_section, current_content
+        if current_section is not None:
+            # Strip leading/trailing blank lines but preserve internal structure
+            text = '\n'.join(current_content).strip()
+            sections[current_section] = text
+            current_content = []
 
-        if 'WHAT IS HAPPENING' in line.upper():
-            if current_section:
-                sections[current_section] = ' '.join(current_content)
-            current_section = 'what_is_happening'
-            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-        elif 'ENGINEERING TRADEOFFS' in line.upper() or 'ENGINEERING BLUEPRINT' in line.upper():
-            if current_section:
-                sections[current_section] = ' '.join(current_content)
-            current_section = 'engineering_tradeoffs'
-            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-        elif 'PRODUCT IMPACT' in line.upper() or 'PRODUCT FEASIBILITY' in line.upper():
-            if current_section:
-                sections[current_section] = ' '.join(current_content)
-            current_section = 'product_impact'
-            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-        elif 'WHY IT MATTERS' in line.upper():
-            if current_section:
-                sections[current_section] = ' '.join(current_content)
-            current_section = 'why_it_matters'
-            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-        elif 'ACTIONABLE WATCHLIST' in line.upper() or 'WHAT TO WATCH' in line.upper():
-            if current_section:
-                sections[current_section] = ' '.join(current_content)
-            current_section = 'what_to_watch'
-            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-        elif 'STRATEGIC FURTHER READING' in line.upper() or 'FURTHER READING' in line.upper():
-            if current_section:
-                sections[current_section] = ' '.join(current_content)
-            current_section = 'further_reading'
-            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-        elif line and current_section:
-            current_content.append(line)
+    for raw_line in content.split('\n'):
+        stripped = raw_line.strip()
+        upper = stripped.upper()
 
-    # Last section
-    if current_section:
-        sections[current_section] = ' '.join(current_content)
+        # Detect section headers — handles "## 1. WHAT IS HAPPENING",
+        # "**WHAT IS HAPPENING**", "WHAT IS HAPPENING:", etc.
+        matched_section = None
+        for marker, key in _SECTION_MARKERS:
+            if marker in upper:
+                matched_section = key
+                break
+
+        if matched_section is not None:
+            _flush()
+            current_section = matched_section
+            # If the heading line itself has trailing prose after a ':', keep it
+            if ':' in stripped:
+                after_colon = stripped.split(':', 1)[-1].strip()
+                # Ignore if only a markdown header residue (e.g. "##")
+                if after_colon and not after_colon.startswith('#'):
+                    current_content.append(after_colon)
+        elif current_section is not None:
+            # Skip sub-header markers like "*Audience: AI Engineers*"
+            if stripped.startswith('*Audience'):
+                continue
+            # Keep the line (including blank lines to preserve paragraphs)
+            current_content.append(raw_line.rstrip())
+
+    _flush()
 
     engineering_txt = sections.get('engineering_tradeoffs', '').strip()
     product_txt = sections.get('product_impact', '').strip()
-    
+
     why_it_matters_composite = sections.get('why_it_matters', '').strip()
     if not why_it_matters_composite and (engineering_txt or product_txt):
         parts = []

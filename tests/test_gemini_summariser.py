@@ -93,3 +93,64 @@ Product teams can ship unified models for both low-latency chat and deep reasoni
     assert "thinking tokens" in summary["engineering_tradeoffs"]
     assert "Product teams" in summary["product_impact"]
     assert "API Token Limits" in summary["what_to_watch"]
+    assert "Claude 3.7 Release" in summary["further_reading"]
+
+
+def test_parse_summary_sections_preserves_structure():
+    """Verify the parser preserves bullet lists, paragraph breaks, and all 5 sections."""
+    from core.summariser import _parse_summary_sections
+
+    raw = """## 1. WHAT IS HAPPENING
+
+**Google** released Gemini 2.5 Pro with native multimodal reasoning. The model achieves state-of-the-art on MMLU and HumanEval benchmarks. **OpenAI** countered with o3-mini optimized for cost-sensitive deployments. This signals a clear bifurcation: frontier labs now compete on cost-efficiency, not just capability.
+
+## 2. ENGINEERING TRADEOFFS & BLUEPRINT
+
+Engineers face a classic latency-vs-accuracy tradeoff with the new reasoning models. Gemini 2.5 Pro's extended thinking adds 2–8 seconds of latency but lifts code generation accuracy by 15%. The API now supports streaming partial thoughts, enabling UI teams to show progress indicators. The core tradeoff is clear: pay the latency cost for complex tasks, or route to lighter models for simple queries.
+
+## 3. PRODUCT IMPACT & FEASIBILITY
+
+Product teams can now unify their model stack — one provider for both cheap chat and deep analysis. **Google**'s aggressive pricing ($1.25/1M input tokens) undercuts **OpenAI** by 40% for equivalent capability tiers. Compliance-wise, Gemini 2.5 supports data residency in the EU, unlocking regulated verticals. Production-ready for enterprise with the caveat that extended thinking latency needs UX mitigation.
+
+## 4. ACTIONABLE WATCHLIST
+- **Gemini 2.5 Pro API GA** — Expected full GA in Q3 2025; lock in preview pricing now.
+- **o3-mini cost benchmarks** — Independent cost-per-task evaluations due from Artificial Analysis by June.
+- **EU AI Act compliance** — Final technical standards publish in August; review model card requirements.
+
+## 5. STRATEGIC FURTHER READING
+- **Gemini 2.5 Pro Technical Report** | Google DeepMind | https://deepmind.google/gemini-2-5
+  *Why read this:* Detailed architecture changes and benchmark methodology for the new reasoning mode.
+- **o3-mini Pricing Analysis** | The Information | https://theinformation.com/o3-mini-pricing
+  *Why read this:* First independent cost-per-task comparison across frontier model providers.
+"""
+
+    parsed = _parse_summary_sections(raw)
+
+    # Section 1: full prose preserved with paragraph structure
+    assert "Google" in parsed["what_is_happening"]
+    assert "bifurcation" in parsed["what_is_happening"]
+
+    # Section 2: engineering content present
+    assert "latency-vs-accuracy" in parsed["engineering_tradeoffs"]
+    assert "streaming partial thoughts" in parsed["engineering_tradeoffs"]
+
+    # Section 3: product content present
+    assert "$1.25/1M input tokens" in parsed["product_impact"]
+    assert "data residency" in parsed["product_impact"]
+
+    # Section 4: bullet list preserved with newlines
+    assert "Gemini 2.5 Pro API GA" in parsed["what_to_watch"]
+    assert "o3-mini cost benchmarks" in parsed["what_to_watch"]
+    assert "EU AI Act compliance" in parsed["what_to_watch"]
+    # Bullets should be separate lines, not collapsed
+    assert "\n" in parsed["what_to_watch"]
+
+    # Section 5: further reading present and structured
+    assert "Gemini 2.5 Pro Technical Report" in parsed["further_reading"]
+    assert "o3-mini Pricing Analysis" in parsed["further_reading"]
+    assert "deepmind.google" in parsed["further_reading"]
+    assert "\n" in parsed["further_reading"]
+
+    # why_it_matters should compose from engineering + product when no WHY IT MATTERS section
+    assert "Engineering Blueprint" in parsed["why_it_matters"]
+    assert "Product Feasibility" in parsed["why_it_matters"]
