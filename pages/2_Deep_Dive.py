@@ -104,6 +104,87 @@ def main() -> None:
         </div>
         """, unsafe_allow_html=True)
 
+    # On-Demand Gemini Summarisation Panel (Theme by Theme, User Initiated)
+    with st.expander("✨ **On-Demand Gemini LLM Synthesis** (Upgrade Non-LLM Summary)", expanded=False):
+        st.markdown(
+            "If the default Non-LLM extractive summary is insufficient, trigger on-demand generative "
+            "synthesis for **this theme only** using Google Gemini API."
+        )
+        from config.settings import GEMINI_AVAILABLE_MODELS, GEMINI_MODEL
+        from core.summariser import generate_gemini_theme_summary
+        from core.gemini_client import GeminiQuotaError, GeminiClientError
+
+        c_model, c_btn = st.columns([2, 2])
+        with c_model:
+            selected_gemini_model = st.selectbox(
+                "Gemini Model ID:",
+                options=GEMINI_AVAILABLE_MODELS,
+                index=GEMINI_AVAILABLE_MODELS.index(GEMINI_MODEL) if GEMINI_MODEL in GEMINI_AVAILABLE_MODELS else 0,
+                key=f"gemini_model_select_{selected_theme}"
+            )
+        with c_btn:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            trigger_gemini = st.button(
+                f"🚀 Synthesize '{selected_theme[:22]}...' with Gemini",
+                key=f"btn_gemini_{selected_theme}",
+                type="primary",
+                use_container_width=True
+            )
+
+        if trigger_gemini:
+            if not theme_articles:
+                st.warning("Cannot synthesize: No tracked articles available for this theme.")
+            else:
+                with st.spinner(f"Synthesizing '{selected_theme}' with Google {selected_gemini_model}..."):
+                    try:
+                        new_gemini_summary = generate_gemini_theme_summary(
+                            selected_theme,
+                            theme_articles,
+                            model=selected_gemini_model
+                        )
+                        # Update session state
+                        st.session_state.summaries[selected_theme] = new_gemini_summary
+
+                        # Update local history.json
+                        try:
+                            import json
+                            from core.history_manager import load_full_history, HISTORY_JSON
+                            history_data = load_full_history()
+                            if history_data:
+                                latest_ts = sorted(history_data.keys(), reverse=True)[0]
+                                if "summaries" in history_data[latest_ts]:
+                                    history_data[latest_ts]["summaries"][selected_theme] = new_gemini_summary
+                                    with open(HISTORY_JSON, "w", encoding="utf-8") as f:
+                                        json.dump(history_data, f, indent=2, ensure_ascii=False)
+                        except Exception:
+                            pass
+
+                        # Update Supabase if available
+                        try:
+                            from core.supabase_client import get_supabase_manager
+                            supabase = get_supabase_manager()
+                            if supabase.is_available():
+                                latest_run = supabase.get_latest_run()
+                                if latest_run:
+                                    supabase.save_theme_summary(latest_run["id"], selected_theme, new_gemini_summary, len(theme_articles))
+                        except Exception:
+                            pass
+
+                        st.success(f"✅ Successfully synthesized '{selected_theme}' with Gemini {selected_gemini_model}!")
+                        st.rerun()
+
+                    except GeminiQuotaError as q_err:
+                        suggested_models = [m for m in GEMINI_AVAILABLE_MODELS if m != selected_gemini_model]
+                        st.error(
+                            f"⚠️ **Google Gemini Quota Limit Reached (HTTP 429)** for model **`{selected_gemini_model}`**.\n\n"
+                            f"💡 **Recommendation:** Please switch to another model ID (such as **`{suggested_models[0]}`** or **`{suggested_models[1]}`**) "
+                            f"from the dropdown above and click Synthesize again."
+                        )
+                    except GeminiClientError as c_err:
+                        st.error(f"❌ Gemini Synthesis Failed: {c_err}")
+                    except Exception as err:
+                        st.error(f"❌ Unexpected Error: {err}")
+
     # What is happening
     st.subheader("📰 The Signal (What is Happening)")
     if theme_summary.get('what_is_happening'):

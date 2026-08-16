@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 from config.themes import THEMES, THEME_ORDER
 from core.llm_client import LLMClient, LLMClientError
+from core.gemini_client import GeminiClient, GeminiClientError, GeminiQuotaError
 import core.history_manager as history_manager
 from core.history_manager import get_recent_context, save_run_to_history
 
@@ -170,75 +171,7 @@ Writing style rules:
             max_tokens=int(sum_settings.get("max_tokens", 1500)),
         )
 
-        # Parse the response
-        sections: Dict[str, str] = {}
-        current_section: Optional[str] = None
-        current_content: List[str] = []
-
-        for line in content.split('\n'):
-            line = line.strip()
-
-            if 'WHAT IS HAPPENING' in line.upper():
-                if current_section:
-                    sections[current_section] = ' '.join(current_content)
-                current_section = 'what_is_happening'
-                current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-            elif 'ENGINEERING TRADEOFFS' in line.upper() or 'ENGINEERING BLUEPRINT' in line.upper():
-                if current_section:
-                    sections[current_section] = ' '.join(current_content)
-                current_section = 'engineering_tradeoffs'
-                current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-            elif 'PRODUCT IMPACT' in line.upper() or 'PRODUCT FEASIBILITY' in line.upper():
-                if current_section:
-                    sections[current_section] = ' '.join(current_content)
-                current_section = 'product_impact'
-                current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-            elif 'WHY IT MATTERS' in line.upper():
-                if current_section:
-                    sections[current_section] = ' '.join(current_content)
-                current_section = 'why_it_matters'
-                current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-            elif 'ACTIONABLE WATCHLIST' in line.upper() or 'WHAT TO WATCH' in line.upper():
-                if current_section:
-                    sections[current_section] = ' '.join(current_content)
-                current_section = 'what_to_watch'
-                current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-            elif 'STRATEGIC FURTHER READING' in line.upper() or 'FURTHER READING' in line.upper():
-                if current_section:
-                    sections[current_section] = ' '.join(current_content)
-                current_section = 'further_reading'
-                current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
-            elif line and current_section:
-                current_content.append(line)
-
-        # Don't forget the last section
-        if current_section:
-            sections[current_section] = ' '.join(current_content)
-
-        # Build composite why_it_matters if it wasn't explicitly produced but tradeoffs/product impact were
-        engineering_txt = sections.get('engineering_tradeoffs', '').strip()
-        product_txt = sections.get('product_impact', '').strip()
-        
-        why_it_matters_composite = sections.get('why_it_matters', '').strip()
-        if not why_it_matters_composite and (engineering_txt or product_txt):
-            parts = []
-            if engineering_txt:
-                parts.append(f"**Engineering Blueprint:** {engineering_txt}")
-            if product_txt:
-                parts.append(f"**Product Feasibility:** {product_txt}")
-            why_it_matters_composite = "\n\n".join(parts)
-
-        if not why_it_matters_composite:
-            why_it_matters_composite = "Unable to generate significance analysis."
-
-        return {
-            "what_is_happening": sections.get('what_is_happening', 'Unable to generate summary.'),
-            "engineering_tradeoffs": engineering_txt if engineering_txt else "No engineering tradeoffs analyzed.",
-            "product_impact": product_txt if product_txt else "No product impact analyzed.",
-            "why_it_matters": why_it_matters_composite,
-            "what_to_watch": sections.get('what_to_watch', 'No specific items to watch.'),
-            "further_reading": sections.get('further_reading', '')
-        }
+        return _parse_summary_sections(content)
 
     except LLMClientError as exc:
         logger.error("Error generating summary for %s: %s", theme_name, exc)
@@ -250,6 +183,174 @@ Writing style rules:
             "what_to_watch": "Please try again later.",
             "further_reading": ""
         }
+
+
+def _parse_summary_sections(content: str) -> Dict[str, str]:
+    """Parse structured markdown response into summary dictionary sections."""
+    sections: Dict[str, str] = {}
+    current_section: Optional[str] = None
+    current_content: List[str] = []
+
+    for line in content.split('\n'):
+        line = line.strip()
+
+        if 'WHAT IS HAPPENING' in line.upper():
+            if current_section:
+                sections[current_section] = ' '.join(current_content)
+            current_section = 'what_is_happening'
+            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
+        elif 'ENGINEERING TRADEOFFS' in line.upper() or 'ENGINEERING BLUEPRINT' in line.upper():
+            if current_section:
+                sections[current_section] = ' '.join(current_content)
+            current_section = 'engineering_tradeoffs'
+            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
+        elif 'PRODUCT IMPACT' in line.upper() or 'PRODUCT FEASIBILITY' in line.upper():
+            if current_section:
+                sections[current_section] = ' '.join(current_content)
+            current_section = 'product_impact'
+            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
+        elif 'WHY IT MATTERS' in line.upper():
+            if current_section:
+                sections[current_section] = ' '.join(current_content)
+            current_section = 'why_it_matters'
+            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
+        elif 'ACTIONABLE WATCHLIST' in line.upper() or 'WHAT TO WATCH' in line.upper():
+            if current_section:
+                sections[current_section] = ' '.join(current_content)
+            current_section = 'what_to_watch'
+            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
+        elif 'STRATEGIC FURTHER READING' in line.upper() or 'FURTHER READING' in line.upper():
+            if current_section:
+                sections[current_section] = ' '.join(current_content)
+            current_section = 'further_reading'
+            current_content = [line.split(':', 1)[-1].strip()] if ':' in line else []
+        elif line and current_section:
+            current_content.append(line)
+
+    # Last section
+    if current_section:
+        sections[current_section] = ' '.join(current_content)
+
+    engineering_txt = sections.get('engineering_tradeoffs', '').strip()
+    product_txt = sections.get('product_impact', '').strip()
+    
+    why_it_matters_composite = sections.get('why_it_matters', '').strip()
+    if not why_it_matters_composite and (engineering_txt or product_txt):
+        parts = []
+        if engineering_txt:
+            parts.append(f"**Engineering Blueprint:** {engineering_txt}")
+        if product_txt:
+            parts.append(f"**Product Feasibility:** {product_txt}")
+        why_it_matters_composite = "\n\n".join(parts)
+
+    if not why_it_matters_composite:
+        why_it_matters_composite = "Unable to generate significance analysis."
+
+    return {
+        "what_is_happening": sections.get('what_is_happening', 'Unable to generate summary.'),
+        "engineering_tradeoffs": engineering_txt if engineering_txt else "No engineering tradeoffs analyzed.",
+        "product_impact": product_txt if product_txt else "No product impact analyzed.",
+        "why_it_matters": why_it_matters_composite,
+        "what_to_watch": sections.get('what_to_watch', 'No specific items to watch.'),
+        "further_reading": sections.get('further_reading', '')
+    }
+
+
+def generate_gemini_theme_summary(
+    theme_name: str,
+    articles: List[Dict],
+    model: Optional[str] = None
+) -> Dict[str, str]:
+    """
+    Generate an on-demand deep dive summary for a specific theme using Google Gemini API.
+    Available exclusively in the Deep Dive view on user request.
+    """
+    from config.settings import MAX_ARTICLES_PER_SUMMARY
+
+    if not articles:
+        return {
+            "what_is_happening": f"No articles found for {theme_name} in the past two weeks.",
+            "engineering_tradeoffs": "Limited news signal this week.",
+            "product_impact": "Limited news signal this week.",
+            "why_it_matters": "No articles available for Gemini synthesis.",
+            "what_to_watch": "Check back next week for updates.",
+            "further_reading": ""
+        }
+
+    past_context = get_recent_context(theme_name)
+    char_budget = 35000  # Gemini supports massive context windows
+    formatted_articles = format_articles_for_prompt(
+        articles[:MAX_ARTICLES_PER_SUMMARY], char_budget=char_budget,
+    )
+
+    user_prompt = f"""You are analyzing AI news summaries from the past two weeks, focused on the theme: {theme_name}
+
+--- SOURCE ARTICLES ---
+{formatted_articles}
+
+{f"--- PRIOR CONTEXT ---\n{past_context}" if past_context else ""}
+--- END OF SOURCES ---
+
+Produce a rigorous technical intelligence brief using the exact structure below.
+
+---
+
+## 1. WHAT IS HAPPENING
+Write 3–5 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. End with a sentence on the broader directional shift this signals.
+{"Explicitly call out what is NEW or EVOLVED since the prior brief." if past_context else ""}
+
+## 2. ENGINEERING TRADEOFFS & BLUEPRINT
+*Audience: AI Engineers*
+Write 3–5 sentences as flowing prose. Cover: architectural patterns, API changes, performance parameters (latency / memory / cost), open-weight licenses, or framework upgrades. Close with the core technical tradeoff a practitioner must weigh.
+
+## 3. PRODUCT IMPACT & FEASIBILITY
+*Audience: Product Managers*
+Write 3–5 sentences as flowing prose. Address: speed-to-market, pricing margins, integration overhead, safety/compliance risks, and competitor capability shifts. Close with a direct verdict: is this production-ready for enterprise use, and under what conditions?
+
+## 4. ACTIONABLE WATCHLIST
+List exactly 3–5 items. Each item must follow this format:
+  - **[Item]** — one sentence explaining why it matters and when to act.
+
+Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers.
+
+## 5. STRATEGIC FURTHER READING
+List exactly 5 articles from the sources above. Format each entry as:
+  - **[Article Title]** | [Source] | [URL]
+    *Why read this:* one sentence stating the concrete technical or product takeaway.
+"""
+
+    system_prompt = """You are an expert AI engineering analyst and product strategist writing for senior tech leaders.
+
+Your role is to cut through noise and surface what actually matters — architectural shifts, API stability, performance tradeoffs, and product feasibility.
+
+Writing style rules:
+- Be precise, direct, and technically rigorous
+- No hype, buzzwords, or vague generalizations
+- Use short paragraphs (3–5 sentences max per section)
+- Use bullet points only in sections 4 and 5
+- Bold key terms, model names, and company names on first mention
+- Never start two consecutive sentences with the same word
+- STRICT FAITHFULNESS MANDATE: Every claim must be explicitly supported by the provided SOURCE ARTICLES.
+"""
+
+    client = GeminiClient()
+    chosen_model = model or client.default_model
+
+    content = client.generate_content(
+        prompt=user_prompt,
+        system_instruction=system_prompt,
+        model=chosen_model,
+        temperature=0.2,
+        max_output_tokens=4096,
+        timeout=35
+    )
+
+    parsed = _parse_summary_sections(content)
+    badge = f"✨ *Gemini {chosen_model} Synthesized Brief:* "
+    if badge not in parsed["what_is_happening"]:
+        parsed["what_is_happening"] = f"{badge}\n\n{parsed['what_is_happening']}"
+
+    return parsed
 
 
 def _get_existing_article_hashes(theme_name: str) -> set:

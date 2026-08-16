@@ -69,6 +69,20 @@ OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "minimax-m3:cloud")
 OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
 
 # ---------------------------------------------------------------------------
+# Google Gemini API configuration (On-Demand Deep Dive Summarisation)
+# ---------------------------------------------------------------------------
+GEMINI_API_KEY: str = _get_secret("GEMINI_API_KEY", "")
+GEMINI_MODEL: str = _get_secret("GEMINI_MODEL", "gemini-3.7-flash")
+GEMINI_AVAILABLE_MODELS: list[str] = [
+    "gemini-3.7-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
+# ---------------------------------------------------------------------------
 # App-level constants
 # ---------------------------------------------------------------------------
 DAYS_LOOKBACK: int = 14
