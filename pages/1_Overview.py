@@ -10,6 +10,7 @@ from config.themes import THEME_ORDER, THEME_COLORS
 from core.design_system import apply_design_system, sanitize_summary_html
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
+from core.provenance import render_provenance_chip, strip_fallback_banner
 
 # Page configuration
 st.set_page_config(
@@ -69,9 +70,10 @@ def main() -> None:
             <div class="theme-card" style="border-top: 3px solid {color1} !important;">
                 <div class="card-title" style="color: {color1};">{theme1}</div>
                 <div class="card-meta">📰 <b>{len(articles1)}</b> articles tracked this period</div>
+                {render_provenance_chip(summary1)}
                 <div style="margin-top: 14px;">
                     <div class="card-section-label" style="color: {color1};">THE LATEST SIGNAL</div>
-                    <div style="font-size: 15px; line-height: 1.6;">{sanitize_summary_html(summary1.get('what_is_happening', 'No signal available.'))}</div>
+                    <div style="font-size: 15px; line-height: 1.6;">{sanitize_summary_html(strip_fallback_banner(summary1.get('what_is_happening', 'No signal available.')))}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -94,9 +96,10 @@ def main() -> None:
                 <div class="theme-card" style="border-top: 3px solid {color2} !important;">
                     <div class="card-title" style="color: {color2};">{theme2}</div>
                     <div class="card-meta">📰 <b>{len(articles2)}</b> articles tracked this period</div>
+                    {render_provenance_chip(summary2)}
                     <div style="margin-top: 14px;">
                         <div class="card-section-label" style="color: {color2};">THE LATEST SIGNAL</div>
-                        <div style="font-size: 15px; line-height: 1.6;">{sanitize_summary_html(summary2.get('what_is_happening', 'No signal available.'))}</div>
+                        <div style="font-size: 15px; line-height: 1.6;">{sanitize_summary_html(strip_fallback_banner(summary2.get('what_is_happening', 'No signal available.')))}</div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)

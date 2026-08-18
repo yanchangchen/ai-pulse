@@ -10,6 +10,7 @@ from config.themes import THEME_ORDER, THEME_COLORS
 from core.design_system import apply_design_system, sanitize_summary_html
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
+from core.provenance import render_provenance_chip, strip_fallback_banner
 
 # Page configuration
 st.set_page_config(
@@ -96,6 +97,7 @@ def main() -> None:
     col_header, col_count = st.columns([3, 1])
     with col_header:
         st.markdown(f"<h2 style='color: {theme_color}; margin-top:0;'>{selected_theme}</h2>", unsafe_allow_html=True)
+        st.markdown(render_provenance_chip(theme_summary), unsafe_allow_html=True)
     with col_count:
         st.markdown(f"""
         <div class="metric-card" style="text-align: center; border-color: {theme_color}40 !important;">
@@ -188,7 +190,8 @@ def main() -> None:
     # What is happening
     st.subheader("📰 The Signal (What is Happening)")
     if theme_summary.get('what_is_happening'):
-        st.markdown(sanitize_summary_html(theme_summary['what_is_happening']))
+        cleaned_signal = strip_fallback_banner(theme_summary['what_is_happening'])
+        st.markdown(sanitize_summary_html(cleaned_signal))
     else:
         st.info("No summary available for this theme.")
 
