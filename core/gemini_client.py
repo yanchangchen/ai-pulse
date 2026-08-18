@@ -142,11 +142,23 @@ class GeminiClient:
                 raise GeminiClientError(f"Gemini returned 0 candidates for model '{target_model}'.")
 
             parts = candidates[0].get("content", {}).get("parts", [])
+            finish_reason = candidates[0].get("finishReason", "STOP")
             text_parts = [p.get("text", "") for p in parts if "text" in p]
             result_text = "".join(text_parts).strip()
 
             if not result_text:
-                raise GeminiClientError("Gemini returned empty text response.")
+                raise GeminiClientError(
+                    f"Gemini returned empty text response "
+                    f"(finish_reason={finish_reason}) for model '{target_model}'."
+                )
+
+            # Surface non-STOP finish reasons so future debugging doesn't have
+            # to guess whether output was truncated or filtered.
+            if finish_reason in ("MAX_TOKENS", "SAFETY", "RECITATION", "OTHER"):
+                logger.warning(
+                    "Gemini non-STOP finishReason for model '%s': %s (output length=%d)",
+                    target_model, finish_reason, len(result_text),
+                )
 
             return result_text
 

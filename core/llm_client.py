@@ -48,6 +48,14 @@ _QUOTA_EXCEEDED_FLAG = "_aipulse_llm_quota_exceeded"
 _QUOTA_MSG_FLAG = "_aipulse_llm_quota_message"
 _QUOTA_TIME_FLAG = "_aipulse_llm_quota_time"
 
+# Process-local counter of consecutive empty-response failures across all
+# client instances.  Incremented on each empty 200, reset on a successful
+# generate().  Used by core.summariser to detect a degraded LLM path
+# (e.g. an upstream model returning empty bodies) and switch the rest of
+# the run to the non-LLM extractive fallback before wasting more time
+# on retries.
+_EMPTY_FAIL_COUNTER = "_aipulse_llm_empty_fail_streak"
+
 
 class LLMClient:
     """Thin wrapper around the Ollama Cloud /api/generate endpoint."""
@@ -100,7 +108,30 @@ class LLMClient:
         setattr(sys, _QUOTA_EXCEEDED_FLAG, False)
         setattr(sys, _QUOTA_MSG_FLAG, "")
         setattr(sys, _QUOTA_TIME_FLAG, 0)
+        setattr(sys, _EMPTY_FAIL_COUNTER, 0)
         logger.info("LLM Quota Exceeded status reset.")
+
+    # ------------------------------------------------------------------
+    # Empty-response degradation tracking
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _record_empty_response(cls) -> int:
+        """Increment the consecutive-empty-response counter and return the new value."""
+        current = getattr(sys, _EMPTY_FAIL_COUNTER, 0)
+        current += 1
+        setattr(sys, _EMPTY_FAIL_COUNTER, current)
+        return current
+
+    @classmethod
+    def _reset_empty_response_counter(cls) -> None:
+        """Clear the consecutive-empty-response counter on a successful generate()."""
+        setattr(sys, _EMPTY_FAIL_COUNTER, 0)
+
+    @classmethod
+    def _get_empty_response_streak(cls) -> int:
+        """Return the current consecutive-empty-response failure count."""
+        return getattr(sys, _EMPTY_FAIL_COUNTER, 0)
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -203,11 +234,13 @@ class LLMClient:
                 if resp.status_code == 200:
                     result = resp.json().get("response", "").strip()
                     if result:
+                        LLMClient._reset_empty_response_counter()
                         if event_sink is not None:
                             event_sink(latency_ms, True, "")
                         return result
                     else:
                         last_error = LLMClientError("Ollama returned an empty response.")
+                        LLMClient._record_empty_response()
                         if _LLM_DEBUG:
                             _dump_failure(
                                 label="empty_response",

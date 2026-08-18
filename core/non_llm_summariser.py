@@ -295,6 +295,21 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
         reverse=True
     )
 
+    # Theme-specific engineering keyword set: high-weight (≥2) keywords from
+    # the theme's own keyword map, with a small fallback so every theme has
+    # at least a few technical signals to score against.
+    eng_keywords = [k for k, w in theme_keywords.items() if w >= 2]
+    if not eng_keywords:
+        eng_keywords = ["architecture", "api", "performance", "latency", "memory"]
+
+    # Product keywords stay theme-agnostic — "enterprise", "compliance",
+    # "deployment", "cost" are universal product-feasibility concepts.
+    prod_keywords = [
+        "cost", "pricing", "enterprise", "market", "customer",
+        "deploy", "deployment", "security", "workflow", "production",
+        "speed", "integration", "compliance", "governance",
+    ]
+
     # 1. WHAT IS HAPPENING (Diverse per-article selection across top articles)
     top_articles = []
     seen_sources = set()
@@ -350,33 +365,87 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
             unique_sentences.append(s)
 
     # 2. ENGINEERING TRADEOFFS (Luhn Technical Keyword Scoring)
-    eng_keywords = ["architecture", "api", "performance", "latency", "memory", "weights", "gpu", "model", "token", "framework", "kernel", "cuda", "open-source"]
     top_eng = luhn_sentences(unique_sentences, eng_keywords, top_n=2)
-    eng_text = " ".join(top_eng) if top_eng else "Technical implementations focus on model optimization, API integration, and inference performance."
+    if top_eng:
+        eng_text = " ".join(top_eng)
+    else:
+        # Fallback: take the top two most-central (LexRank) sentences from
+        # the article pool so the brief is never blank.
+        fallback_eng = lexrank_sentences(unique_sentences, top_n=2)
+        eng_text = " ".join(fallback_eng) if fallback_eng else (
+            f"Engineering developments in {theme_name} remain to be confirmed "
+            "from the current article pool."
+        )
 
     # 3. PRODUCT IMPACT & FEASIBILITY (Product Keyword Scoring)
-    prod_keywords = ["cost", "pricing", "enterprise", "market", "customer", "deploy", "security", "workflow", "production", "speed", "integration"]
     top_prod = luhn_sentences(unique_sentences, prod_keywords, top_n=2)
-    prod_text = " ".join(top_prod) if top_prod else "Market developments indicate increasing enterprise adoption and workflow integration feasibility."
+    if top_prod:
+        prod_text = " ".join(top_prod)
+    else:
+        fallback_prod = lexrank_sentences(unique_sentences, top_n=2)
+        prod_text = " ".join(fallback_prod) if fallback_prod else (
+            f"Product feasibility signals in {theme_name} remain to be confirmed "
+            "from the current article pool."
+        )
 
     # 4. WHY IT MATTERS
     why_matters = f"Strategic developments in {theme_name} reflect significant activity across {len(articles)} tracked industry articles."
 
-    # 5. ACTIONABLE WATCHLIST
+    # 5. ACTIONABLE WATCHLIST — keyphrases filtered against the theme's own
+    # keyword whitelist so we don't surface off-theme entities like
+    # "Raccoon Heist" or "Llm" for a theme that never mentions them.
     combined_text = " ".join(unique_sentences)
-    keyphrases = extract_keyphrases(combined_text, top_n=4)
-    watchlist_items = []
-    for kp in keyphrases:
-        watchlist_items.append(f"- **[{kp}]** — Monitor ongoing updates and announcements regarding {kp.lower()} capabilities.")
+    keyphrases = extract_keyphrases(combined_text, top_n=8)
+    allowed_terms = {k.lower() for k, w in theme_keywords.items() if w >= 2}
+
+    def _is_on_theme(kp: str) -> bool:
+        kp_lower = kp.lower()
+        kp_tokens = set(kp_lower.split())
+        if kp_tokens & allowed_terms:
+            return True
+        # Allow if any token is a substring of a theme keyword (e.g. "rag"
+        # is part of "rag architecture").
+        return any(tok in term or term in tok for tok in kp_tokens for term in allowed_terms)
+
+    filtered_keyphrases = [kp for kp in keyphrases if _is_on_theme(kp)]
+    if not filtered_keyphrases:
+        # Fall back to the theme's own top-weighted keywords so the watchlist
+        # always ties back to the theme.
+        filtered_keyphrases = [
+            k.title() for k, _ in sorted(
+                theme_keywords.items(), key=lambda kv: kv[1], reverse=True,
+            )[:4]
+        ]
+    filtered_keyphrases = filtered_keyphrases[:4]
+
+    watchlist_items = [
+        f"- **[{kp}]** — Monitor ongoing developments and announcements regarding {kp.lower()} capabilities."
+        for kp in filtered_keyphrases
+    ]
     what_to_watch = "\n".join(watchlist_items) if watchlist_items else "- **[Industry Trends]** — Monitor upcoming model releases and benchmark reports."
 
-    # 6. STRATEGIC FURTHER READING
+    # 6. STRATEGIC FURTHER READING — pick the top 5 most relevant articles
+    # (not just the first 5 by insertion order), so a Databricks Agent
+    # article outranks an unrelated Apple ML Research paper for the Agentic
+    # theme.
+    reading_pool = sorted(
+        articles,
+        key=lambda a: _score_article_relevance(a, theme_keywords),
+        reverse=True,
+    )[:5]
     reading_items = []
-    for a in articles[:5]:
+    for a in reading_pool:
         title = a.get("title", "Untitled")
         src = a.get("source_name") or a.get("source") or "Tracked Source"
         link = a.get("link", "#")
-        reading_items.append(f"- **[{title}]** | {src} | {link}\n  *Why read this:* Key developments in {theme_name}.")
+        # Per-article why: a single sentence derived from the best sentence
+        # in the article body, so the recommendation is informative rather
+        # than a generic template.
+        best_sentence = _best_sentence_for_article(a, theme_keywords)
+        reading_items.append(
+            f"- **[{title}]** | {src} | {link}\n"
+            f"  *Why read this:* {best_sentence}"
+        )
     further_reading = "\n\n".join(reading_items)
 
     return {

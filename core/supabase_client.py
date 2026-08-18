@@ -89,21 +89,36 @@ class SupabaseManager:
                           summary: Dict, article_count: int) -> Optional[Dict]:
         """
         Save a theme summary for a run.
-        
+
         Args:
             run_id: UUID of the trend run
             theme_name: Name of the theme
             summary: Dict with keys: what_is_happening, why_it_matters, what_to_watch
             article_count: Number of articles for this theme
-        
+
+        The summary dict may also carry `_source` and `_generation_log` keys
+        set by the summariser.  If the `theme_summaries` table has the
+        optional `generation_source` and `generation_log` columns (see
+        ``supabase_migration_provenance.sql``), they are populated; otherwise
+        the writes silently fall back to the legacy row shape.
+
         Returns:
             Dict with summary record, or None if failed
         """
         if not self.available:
             return None
-        
+
         try:
-            response = self.client.table("theme_summaries").insert({
+            import json as _json
+            generation_source = summary.get("_source")
+            generation_log_raw = summary.get("_generation_log")
+            generation_log = (
+                _json.dumps(generation_log_raw)
+                if isinstance(generation_log_raw, (dict, list))
+                else (generation_log_raw or None)
+            )
+
+            payload: Dict[str, object] = {
                 "run_id": run_id,
                 "theme_name": theme_name,
                 "what_is_happening": summary.get("what_is_happening", ""),
@@ -111,8 +126,32 @@ class SupabaseManager:
                 "product_impact": summary.get("product_impact", ""),
                 "why_it_matters": summary.get("why_it_matters", ""),
                 "what_to_watch": summary.get("what_to_watch", ""),
-                "article_count": article_count
-            }).execute()
+                "article_count": article_count,
+            }
+            if generation_source is not None:
+                payload["generation_source"] = generation_source
+            if generation_log is not None:
+                payload["generation_log"] = generation_log
+
+            try:
+                response = self.client.table("theme_summaries").insert(payload).execute()
+            except Exception as schema_exc:
+                # Legacy deployments without the new columns: retry without
+                # the optional provenance fields.  We never want a schema
+                # drift to break the persistence path.
+                msg = str(schema_exc).lower()
+                if "generation_source" in msg or "generation_log" in msg or "column" in msg:
+                    logger.warning(
+                        "theme_summaries table missing provenance columns; "
+                        "retrying insert without _source/_generation_log. "
+                        "Run supabase_migration_provenance.sql to enable."
+                    )
+                    response = self.client.table("theme_summaries").insert({
+                        k: v for k, v in payload.items()
+                        if k not in ("generation_source", "generation_log")
+                    }).execute()
+                else:
+                    raise
 
             if response.data:
                 logger.info(f"Saved theme summary for {theme_name}")

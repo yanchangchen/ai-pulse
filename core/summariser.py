@@ -4,6 +4,7 @@ Generates theme summaries using the shared LLM client.
 """
 
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from config.themes import THEMES, THEME_ORDER
@@ -18,12 +19,61 @@ logger = logging.getLogger(__name__)
 # Shared LLM client instance (initialised lazily)
 _llm: Optional[LLMClient] = None
 
+# After this many consecutive empty-response failures within a single run,
+# treat the LLM as degraded and route the remaining themes through the
+# non-LLM extractive fallback.  Set conservatively — one transient blip
+# should not poison the rest of the run.
+_EMPTY_FAIL_DEGRADE_THRESHOLD = 2
+
 
 def _get_llm() -> LLMClient:
     global _llm
     if _llm is None:
         _llm = LLMClient()
     return _llm
+
+
+def _with_provenance(summary: Dict[str, str], source: str, **log_fields) -> Dict[str, str]:
+    """Attach machine-readable provenance (`_source`, `_generation_log`) to a summary dict.
+
+    `source` is a short token the UI uses to render a provenance chip — one of:
+    * `"extractive_fallback"` — non-LLM path (Ollama quota exceeded, empty response, transport error)
+    * `"ollama:<model>"`     — live Ollama synthesis
+    * `"gemini:<model>"`     — on-demand Gemini synthesis
+    """
+    summary["_source"] = source
+    log: Dict[str, object] = {
+        "source": source,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    log.update(log_fields)
+    summary["_generation_log"] = log
+    return summary
+
+
+def _rank_articles_by_relevance(
+    articles: List[Dict],
+    theme_name: str,
+    top_n: int,
+) -> List[Dict]:
+    """Sort articles by relevance to the theme using the same scoring as the
+    extractive fallback, then return the top-n.  Ties break by insertion order
+    so the LLM sees a stable corpus across runs.
+
+    Re-using ``non_llm_summariser._score_article_relevance`` keeps the Ollama,
+    Gemini, and extractive paths aligned on what counts as a high-signal article.
+    """
+    from core.non_llm_summariser import _score_article_relevance
+    theme_kws = THEMES.get(theme_name, {}).get("keywords")
+    if not theme_kws:
+        return list(articles[:top_n])
+    scored = [
+        (idx, _score_article_relevance(a, theme_kws))
+        for idx, a in enumerate(articles)
+    ]
+    # Sort by score desc, then by original index asc (stable)
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    return [articles[idx] for idx, _ in scored[:top_n]]
 
 
 def format_articles_for_prompt(articles: List[Dict], char_budget: Optional[int] = None) -> str:
@@ -71,18 +121,23 @@ def generate_theme_summary(
     """Generate a comprehensive summary for a theme using the LLM client."""
 
     if not articles:
-        return {
+        summary = {
             "what_is_happening": "No articles found for this theme in the past two weeks.",
             "why_it_matters": "Limited coverage this week.",
             "what_to_watch": "Check back next week for updates.",
             "further_reading": ""
         }
+        return _with_provenance(
+            summary, source="ollama:no_articles",
+            model=LLMClient().model, article_count=0,
+            note="empty_article_pool",
+        )
 
     # Retrieve memory context
     past_context = get_recent_context(theme_name)
 
     if len(articles) < 3:
-        return {
+        summary = {
             "what_is_happening": f"Limited coverage this week with only {len(articles)} articles found. {past_context}",
             "engineering_tradeoffs": "Limited news signal this week.",
             "product_impact": "Limited news signal this week.",
@@ -90,18 +145,27 @@ def generate_theme_summary(
             "what_to_watch": "Monitor for upcoming announcements and developments.",
             "further_reading": ""
         }
+        return _with_provenance(
+            summary, source="ollama:limited_coverage",
+            model=LLMClient().model, article_count=len(articles),
+            note="fewer_than_3_articles",
+        )
 
-    # Format articles for the prompt.  Cap at MAX_ARTICLES_PER_SUMMARY and
-    # then truncate further to stay inside the LLM's input budget.
+    # Rank articles by relevance to the theme, then format.  Cap at
+    # MAX_ARTICLES_PER_SUMMARY and then truncate further to stay inside
+    # the LLM's input budget.
     from config.settings import (
         MAX_ARTICLES_PER_SUMMARY,
         OLLAMA_NUM_CTX,
         CHARS_PER_TOKEN,
         INPUT_BUDGET_FRACTION,
     )
+    ranked_articles = _rank_articles_by_relevance(
+        articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
+    )
     char_budget = int(OLLAMA_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
     formatted_articles = format_articles_for_prompt(
-        articles[:MAX_ARTICLES_PER_SUMMARY], char_budget=char_budget,
+        ranked_articles, char_budget=char_budget,
     )
 
     user_prompt = f"""You are analyzing AI news summaries from the past two weeks, focused on the theme: {theme_name}
@@ -117,27 +181,31 @@ Produce a rigorous technical intelligence brief using the exact structure below.
 ---
 
 ## 1. WHAT IS HAPPENING
-Write 3–5 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. End with a sentence on the broader directional shift this signals.
+Write 4–6 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. End with a sentence on the broader directional shift this signals. Target 80–120 words.
 {"Explicitly call out what is NEW or EVOLVED since the prior brief." if past_context else ""}
 
 ## 2. ENGINEERING TRADEOFFS & BLUEPRINT
 *Audience: AI Engineers*
-Write 3–5 sentences as flowing prose. Cover: architectural patterns, API changes, performance parameters (latency / memory / cost), open-weight licenses, or framework upgrades. Close with the core technical tradeoff a practitioner must weigh.
+Write 4–6 sentences as flowing prose. Cover: architectural patterns, API changes, performance parameters (latency / memory / cost), open-weight licenses, or framework upgrades. Close with the core technical tradeoff a practitioner must weigh. Target 80–120 words.
 
 ## 3. PRODUCT IMPACT & FEASIBILITY
 *Audience: Product Managers*
-Write 3–5 sentences as flowing prose. Address: speed-to-market, pricing margins, integration overhead, safety/compliance risks, and competitor capability shifts. Close with a direct verdict: is this production-ready for enterprise use, and under what conditions?
+Write 4–6 sentences as flowing prose. Address: speed-to-market, pricing margins, integration overhead, safety/compliance risks, and competitor capability shifts. Close with a direct verdict: is this production-ready for enterprise use, and under what conditions? Target 80–120 words.
 
 ## 4. ACTIONABLE WATCHLIST
 List exactly 3–5 items. Each item must follow this format:
   - **[Item]** — one sentence explaining why it matters and when to act.
 
-Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers.
+Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers. Every watchlist item MUST reference a specific upcoming event, deadline, release, or research paper found in the SOURCE ARTICLES — do not invent entity names or generic industry trends.
 
 ## 5. STRATEGIC FURTHER READING
 List exactly 5 articles from the sources above. Format each entry as:
   - **[Article Title]** | [Source] | [URL]
     *Why read this:* one sentence stating the concrete technical or product takeaway.
+
+IMPORTANT: Copy each URL VERBATIM from the URL field of the matching article in the SOURCE ARTICLES. Never paraphrase, shorten, or invent URLs.
+
+If you would otherwise produce an empty section, say so explicitly rather than omitting it.
 """
 
     system_prompt = """You are an expert AI engineering analyst and product strategist writing for senior tech leaders.
@@ -147,7 +215,7 @@ Your role is to cut through noise and surface what actually matters — architec
 Writing style rules:
 - Be precise, direct, and technically rigorous
 - No hype, buzzwords, or vague generalizations
-- Use short paragraphs (3–5 sentences max per section)
+- Write prose sections in flowing paragraphs (4–6 sentences each, 80–120 words)
 - Use bullet points only in sections 4 and 5
 - Bold key terms, model names, and company names on first mention
 - Never start two consecutive sentences with the same word
@@ -168,14 +236,19 @@ Writing style rules:
             user_prompt,
             system=system_prompt,
             temperature=float(sum_settings.get("temperature", 0.3)),
-            max_tokens=int(sum_settings.get("max_tokens", 1500)),
+            max_tokens=int(sum_settings.get("max_tokens", 2200)),
         )
 
-        return _parse_summary_sections(content)
+        parsed = _parse_summary_sections(content)
+        return _with_provenance(
+            parsed, source=f"ollama:{llm.model}",
+            model=llm.model, article_count=len(articles),
+            note="live_synthesis",
+        )
 
     except LLMClientError as exc:
         logger.error("Error generating summary for %s: %s", theme_name, exc)
-        return {
+        summary = {
             "what_is_happening": f"Error generating summary: {exc}",
             "engineering_tradeoffs": "Unable to analyze due to error.",
             "product_impact": "Unable to analyze due to error.",
@@ -183,6 +256,12 @@ Writing style rules:
             "what_to_watch": "Please try again later.",
             "further_reading": ""
         }
+        return _with_provenance(
+            summary, source="ollama:error",
+            model=LLMClient().model, article_count=len(articles),
+            note="llm_client_error",
+            error=str(exc),
+        )
 
 
 def _parse_summary_sections(content: str) -> Dict[str, str]:
@@ -285,7 +364,7 @@ def generate_gemini_theme_summary(
     from config.settings import MAX_ARTICLES_PER_SUMMARY
 
     if not articles:
-        return {
+        summary = {
             "what_is_happening": f"No articles found for {theme_name} in the past two weeks.",
             "engineering_tradeoffs": "Limited news signal this week.",
             "product_impact": "Limited news signal this week.",
@@ -293,11 +372,24 @@ def generate_gemini_theme_summary(
             "what_to_watch": "Check back next week for updates.",
             "further_reading": ""
         }
+        return _with_provenance(
+            summary, source="gemini:no_articles",
+            model=model or "gemini-default",
+            article_count=0, note="empty_article_pool",
+        )
 
     past_context = get_recent_context(theme_name)
+    client = GeminiClient()
+    chosen_model = model or client.default_model
+
+    # Re-rank by theme relevance so Gemini sees the most on-theme articles
+    # rather than the first N that fell out of the fetcher.
+    ranked_articles = _rank_articles_by_relevance(
+        articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
+    )
     char_budget = 35000  # Gemini supports massive context windows
     formatted_articles = format_articles_for_prompt(
-        articles[:MAX_ARTICLES_PER_SUMMARY], char_budget=char_budget,
+        ranked_articles, char_budget=char_budget,
     )
 
     user_prompt = f"""You are analyzing AI news summaries from the past two weeks, focused on the theme: {theme_name}
@@ -313,27 +405,31 @@ Produce a rigorous technical intelligence brief using the exact structure below.
 ---
 
 ## 1. WHAT IS HAPPENING
-Write 3–5 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. End with a sentence on the broader directional shift this signals.
+Write 4–6 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. End with a sentence on the broader directional shift this signals. Target 80–120 words.
 {"Explicitly call out what is NEW or EVOLVED since the prior brief." if past_context else ""}
 
 ## 2. ENGINEERING TRADEOFFS & BLUEPRINT
 *Audience: AI Engineers*
-Write 3–5 sentences as flowing prose. Cover: architectural patterns, API changes, performance parameters (latency / memory / cost), open-weight licenses, or framework upgrades. Close with the core technical tradeoff a practitioner must weigh.
+Write 4–6 sentences as flowing prose. Cover: architectural patterns, API changes, performance parameters (latency / memory / cost), open-weight licenses, or framework upgrades. Close with the core technical tradeoff a practitioner must weigh. Target 80–120 words.
 
 ## 3. PRODUCT IMPACT & FEASIBILITY
 *Audience: Product Managers*
-Write 3–5 sentences as flowing prose. Address: speed-to-market, pricing margins, integration overhead, safety/compliance risks, and competitor capability shifts. Close with a direct verdict: is this production-ready for enterprise use, and under what conditions?
+Write 4–6 sentences as flowing prose. Address: speed-to-market, pricing margins, integration overhead, safety/compliance risks, and competitor capability shifts. Close with a direct verdict: is this production-ready for enterprise use, and under what conditions? Target 80–120 words.
 
 ## 4. ACTIONABLE WATCHLIST
 List exactly 3–5 items. Each item must follow this format:
   - **[Item]** — one sentence explaining why it matters and when to act.
 
-Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers.
+Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers. Every watchlist item MUST reference a specific upcoming event, deadline, release, or research paper found in the SOURCE ARTICLES — do not invent entity names or generic industry trends.
 
 ## 5. STRATEGIC FURTHER READING
 List exactly 5 articles from the sources above. Format each entry as:
   - **[Article Title]** | [Source] | [URL]
     *Why read this:* one sentence stating the concrete technical or product takeaway.
+
+IMPORTANT: Copy each URL VERBATIM from the URL field of the matching article in the SOURCE ARTICLES. Never paraphrase, shorten, or invent URLs.
+
+If you would otherwise produce an empty section, say so explicitly rather than omitting it.
 """
 
     system_prompt = """You are an expert AI engineering analyst and product strategist writing for senior tech leaders.
@@ -343,23 +439,20 @@ Your role is to cut through noise and surface what actually matters — architec
 Writing style rules:
 - Be precise, direct, and technically rigorous
 - No hype, buzzwords, or vague generalizations
-- Use short paragraphs (3–5 sentences max per section)
+- Write prose sections in flowing paragraphs (4–6 sentences each, 80–120 words)
 - Use bullet points only in sections 4 and 5
 - Bold key terms, model names, and company names on first mention
 - Never start two consecutive sentences with the same word
 - STRICT FAITHFULNESS MANDATE: Every claim must be explicitly supported by the provided SOURCE ARTICLES.
 """
 
-    client = GeminiClient()
-    chosen_model = model or client.default_model
-
     content = client.generate_content(
         prompt=user_prompt,
         system_instruction=system_prompt,
         model=chosen_model,
         temperature=0.2,
-        max_output_tokens=4096,
-        timeout=35
+        max_output_tokens=6144,
+        timeout=60
     )
 
     parsed = _parse_summary_sections(content)
@@ -367,7 +460,11 @@ Writing style rules:
     if badge not in parsed["what_is_happening"]:
         parsed["what_is_happening"] = f"{badge}\n\n{parsed['what_is_happening']}"
 
-    return parsed
+    return _with_provenance(
+        parsed, source=f"gemini:{chosen_model}",
+        model=chosen_model, article_count=len(articles),
+        note="live_synthesis",
+    )
 
 
 def _get_existing_article_hashes(theme_name: str) -> set:
@@ -411,9 +508,17 @@ def extractive_theme_summary(theme_name: str, articles: List[Dict]) -> Dict[str,
     """Non-LLM Extractive Summarisation algorithm.
     Extracts top news items using LexRank sentence centrality and Luhn keyword scoring.
     Executes in <10ms with 0 LLM API calls and 0% hallucination risk.
+
+    Provenance: the returned dict carries `_source = "extractive_fallback"`
+    so the UI can render an honest chip above the brief.
     """
     from core.non_llm_summariser import generate_non_llm_theme_summary
-    return generate_non_llm_theme_summary(theme_name, articles)
+    summary = generate_non_llm_theme_summary(theme_name, articles)
+    return _with_provenance(
+        summary, source="extractive_fallback",
+        model=None, article_count=len(articles),
+        note="non_llm_extractive",
+    )
 
 
 def generate_all_summaries(
@@ -446,6 +551,21 @@ def generate_all_summaries(
             summaries[theme] = extractive_theme_summary(theme, articles)
             continue
 
+        # Detect a degraded LLM path (empty responses, timeouts) BEFORE we burn
+        # 3 × 15-25s of retries per theme.  Treat consecutive empty-response
+        # failures the same as quota exhaustion for the rest of this run.
+        empty_streak = LLMClient._get_empty_response_streak()
+        if empty_streak >= _EMPTY_FAIL_DEGRADE_THRESHOLD:
+            logger.warning(
+                "LLM client has logged %d consecutive empty-response failures — "
+                "switching remaining themes to non-LLM extractive summarisation.",
+                empty_streak,
+            )
+            LLMClient.mark_quota_exceeded(
+                f"Degraded after {empty_streak} consecutive empty-response failures; "
+                f"falling back to extractive summarisation."
+            )
+
         # Check if LLM quota/rate limit was hit previously or on this run
         if LLMClient.is_quota_exceeded():
             logger.warning("LLM quota exceeded (HTTP 429). Initiating non-LLM extractive summarisation for %s", theme)
@@ -464,9 +584,9 @@ def generate_all_summaries(
         ]
 
         if not new_articles and articles:
-            logger.info("Skipping LLM summary for %s: all %d articles already summarized", 
+            logger.info("Skipping LLM summary for %s: all %d articles already summarized",
                        theme, len(articles))
-            summaries[theme] = {
+            skipped_summary = {
                 "what_is_happening": f"No new articles this period. ({len(articles)} existing articles in database)",
                 "engineering_tradeoffs": "Refer to previous summaries.",
                 "product_impact": "Refer to previous summaries.",
@@ -474,6 +594,12 @@ def generate_all_summaries(
                 "what_to_watch": "Monitor for new articles.",
                 "further_reading": ""
             }
+            summaries[theme] = _with_provenance(
+                skipped_summary,
+                source=f"ollama:{_get_llm().model}",
+                model=_get_llm().model, article_count=len(articles),
+                note="no_new_articles_skip",
+            )
             continue
 
         logger.info("Generating summary for %s (%d new articles out of %d total)", 
@@ -493,14 +619,26 @@ def generate_all_summaries(
                     extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
                 summaries[theme] = extractive
             else:
-                summaries[theme] = {
-                    "what_is_happening": f"Error generating summary: {exc}",
-                    "engineering_tradeoffs": "Unable to analyze due to error.",
-                    "product_impact": "Unable to analyze due to error.",
-                    "why_it_matters": "Unable to analyze at this time.",
-                    "what_to_watch": "Please try again later.",
-                    "further_reading": ""
-                }
+                # Non-quota LLM failure (empty response, timeout, transport error, …).
+                # Fall back to the deterministic extractive summary so the UI keeps
+                # a usable brief instead of an error stub.  The badge makes the
+                # fallback obvious in the rendered card.
+                logger.warning(
+                    "LLM synthesis failed (non-quota) for %s. Falling back to non-LLM "
+                    "extractive summary. Cause: %s",
+                    theme, exc,
+                )
+                info_prefix = (
+                    "⚠️ *Non-LLM Extractive Summary: Live LLM synthesis failed "
+                    "(empty response / timeout), so this brief was compiled "
+                    "deterministically from the article pool using LexRank & Luhn "
+                    "extractive NLP.*"
+                )
+                extractive = extractive_theme_summary(theme, articles)
+                orig_text = extractive.get("what_is_happening", "")
+                if info_prefix not in orig_text:
+                    extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
+                summaries[theme] = extractive
 
     # Save to memory/wiki
     try:

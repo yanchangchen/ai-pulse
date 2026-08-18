@@ -60,7 +60,9 @@ def save_run_to_history(
     new_entry = f"\n## ⚡ AI Pulse Run: {timestamp}\n"
     for theme, summary in summaries.items():
         count = article_counts.get(theme, 0)
+        src = summary.get("_source", "unknown")
         new_entry += f"### {theme} ({count} articles)\n"
+        new_entry += f"*Source:* `{src}`\n\n"
         new_entry += f"**What is happening:** {summary.get('what_is_happening', '')}\n\n"
         new_entry += f"**Why it matters:** {summary.get('why_it_matters', '')}\n\n"
         new_entry += f"**Watch:** {summary.get('what_to_watch', '')}\n\n"
