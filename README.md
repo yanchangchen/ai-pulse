@@ -31,25 +31,34 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └────────┘│
 │  ┌──────────────────┐ ┌──────────────────────────────────────┐ │
 │  │  Trend Analytics │ │       Quality Evaluation             │ │
-│  │  (cross-run)     │ │  (LLM-as-judge, weekly cadence)      │ │
+│  │  (cross-run)     │ │  (LLM-as-judge, weekly cadence,      │ │
+│  │                  │ │   live progress, Supabase-backed)    │ │
 │  └──────────────────┘ └──────────────────────────────────────┘ │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │  Quality Evaluation (8) — LLM-as-judge, weekly cadence,    │ │
-│  │  live progress panel, Supabase-backed                      │ │
+│  │  Feedback & Roadmap — submit features/bugs; user_feedback  │ │
+│  │  Supabase table, SDD prompts, public roadmap tracker.     │ │
 │  └────────────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
 │  Core Intelligence Layer                                         │
 │  • Fetcher       (concurrent RSS + web scraping)                 │
-│  • Classifier    (weighted keywords → batched LLM → fallback)    │
-│  • Summariser    (context-aware, memory-injected)                │
+│  • Classifier    (4-pass waterfall: keywords → TF-IDF → LLM     │
+│                   → soft-match; gate counters tracked)           │
+│  • TF-IDF Classifier (cosine-similarity fallback for gate 2)     │
+│  • Summariser    (LLM with memory-injection + provenance)        │
+│  • Non-LLM Summariser (extractive LexRank/Luhn fallback)         │
+│  • Provenance    (chip renderer + banner stripper)               │
 │  • History Mgr   (JSON + Markdown + Supabase persistence)        │
 │  • Cache         (st.cache_data 12h TTL + .cache/ disk JSON)     │
 │  • BG Refresher  (daemon thread, non-blocking pipeline)          │
 │  • Shared Sidebar (consistency across all pages)               │
-│  • LLM Client    (Ollama Cloud, exponential-backoff retries)     │
-│  • Sage Agent    (Memory Wiki chat — chronological citations)    │
-│  • Evaluator     (3 concurrent LLM-as-judge pools; weekly run)   │
+│  • LLM Client    (Ollama Cloud, exponential-backoff retries,     │
+│                   opt-in event_sink, LLM_DEBUG dump)             │
+│  • Gemini Client (on-demand Google Gemini synthesis + fallback)  │
+│  • Sage Agent    (Memory Wiki chat — chronological citations;    │
+│                   automatic Gemini fallback)                     │
+│  • Evaluator     (3 LLM-as-judge + 4 deterministic, weekly run)  │
 │  • Quality Schema (Supabase table for evaluator results)         │
+│  • Design System (shared CSS tokens for visual consistency)      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Configuration Layer                                             │
 │  • config/settings.py   (Ollama endpoint, model, lookback, TTL)  │
@@ -140,7 +149,8 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 | 4 | Sources | All RSS feeds and web sources with article counts |
 | 5 | Memory Wiki | **🔮 Ask Sage** (default tab) — conversational chat agent grounded in wiki data with chronological citations; 📖 Memory Timeline — browse past runs; ⚖️ Compare Runs — side-by-side diff |
 | 6 | Trend Analytics | Cross-run thematic momentum line chart & detailed theme historical drilldown timeline |
-| 8 | Quality Evaluation | Weekly automated evaluation engine scoring 7 metrics: 3 LLM-as-judge (Categoriser, Faithfulness, Uniqueness) + 4 sub-millisecond deterministic judges (Grounding, Structural Compliance, Coverage, Temporal Coherence) with a live progress panel; results persist to Supabase. Also surfaces **in-app theme keyword manager, 1-click apply buttons, and summariser tuner**. |
+| 7 | Quality Evaluation | Weekly automated evaluation engine scoring 7 metrics: 3 LLM-as-judge (Categoriser, Faithfulness, Uniqueness) + 4 sub-millisecond deterministic judges (Grounding, Structural Compliance, Coverage, Temporal Coherence) with a live progress panel; results persist to Supabase. Also surfaces **in-app theme keyword manager, 1-click apply buttons, and summariser tuner**. |
+| 8 | Feedback & Roadmap | Submit feature requests, bug reports, UX ideas (Spec-Driven Development prompts); persisted to the `user_feedback` Supabase table with a public roadmap tracker. |
 
 All pages share a sidebar nav (`core/shared_sidebar.py`) and live background-status panel.
 
