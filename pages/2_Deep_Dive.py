@@ -224,8 +224,14 @@ def main() -> None:
         watch_text = theme_summary['what_to_watch']
         if '\n' in watch_text:
             for line in watch_text.split('\n'):
-                if line.strip():
-                    st.markdown(f"- {line.strip()}")
+                stripped_line = line.strip()
+                if stripped_line:
+                    # Strip leading markdown list bullets or numbers to avoid nested double bullets
+                    if stripped_line.startswith(('-', '*', '+')):
+                        stripped_line = stripped_line.lstrip('-*+ \t')
+                    import re
+                    stripped_line = re.sub(r'^\d+\.\s*', '', stripped_line)
+                    st.markdown(f"- {stripped_line}")
         else:
             st.markdown(watch_text)
     else:

@@ -168,6 +168,28 @@ def generate_theme_summary(
         ranked_articles, char_budget=char_budget,
     )
 
+    num_articles = len(ranked_articles)
+    if num_articles > 30:
+        signal_instruction = (
+            f"Write a comprehensive, detailed factual narrative of 6–10 sentences synthesizing the key trends from these {num_articles} developments. "
+            "Do NOT use bullet points. Lead with the single most significant theme or development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a synthesis of the broader directional shift this signals. Target 180–250 words."
+        )
+    elif num_articles > 15:
+        signal_instruction = (
+            f"Write a detailed factual narrative of 5–8 sentences synthesizing these {num_articles} developments. "
+            "Do NOT use bullet points. Lead with the single most significant theme or development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a sentence on the broader directional shift this signals. Target 120–180 words."
+        )
+    else:
+        signal_instruction = (
+            "Write 4–6 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a sentence on the broader directional shift this signals. Target 80–120 words."
+        )
+
     user_prompt = f"""You are analyzing AI news summaries from the past two weeks, focused on the theme: {theme_name}
 
 --- SOURCE ARTICLES ---
@@ -181,7 +203,7 @@ Produce a rigorous technical intelligence brief using the exact structure below.
 ---
 
 ## 1. WHAT IS HAPPENING
-Write 4–6 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. End with a sentence on the broader directional shift this signals. Target 80–120 words.
+{signal_instruction}
 {"Explicitly call out what is NEW or EVOLVED since the prior brief." if past_context else ""}
 
 ## 2. ENGINEERING TRADEOFFS & BLUEPRINT
@@ -199,7 +221,7 @@ List exactly 3–5 items. Each item must follow this format:
 Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers. Every watchlist item MUST reference a specific upcoming event, deadline, release, or research paper found in the SOURCE ARTICLES — do not invent entity names or generic industry trends.
 
 ## 5. STRATEGIC FURTHER READING
-List exactly 5 articles from the sources above. Format each entry as:
+List exactly 5 articles from the sources above. You MUST select the most significant articles from the SOURCE ARTICLES, prioritizing those you referenced or drew from in Section 1 (What is Happening) and Section 2 (Engineering Tradeoffs). Format each entry as:
   - **[Article Title]** | [Source] | [URL]
     *Why read this:* one sentence stating the concrete technical or product takeaway.
 
@@ -215,7 +237,7 @@ Your role is to cut through noise and surface what actually matters — architec
 Writing style rules:
 - Be precise, direct, and technically rigorous
 - No hype, buzzwords, or vague generalizations
-- Write prose sections in flowing paragraphs (4–6 sentences each, 80–120 words)
+- Write prose sections in flowing paragraphs
 - Use bullet points only in sections 4 and 5
 - Bold key terms, model names, and company names on first mention
 - Never start two consecutive sentences with the same word
@@ -270,18 +292,47 @@ def _parse_summary_sections(content: str) -> Dict[str, str]:
     Preserves newline structure so that bullet lists, paragraph breaks,
     and markdown formatting survive into the UI.
     """
+    import re
+
+    # Clean markdown wrapper if LLM returned it
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        content = "\n".join(lines).strip()
+
     # Map of keyword fragments → internal section key
     _SECTION_MARKERS = [
         ('WHAT IS HAPPENING',           'what_is_happening'),
+        ('THE SIGNAL',                  'what_is_happening'),
+        ('SIGNAL',                      'what_is_happening'),
         ('ENGINEERING TRADEOFFS',       'engineering_tradeoffs'),
         ('ENGINEERING BLUEPRINT',       'engineering_tradeoffs'),
-        ('PRODUCT IMPACT',              'product_impact'),
+        ('TECHNICAL BLUEPRINT',         'engineering_tradeoffs'),
+        ('ENGINEERING',                 'engineering_tradeoffs'),
+        ('TECHNICAL',                   'engineering_tradeoffs'),
+        ('TRADEOFF',                    'engineering_tradeoffs'),
+        ('BLUEPRINT',                   'engineering_tradeoffs'),
         ('PRODUCT FEASIBILITY',         'product_impact'),
+        ('PRODUCT IMPACT',              'product_impact'),
+        ('PRODUCT',                     'product_impact'),
+        ('FEASIBILITY',                 'product_impact'),
         ('WHY IT MATTERS',              'why_it_matters'),
+        ('SIGNIFICANCE',                'why_it_matters'),
         ('ACTIONABLE WATCHLIST',        'what_to_watch'),
         ('WHAT TO WATCH',               'what_to_watch'),
+        ('WATCHLIST',                   'what_to_watch'),
+        ('WATCH',                       'what_to_watch'),
+        ('OUTLOOK',                     'what_to_watch'),
         ('STRATEGIC FURTHER READING',   'further_reading'),
         ('FURTHER READING',             'further_reading'),
+        ('READING',                     'further_reading'),
+        ('CITED SOURCES',               'further_reading'),
+        ('SOURCES',                     'further_reading'),
+        ('REFERENCES',                  'further_reading'),
     ]
 
     sections: Dict[str, str] = {}
@@ -301,13 +352,22 @@ def _parse_summary_sections(content: str) -> Dict[str, str]:
         stripped = raw_line.strip()
         upper = stripped.upper()
 
-        # Detect section headers — handles "## 1. WHAT IS HAPPENING",
-        # "**WHAT IS HAPPENING**", "WHAT IS HAPPENING:", etc.
+        # A line is considered a header if it starts with markdown heading, bold/italic markers,
+        # or matches numbered patterns (e.g., "1. What is Happening") with few words.
+        is_header = False
+        if stripped.startswith('#') or (stripped.startswith('**') and stripped.endswith('**')):
+            is_header = True
+        elif re.match(r'^\d+\.\s+[A-Za-z]', stripped) and len(stripped.split()) < 7:
+            is_header = True
+        elif stripped.isupper() and len(stripped) < 40 and len(stripped) > 2:
+            is_header = True
+
         matched_section = None
-        for marker, key in _SECTION_MARKERS:
-            if marker in upper:
-                matched_section = key
-                break
+        if is_header:
+            for marker, key in _SECTION_MARKERS:
+                if marker in upper:
+                    matched_section = key
+                    break
 
         if matched_section is not None:
             _flush()
@@ -316,7 +376,7 @@ def _parse_summary_sections(content: str) -> Dict[str, str]:
             if ':' in stripped:
                 after_colon = stripped.split(':', 1)[-1].strip()
                 # Ignore if only a markdown header residue (e.g. "##")
-                if after_colon and not after_colon.startswith('#'):
+                if after_colon and not after_colon.startswith('#') and not after_colon.endswith('**'):
                     current_content.append(after_colon)
         elif current_section is not None:
             # Skip sub-header markers like "*Audience: AI Engineers*"
@@ -361,7 +421,7 @@ def generate_gemini_theme_summary(
     Generate an on-demand deep dive summary for a specific theme using Google Gemini API.
     Available exclusively in the Deep Dive view on user request.
     """
-    from config.settings import MAX_ARTICLES_PER_SUMMARY
+    from config.settings import MAX_ARTICLES_PER_GEMINI_SUMMARY
 
     if not articles:
         summary = {
@@ -385,12 +445,34 @@ def generate_gemini_theme_summary(
     # Re-rank by theme relevance so Gemini sees the most on-theme articles
     # rather than the first N that fell out of the fetcher.
     ranked_articles = _rank_articles_by_relevance(
-        articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
+        articles, theme_name, MAX_ARTICLES_PER_GEMINI_SUMMARY,
     )
-    char_budget = 35000  # Gemini supports massive context windows
+    char_budget = 45000  # Gemini supports massive context windows, expand to fit more articles
     formatted_articles = format_articles_for_prompt(
         ranked_articles, char_budget=char_budget,
     )
+
+    num_articles = len(ranked_articles)
+    if num_articles > 30:
+        signal_instruction = (
+            f"Write a comprehensive, detailed factual narrative of 6–10 sentences synthesizing the key trends from these {num_articles} developments. "
+            "Do NOT use bullet points. Lead with the single most significant theme or development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a synthesis of the broader directional shift this signals. Target 180–250 words."
+        )
+    elif num_articles > 15:
+        signal_instruction = (
+            f"Write a detailed factual narrative of 5–8 sentences synthesizing these {num_articles} developments. "
+            "Do NOT use bullet points. Lead with the single most significant theme or development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a sentence on the broader directional shift this signals. Target 120–180 words."
+        )
+    else:
+        signal_instruction = (
+            "Write 4–6 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a sentence on the broader directional shift this signals. Target 80–120 words."
+        )
 
     user_prompt = f"""You are analyzing AI news summaries from the past two weeks, focused on the theme: {theme_name}
 
@@ -405,7 +487,7 @@ Produce a rigorous technical intelligence brief using the exact structure below.
 ---
 
 ## 1. WHAT IS HAPPENING
-Write 4–6 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. End with a sentence on the broader directional shift this signals. Target 80–120 words.
+{signal_instruction}
 {"Explicitly call out what is NEW or EVOLVED since the prior brief." if past_context else ""}
 
 ## 2. ENGINEERING TRADEOFFS & BLUEPRINT
@@ -423,7 +505,7 @@ List exactly 3–5 items. Each item must follow this format:
 Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers. Every watchlist item MUST reference a specific upcoming event, deadline, release, or research paper found in the SOURCE ARTICLES — do not invent entity names or generic industry trends.
 
 ## 5. STRATEGIC FURTHER READING
-List exactly 5 articles from the sources above. Format each entry as:
+List exactly 5 articles from the sources above. You MUST select the most significant articles from the SOURCE ARTICLES, prioritizing those you referenced or drew from in Section 1 (What is Happening) and Section 2 (Engineering Tradeoffs). Format each entry as:
   - **[Article Title]** | [Source] | [URL]
     *Why read this:* one sentence stating the concrete technical or product takeaway.
 
@@ -439,11 +521,11 @@ Your role is to cut through noise and surface what actually matters — architec
 Writing style rules:
 - Be precise, direct, and technically rigorous
 - No hype, buzzwords, or vague generalizations
-- Write prose sections in flowing paragraphs (4–6 sentences each, 80–120 words)
+- Write prose sections in flowing paragraphs
 - Use bullet points only in sections 4 and 5
 - Bold key terms, model names, and company names on first mention
 - Never start two consecutive sentences with the same word
-- STRICT FAITHFULNESS MANDATE: Every claim must be explicitly supported by the provided SOURCE ARTICLES.
+- STRICT FAITHFULNESS MANDATE: Every claim must be explicitly supported by the provided SOURCE ARTICLES. Do NOT extrapolate, infer unmentioned facts, or invent details.
 """
 
     content = client.generate_content(

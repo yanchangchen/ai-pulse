@@ -154,10 +154,8 @@ EVAL_FAITHFULNESS_SKIP_STRINGS: tuple = (
 # of output with headroom.  Bump if you increase MAX_ARTICLES_PER_SUMMARY
 # below or if you switch to a model with a larger native context.
 OLLAMA_NUM_CTX: int = 4096
-# Max articles fed into the theme summariser prompt.  Combined with the
-# per-article 300-char summary cap in format_articles_for_prompt(), this
-# keeps the input well inside OLLAMA_NUM_CTX.
-MAX_ARTICLES_PER_SUMMARY: int = 10
+MAX_ARTICLES_PER_SUMMARY: int = 12
+MAX_ARTICLES_PER_GEMINI_SUMMARY: int = 75
 # Rough chars-per-token ratio.  Used to budget the input side of num_ctx.
 # 3 chars/token is a conservative estimate that errs on the side of
 # truncation rather than overflow.
