@@ -83,8 +83,15 @@ class BackgroundRefresher:
     def _run_pipeline(cls) -> None:
         try:
             from core.llm_client import LLMClient
-            # Reset LLM quota status at start of run so fresh calls/retries are attempted
-            LLMClient.reset_quota_status()
+            # Probe Ollama before doing anything: if quota is back, reset the
+            # flag now so the per-theme loop does not silently fall back to
+            # extractive summarisation.  Probe is the single source of truth —
+            # do NOT call reset_quota_status() unconditionally (would mask a
+            # still-exhausted quota and burn the run on 429 retries).
+            if LLMClient.probe_quota_status():
+                cls.update_progress("[LLM] Quota probe OK — live synthesis enabled.")
+            elif LLMClient.is_quota_exceeded():
+                cls.update_progress("[LLM] Quota still exceeded — using non-LLM extractive fallback.")
 
             cls.update_progress("[ENGINE] Starting background news intelligence engine...")
             
@@ -213,7 +220,8 @@ def render_sidebar_info() -> None:
         # ALWAYS show manual trigger button so user can fetch new articles & refresh quota anytime
         if st.sidebar.button("⚡ Fetch & Refresh Now", key="bg_refresher_trigger_btn", use_container_width=True, type="primary"):
             from core.llm_client import LLMClient
-            LLMClient.reset_quota_status()
+            # Active probe so the flag reflects reality before the run starts.
+            LLMClient.probe_quota_status()
             try:
                 st.cache_data.clear()
             except Exception:
