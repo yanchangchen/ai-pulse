@@ -57,8 +57,16 @@ def test_summariser_fallback_to_extractive_on_quota():
     themed_articles = {"Agentic Systems & DevTools": [{"title": "Art 1", "summary": "Extractive sentence summary."}]}
     full_articles = [{"title": "Art 1"}]
 
-    with patch("core.summariser.save_run_to_history"):
-        summaries = generate_all_summaries(themed_articles, full_articles)
+    # `generate_all_summaries` now probes /api/tags before the per-theme
+    # loop.  Simulate a still-exhausted quota (HTTP 429) so the pre-loop
+    # probe keeps the flag set and the extractive fallback path is taken.
+    quota_resp = MagicMock()
+    quota_resp.status_code = 429
+    quota_resp.text = '{"error":"weekly usage limit"}'
+
+    with patch("requests.get", return_value=quota_resp):
+        with patch("core.summariser.save_run_to_history"):
+            summaries = generate_all_summaries(themed_articles, full_articles)
 
     assert "Agentic Systems & DevTools" in summaries
     assert "⚡" in summaries["Agentic Systems & DevTools"]["what_is_happening"]

@@ -623,6 +623,29 @@ def generate_all_summaries(
     except Exception:
         pass
 
+    # Active quota probe at the start of every run.  The BG refresher probes
+    # before kicking off its thread, but `generate_all_summaries` is also
+    # called from other entry points (e.g. retry after a partial failure,
+    # scripts, tests) that may not have validated the flag recently.  If the
+    # user has just had their Ollama weekly quota refreshed, a 200 from this
+    # probe clears the stale flag in time for the first theme to use the
+    # live LLM path instead of falling back to extractive.
+    if user_mode != "⚡ Non-LLM Extractive Only":
+        try:
+            if LLMClient.probe_quota_status():
+                logger.info(
+                    "Pre-loop Ollama /api/tags probe OK — live LLM synthesis enabled."
+                )
+            elif LLMClient.is_quota_exceeded():
+                logger.warning(
+                    "Pre-loop Ollama /api/tags probe failed — quota still exceeded; "
+                    "using non-LLM extractive summarisation for this run."
+                )
+        except Exception as exc:
+            # Never let a probe failure block a run — fall through and let the
+            # per-theme is_quota_exceeded() checks decide.
+            logger.debug("Pre-loop quota probe raised (ignoring): %s", exc)
+
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
         article_counts[theme] = len(articles)
