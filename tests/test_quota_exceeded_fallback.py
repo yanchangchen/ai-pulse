@@ -57,8 +57,16 @@ def test_summariser_fallback_to_extractive_on_quota():
     themed_articles = {"Agentic Systems & DevTools": [{"title": "Art 1", "summary": "Extractive sentence summary."}]}
     full_articles = [{"title": "Art 1"}]
 
-    with patch("core.summariser.save_run_to_history"):
-        summaries = generate_all_summaries(themed_articles, full_articles)
+    # `generate_all_summaries` now probes /api/tags before the per-theme
+    # loop.  Simulate a still-exhausted quota (HTTP 429) so the pre-loop
+    # probe keeps the flag set and the extractive fallback path is taken.
+    quota_resp = MagicMock()
+    quota_resp.status_code = 429
+    quota_resp.text = '{"error":"weekly usage limit"}'
+
+    with patch("requests.get", return_value=quota_resp):
+        with patch("core.summariser.save_run_to_history"):
+            summaries = generate_all_summaries(themed_articles, full_articles)
 
     assert "Agentic Systems & DevTools" in summaries
     assert "⚡" in summaries["Agentic Systems & DevTools"]["what_is_happening"]
@@ -98,9 +106,78 @@ def test_evaluator_runs_deterministic_only_on_quota():
 
 def test_format_display_timestamp():
     from core.design_system import format_display_timestamp
-    
+
     assert format_display_timestamp("2026-08-11T11:04:58+00:00") == "11/08/2026 11:04:58"
     assert format_display_timestamp("2026-08-11 11:04:58") == "11/08/2026 11:04:58"
     assert format_display_timestamp("2026-08-11T11:04:58Z") == "11/08/2026 11:04:58"
     assert format_display_timestamp("") == ""
     assert format_display_timestamp(None) == ""
+
+
+def test_probe_resets_flag_on_200():
+    """A 200 from /api/tags proves quota is back — the flag must clear."""
+    LLMClient.mark_quota_exceeded("Pre-probe stale flag")
+    assert LLMClient.is_quota_exceeded() is True
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("requests.get", return_value=mock_resp) as mock_get:
+        result = LLMClient.probe_quota_status()
+
+    assert result is True
+    assert LLMClient.is_quota_exceeded() is False
+    assert LLMClient.get_quota_message() == ""
+    # Probe must hit /api/tags (not /api/generate)
+    called_url = mock_get.call_args[0][0]
+    assert called_url.endswith("/api/tags")
+
+
+def test_probe_refreshes_flag_on_429():
+    """A 429 from /api/tags means quota is still exhausted — keep flag set."""
+    LLMClient.reset_quota_status()
+    assert LLMClient.is_quota_exceeded() is False
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 429
+    mock_resp.text = '{"error":"weekly usage limit"}'
+
+    with patch("requests.get", return_value=mock_resp):
+        result = LLMClient.probe_quota_status()
+
+    assert result is False
+    assert LLMClient.is_quota_exceeded() is True
+    assert "weekly usage limit" in LLMClient.get_quota_message()
+
+
+def test_probe_leaves_flag_unchanged_on_transport_error():
+    """If we cannot reach Ollama, we cannot confirm — leave the flag as-is."""
+    LLMClient.mark_quota_exceeded("Pre-probe flag")
+    assert LLMClient.is_quota_exceeded() is True
+    msg_before = LLMClient.get_quota_message()
+
+    with patch("requests.get", side_effect=requests.ConnectionError("dns down")):
+        result = LLMClient.probe_quota_status()
+
+    assert result is False
+    # Flag is preserved — we don't know whether quota is back.
+    assert LLMClient.is_quota_exceeded() is True
+    assert LLMClient.get_quota_message() == msg_before
+
+
+def test_probe_leaves_flag_unchanged_on_unexpected_status():
+    """A 5xx / auth error is ambiguous — preserve the flag, do not mark fresh."""
+    LLMClient.mark_quota_exceeded("Pre-probe flag")
+    assert LLMClient.is_quota_exceeded() is True
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 503
+    mock_resp.text = "service unavailable"
+
+    with patch("requests.get", return_value=mock_resp):
+        result = LLMClient.probe_quota_status()
+
+    assert result is False
+    # Flag preserved — original error message intact, not overwritten.
+    assert LLMClient.is_quota_exceeded() is True
+    assert LLMClient.get_quota_message() == "Pre-probe flag"

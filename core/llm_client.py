@@ -111,6 +111,66 @@ class LLMClient:
         setattr(sys, _EMPTY_FAIL_COUNTER, 0)
         logger.info("LLM Quota Exceeded status reset.")
 
+    @classmethod
+    def probe_quota_status(cls) -> bool:
+        """Active health probe against the Ollama /api/tags endpoint.
+
+        Intended to be called before triggering a refresh, so the user does
+        not have to wait out the 1-hour auto-cooldown if Ollama quota has
+        already been refreshed upstream.
+
+        Logic:
+            * 200 from /api/tags    → quota is back; call reset_quota_status() and return True
+            * 429 / quota keyword   → quota still exceeded; refresh the timestamp + message
+                                      so is_quota_exceeded() keeps returning True
+            * transport / other err → cannot confirm; leave the flag as-is and return False
+
+        Returns True if the LLM is confirmed available, False otherwise.
+        """
+        try:
+            client = cls()
+            headers = client._auth_headers()
+            resp = requests.get(
+                f"{client.base_url}/api/tags",
+                headers=headers,
+                timeout=10,
+            )
+        except Exception as exc:
+            logger.warning(
+                "LLM quota probe could not reach %s: %s",
+                getattr(cls(), "base_url", "?"), exc,
+            )
+            return False
+
+        if resp.status_code == 200:
+            if getattr(sys, _QUOTA_EXCEEDED_FLAG, False):
+                logger.info(
+                    "LLM quota probe: /api/tags returned 200 — quota is back, "
+                    "resetting quota-exceeded flag."
+                )
+            cls.reset_quota_status()
+            return True
+
+        # Quota still exhausted — refresh the timestamp so the 1-hour cooldown
+        # window restarts from this probe rather than from the original failure.
+        is_quota_response = (
+            resp.status_code == 429
+            or any(
+                kw in resp.text.lower()
+                for kw in ["usage limit", "weekly limit", "quota", "upgrade for higher limits"]
+            )
+        )
+        if is_quota_response:
+            cls.mark_quota_exceeded(resp.text[:300] if resp.text else f"HTTP {resp.status_code}")
+            return False
+
+        # Some other HTTP status (5xx, auth, etc.) — leave the flag alone.
+        logger.warning(
+            "LLM quota probe: unexpected status %s — leaving quota flag unchanged.",
+            resp.status_code,
+        )
+        return False
+
     # ------------------------------------------------------------------
     # Empty-response degradation tracking
     # ------------------------------------------------------------------
@@ -138,7 +198,17 @@ class LLMClient:
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Return True if the Ollama Cloud endpoint is reachable and quota is active."""
+        """Return True if the Ollama Cloud endpoint is reachable and quota is active.
+
+        A 200 response from /api/tags is proof-of-life that the upstream quota
+        has been refreshed — even if our local flag was left over from a prior
+        run, a healthy 200 wins.  We self-heal by calling ``reset_quota_status()``
+        so every downstream ``is_quota_exceeded()`` consult sees the fresh state
+        for the rest of the session.  This is intentionally safer than waiting
+        for the 1-hour cooldown, because the user-visible signal (Fetch &
+        Refresh, weekly quota reset) is best-effort and the user has no other
+        way to push the system back to Ollama other than a process restart.
+        """
         if self.is_quota_exceeded():
             return False
         try:
@@ -146,9 +216,18 @@ class LLMClient:
             resp = requests.get(
                 f"{self.base_url}/api/tags", headers=headers, timeout=10
             )
-            return resp.status_code == 200
         except Exception:
             return False
+        if resp.status_code != 200:
+            return False
+        # 200 proves the API is reachable AND quota is active.  If a stale
+        # flag somehow survived, clear it now so subsequent is_quota_exceeded()
+        # consults (Sage, evaluator, summariser, sidebar) all see fresh state.
+        # Only reset when the flag is actually set, so the per-run empty-
+        # response counter is never clobbered by an unrelated health probe.
+        if getattr(sys, _QUOTA_EXCEEDED_FLAG, False):
+            LLMClient.reset_quota_status()
+        return True
 
     def generate(
         self,

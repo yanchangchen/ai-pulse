@@ -127,7 +127,8 @@ def main() -> None:
         st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
         if st.button("⚡ Fetch & Refresh Now", key="main_header_refresh_btn", type="primary", use_container_width=True):
             from core.llm_client import LLMClient
-            LLMClient.reset_quota_status()
+            # Active probe so the flag reflects reality before the run starts.
+            LLMClient.probe_quota_status()
             try:
                 st.cache_data.clear()
             except Exception:
