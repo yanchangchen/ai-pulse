@@ -15,6 +15,15 @@ except ImportError:
     genai = None  # type: ignore
     _GENAI_AVAILABLE = False
 
+# The deprecated `google.generativeai` SDK is frozen and predates the Gemini 3
+# thinking API — its `types` module has no `ThinkingConfig`. Detect it once;
+# when absent, generation configs are built without a thinking_config so calls
+# still work (thinking then defaults per model).
+_THINKING_CONFIG_CLS = (
+    getattr(getattr(genai, "types", None), "ThinkingConfig", None)
+    if _GENAI_AVAILABLE else None
+)
+
 
 class GeminiProvider(ProviderAdapter):
     """Google Gemini API provider."""
@@ -35,9 +44,33 @@ class GeminiProvider(ProviderAdapter):
         self.thinking_level = thinking_level
         self.model = genai.GenerativeModel(model)
 
+    def _build_generation_config(
+        self,
+        temperature: float,
+        max_output_tokens: int,
+        schema: Optional[Dict] = None,
+    ):
+        """Build a GenerationConfig, attaching thinking_config only when the
+        installed SDK actually supports it (see _THINKING_CONFIG_CLS)."""
+        kwargs: Dict[str, Any] = {
+            "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
+        }
+        if schema is not None:
+            kwargs["response_mime_type"] = "application/json"
+            kwargs["response_schema"] = schema
+        if _THINKING_CONFIG_CLS is not None:
+            try:
+                kwargs["thinking_config"] = _THINKING_CONFIG_CLS(
+                    thinking_level=self.thinking_level
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("thinking_config unavailable (%s); omitting it", exc)
+                kwargs.pop("thinking_config", None)
+        return genai.types.GenerationConfig(**kwargs)
+
     async def generate(self, prompt: str, **kwargs) -> Dict[str, Any]:
-        config = genai.types.GenerationConfig(
-            thinking_config=genai.types.ThinkingConfig(thinking_level=self.thinking_level),
+        config = self._build_generation_config(
             temperature=kwargs.get("temperature", 0.3),
             max_output_tokens=kwargs.get("max_tokens", 2000),
         )
@@ -51,12 +84,10 @@ class GeminiProvider(ProviderAdapter):
     async def generate_structured(
         self, prompt: str, schema: Dict, **kwargs
     ) -> Dict[str, Any]:
-        config = genai.types.GenerationConfig(
-            thinking_config=genai.types.ThinkingConfig(thinking_level=self.thinking_level),
+        config = self._build_generation_config(
             temperature=kwargs.get("temperature", 0.2),
             max_output_tokens=kwargs.get("max_tokens", 4000),
-            response_mime_type="application/json",
-            response_schema=schema,
+            schema=schema,
         )
         response = await self.model.generate_content_async(prompt, generation_config=config)
         return {

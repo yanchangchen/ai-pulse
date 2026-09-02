@@ -7,6 +7,7 @@ Handles rate limits and quota exceeded errors with model fallback guidance.
 from __future__ import annotations
 
 import logging
+import time
 import requests
 from typing import Optional, Dict, Any, List
 
@@ -15,6 +16,14 @@ from config.settings import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_AVAILABLE_MODEL
 logger = logging.getLogger(__name__)
 
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# Transient server errors (500/502/503/504 — e.g. the "This model is currently
+# experiencing high demand" overload spikes) are retried with backoff.
+# 429 quota errors are NOT retried — they raise immediately so the UI can
+# suggest switching models.
+RETRYABLE_STATUS_CODES = (500, 502, 503, 504)
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = (1.0, 2.0)  # sleep before attempt 2, then attempt 3
 
 
 class GeminiClientError(Exception):
@@ -73,7 +82,8 @@ class GeminiClient:
 
         Raises:
             GeminiQuotaError: When quota limit (HTTP 429) is reached.
-            GeminiClientError: When any other API or network error occurs.
+            GeminiClientError: When any other API or network error persists
+                after retrying transient 5xx responses (see MAX_ATTEMPTS).
         """
         target_model = model or self.default_model
 
@@ -102,38 +112,71 @@ class GeminiClient:
                 "parts": [{"text": system_instruction}]
             }
 
-        try:
-            resp = requests.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=timeout
-            )
-        except requests.exceptions.Timeout:
-            raise GeminiClientError(f"Gemini API request timed out after {timeout}s for model '{target_model}'.")
-        except requests.exceptions.RequestException as e:
-            raise GeminiClientError(f"Gemini API network connection failed: {e}")
-
-        # Check for rate limit / quota exceeded
-        if resp.status_code == 429:
-            error_data = {}
+        resp = None
+        for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                error_data = resp.json().get("error", {})
-            except Exception:
-                pass
-            error_msg = error_data.get("message", resp.text)
-            logger.warning("Gemini quota exceeded for model '%s': %s", target_model, error_msg)
-            raise GeminiQuotaError(model=target_model, details=error_msg)
+                resp = requests.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=timeout
+                )
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                logger.warning(
+                    "Gemini transient network error for '%s' (attempt %d/%d): %s",
+                    target_model, attempt, MAX_ATTEMPTS, e,
+                )
+                if attempt < MAX_ATTEMPTS:
+                    time.sleep(RETRY_BACKOFF_SECONDS[attempt - 1])
+                    continue
+                raise GeminiClientError(
+                    f"Gemini API request timed out/failed after {MAX_ATTEMPTS} attempts "
+                    f"for model '{target_model}': {e}"
+                )
+            except requests.exceptions.RequestException as e:
+                raise GeminiClientError(f"Gemini API network connection failed: {e}")
 
-        if resp.status_code != 200:
-            error_msg = resp.text
-            try:
-                error_json = resp.json()
-                if "error" in error_json:
-                    error_msg = error_json["error"].get("message", resp.text)
-            except Exception:
-                pass
-            raise GeminiClientError(f"Gemini API Error (HTTP {resp.status_code}) for '{target_model}': {error_msg}")
+            # Check for rate limit / quota exceeded — surfaced immediately (never
+            # retried) so the UI can suggest switching to another model.
+            if resp.status_code == 429:
+                error_data = {}
+                try:
+                    error_data = resp.json().get("error", {})
+                except Exception:
+                    pass
+                error_msg = error_data.get("message", resp.text)
+                logger.warning("Gemini quota exceeded for model '%s': %s", target_model, error_msg)
+                raise GeminiQuotaError(model=target_model, details=error_msg)
+
+            # Transient server errors (overload spikes, etc.) — retry with backoff.
+            if resp.status_code in RETRYABLE_STATUS_CODES:
+                try:
+                    retry_msg = resp.json().get("error", {}).get("message", resp.text[:200])
+                except Exception:
+                    retry_msg = resp.text[:200]
+                logger.warning(
+                    "Gemini transient HTTP %s for '%s' (attempt %d/%d): %s",
+                    resp.status_code, target_model, attempt, MAX_ATTEMPTS, retry_msg,
+                )
+                if attempt < MAX_ATTEMPTS:
+                    time.sleep(RETRY_BACKOFF_SECONDS[attempt - 1])
+                    continue
+                raise GeminiClientError(
+                    f"Gemini API Error (HTTP {resp.status_code}) for '{target_model}' "
+                    f"after {MAX_ATTEMPTS} attempts: {retry_msg}"
+                )
+
+            if resp.status_code != 200:
+                error_msg = resp.text
+                try:
+                    error_json = resp.json()
+                    if "error" in error_json:
+                        error_msg = error_json["error"].get("message", resp.text)
+                except Exception:
+                    pass
+                raise GeminiClientError(f"Gemini API Error (HTTP {resp.status_code}) for '{target_model}': {error_msg}")
+
+            break  # HTTP 200 — proceed to response parsing
 
         try:
             data = resp.json()

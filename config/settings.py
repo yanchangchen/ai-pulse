@@ -14,13 +14,34 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+def _find_in_mapping(mapping, key: str):
+    """Look for ``key`` at the top level of ``mapping``, then one level down
+    inside nested sections.  secrets.toml commonly nests keys under a section
+    header such as ``[general]``, which a plain top-level ``get()`` misses."""
+    try:
+        value = mapping.get(key)
+    except Exception:
+        value = None
+    if value:
+        return value
+    try:
+        for section in mapping.values():
+            if isinstance(section, dict):
+                value = section.get(key)
+                if value:
+                    return value
+    except Exception:
+        pass
+    return None
+
+
 def _get_secret(key: str, default: str = "") -> str:
     """Read a config value from Streamlit secrets, then .toml file, then env vars, then default."""
     # 1. Streamlit secrets (only available at runtime inside a Streamlit app)
     try:
         import streamlit as st
         # This will fail or return empty if not running via 'streamlit run'
-        value = st.secrets.get(key)
+        value = _find_in_mapping(st.secrets, key)
         if value:
             return str(value)
     except Exception:
@@ -34,7 +55,7 @@ def _get_secret(key: str, default: str = "") -> str:
         if secrets_path.exists():
             import toml
             secrets = toml.load(secrets_path)
-            value = secrets.get(key)
+            value = _find_in_mapping(secrets, key)
             if value:
                 return str(value)
     except Exception:
