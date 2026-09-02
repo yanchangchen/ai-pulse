@@ -166,7 +166,7 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
     gate_counts = {
         "gate_1_keyword": 0,
         "gate_2_tfidf": 0,
-        "gate_3_ollama": 0,
+        "gate_3_llm": 0,
         "gate_4_heuristic": 0,
         "total": len(articles),
     }
