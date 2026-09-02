@@ -4,7 +4,8 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 
 ## 🚀 Key Features
 
-- **7 strategic themes** — weighted keyword classification, with batched LLM fallback for ambiguous articles (20 articles per JSON request, 10–20× token savings).
+- **Multi-model AI gateway** (`core/ai_gateway/`) — task-typed LLM calls (categorise / extract / summarise / synthesise / project) routed across Google Gemini and Ollama Cloud models with per-task fallback chains, per-model health tracking, context-window fit checks, exponential-backoff retries, JSON-schema validation, a deterministic last-resort fallback, and full **provenance** on every result (rendered as UI chips on theme cards).
+- **7 strategic themes** — 4-pass waterfall classification (weighted keywords → TF-IDF → gateway LLM → soft-match heuristic), with LLM calls reserved for genuinely ambiguous articles.
 - **Background ingestion** — first load and 12-hour-expiry refreshes run in a daemon thread (`core/bg_refresher.py`); the UI stays responsive while the pipeline runs.
 - **Persistent memory** — every run is appended to `history.json` (machine-readable), `memory.md` (human-readable wiki), and optionally Supabase (cloud). The last 2 runs' summaries are injected into the next LLM prompt so the model reports on **evolutions**, not static snapshots.
 - **Token optimisation** — content-based SHA-256 hashing skips redundant LLM calls when fetched articles are unchanged; `articles` table uses `(content_hash, theme_name)` UPSERT to deduplicate across runs.
@@ -40,19 +41,22 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 │  └────────────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
 │  Core Intelligence Layer                                         │
+│  • AI Gateway    (multi-model routing, fallback chains, health   │
+│                   tracking, deterministic fallback, provenance)  │
 │  • Fetcher       (concurrent RSS + web scraping)                 │
 │  • Classifier    (4-pass waterfall: keywords → TF-IDF → LLM     │
 │                   → soft-match; gate counters tracked)           │
 │  • TF-IDF Classifier (cosine-similarity fallback for gate 2)     │
-│  • Summariser    (LLM with memory-injection + provenance)        │
+│  • Summariser    (gateway synthesis with memory-injection        │
+│                   + provenance)                                  │
 │  • Non-LLM Summariser (extractive LexRank/Luhn fallback)         │
 │  • Provenance    (chip renderer + banner stripper)               │
 │  • History Mgr   (JSON + Markdown + Supabase persistence)        │
 │  • Cache         (st.cache_data 12h TTL + .cache/ disk JSON)     │
 │  • BG Refresher  (daemon thread, non-blocking pipeline)          │
 │  • Shared Sidebar (consistency across all pages)               │
-│  • LLM Client    (Ollama Cloud, exponential-backoff retries,     │
-│                   opt-in event_sink, LLM_DEBUG dump)             │
+│  • LLM Client    (legacy Ollama wrapper — quota flags with       │
+│                   self-healing probe, backoff retries, LLM_DEBUG)│
 │  • Gemini Client (on-demand Google Gemini synthesis + fallback)  │
 │  • Sage Agent    (Memory Wiki chat — chronological citations;    │
 │                   automatic Gemini fallback)                     │
@@ -80,19 +84,23 @@ flowchart TD
     end
 
     subgraph Summariser ["2. Dual-Engine Summariser Pipeline"]
-        Themed --> ModeCheck{"Engine Mode / Quota Status"}
-        
-        ModeCheck -- "LLM Synthesis (Default)" --> Ollama["Ollama LLM API"]
-        Ollama -- "Success" --> StructOut["Structured Brief (JSON)"]
-        Ollama -- "Quota Exceeded (HTTP 429) / Offline" --> NonLLMFallback["⚡ Non-LLM Extractive Engine"]
-        
-        ModeCheck -- "Non-LLM Extractive Mode" --> NonLLMFallback
-        
+        Themed --> ModeCheck{"Engine Mode"}
+
+        ModeCheck -- "LLM Synthesis (Default)" --> Gateway["Model Gateway\n(routing, health, retries, context-fit)"]
+        Gateway --> Gemini["Google Gemini models"]
+        Gateway --> Ollama["Ollama Cloud models"]
+        Gemini -- "Success" --> StructOut["Structured 5-Section Brief\n+ Provenance chip"]
+        Ollama -- "Success" --> StructOut
+        Gemini -- "Quota / errors" --> Ollama
+        Ollama -- "All LLMs failed" --> NonLLMFallback["⚡ Non-LLM Extractive Engine"]
+
+        ModeCheck -- "Non-LLM Extractive Only" --> NonLLMFallback
+
         subgraph NonLLMEngine ["Non-LLM Extractive Engine (< 50ms, 0-Cost, 100% Faithful)"]
             NonLLMFallback --> LexRank["LexRank Graph Centrality\n(Cosine Vector Similarity Matrix)"]
             NonLLMFallback --> Luhn["Luhn Keyword Cluster Scoring\n(Domain Engineering Density)"]
             NonLLMFallback --> Keyphrase["NLU n-Gram Keyphrase Extraction\n(Unigram + Bigram Watchlist)"]
-            
+
             LexRank --> Signal["The Signal (what_is_happening)"]
             Luhn --> TechTradeoffs["Engineering Tradeoffs & Product Impact"]
             Keyphrase --> Watchlist["Actionable Watchlist"]
@@ -100,7 +108,7 @@ flowchart TD
     end
 
     subgraph Storage ["3. Memory Wiki & Cloud Persistence"]
-        StructOut --> Wiki["Memory Wiki & Supabase (theme_summaries)"]
+        StructOut --> Wiki["Memory Wiki & Supabase\n(theme_summaries + generation_source)"]
         Signal --> Wiki
         TechTradeoffs --> Wiki
         Watchlist --> Wiki
@@ -115,12 +123,18 @@ pip install -r requirements.txt
 ```
 
 ### 2. Configure Secrets
-Create `.streamlit/secrets.toml`:
+Create `.streamlit/secrets.toml` (see `.env.example`):
 ```toml
 OLLAMA_BASE_URL = "https://api.ollama.com"
-OLLAMA_MODEL    = "qwen3.5:cloud"
-OLLAMA_API_KEY  = "your-api-key"
+OLLAMA_MODEL    = "nemotron-3-super:cloud"
+OLLAMA_API_KEY  = "your-ollama-api-key"
+
+# Optional: Google Gemini for gateway routing & on-demand Deep Dive summaries
+GEMINI_API_KEY  = "your-gemini-api-key"
+GEMINI_MODEL    = "gemini-3.7-flash"
 ```
+
+> **Note:** the Model Gateway (`core/ai_gateway/`) initialises its providers from **OS environment variables** (`OLLAMA_API_KEY`, `OLLAMA_BASE_URL`, `GEMINI_API_KEY`) rather than Streamlit secrets. If you want gateway-routed synthesis, export those variables in the environment you launch Streamlit from; otherwise the app degrades gracefully to the deterministic/extractive engine.
 
 ### 3. Configure Supabase (Optional)
 For cloud persistence, create `.env`:
@@ -143,8 +157,8 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 | # | Page | Purpose |
 |---|------|---------|
 | — | Home (`app.py`) | Dashboard with theme metrics and live ingestion status |
-| 1 | Overview | Theme summary cards with key takeaways |
-| 2 | Deep Dive | Per-theme article list, full summaries, and further reading |
+| 1 | Overview | Theme summary cards with provenance chips (which model/engine produced each brief) and key takeaways |
+| 2 | Deep Dive | Per-theme article list, full summaries, on-demand Gemini re-summarisation with model switching on quota, and further reading |
 | 3 | Keyword Analysis | Keyword velocity analytics with theme filter & top-10 auto-plotting (with singular/plural canonicalization & low-signal stopword filtering), plus theme word clouds & frequency distributions |
 | 4 | Sources | All RSS feeds and web sources with article counts |
 | 5 | Memory Wiki | **🔮 Ask Sage** (default tab) — conversational chat agent grounded in wiki data with chronological citations; 📖 Memory Timeline — browse past runs; ⚖️ Compare Runs — side-by-side diff |
@@ -169,7 +183,7 @@ Defined in `config/themes.py` with **weighted keywords** (1–3 — higher weigh
 The classifier processes articles through a **4-pass waterfall pipeline** (`core/classifier.py`, `core/tfidf_classifier.py`):
 1. **Pass 1 (Weighted Keywords)**: Fast exact keyword matching using `config/themes.py` weights (~75% of items).
 2. **Pass 2 (TF-IDF Cosine Similarity)**: Sub-millisecond vector cosine angle matching against theme vocabulary vectors (~20% of items).
-3. **Pass 3 (Batched Ollama LLM)**: Batched LLM requests reserved strictly for remaining ambiguous items (< 5% of items).
+3. **Pass 3 (Model Gateway LLM)**: LLM classification routed through the AI Gateway (multi-model fallback + provenance), reserved strictly for remaining ambiguous items (< 5% of items).
 4. **Pass 4 (Soft-Match Heuristic)**: Guaranteed fuzzy token/substring fallback to ensure 100% coverage.
 
 Gate breakdown metrics (Pass 1/2/3/4 item counts and percentages) are tracked automatically and rendered on the **Quality Evaluation** page (`pages/7_Quality_Evaluation.py`) to monitor gate efficiency over time.
@@ -197,7 +211,7 @@ The evaluation suite (`core/evaluator.py`) runs **7 automated checks** to ensure
 | **Faithfulness Score** | LLM-as-Judge | Are the generated summaries truthful to the original articles without making things up? | Extracts claims from summary bullet points and uses LLM fact-checking against theme-filtered source article text. | ≥ 80% |
 | **Uniqueness Score** | Hybrid Heuristic + LLM | Are different theme summaries distinct, or are they repeating the same stories across themes/runs? | Performs Jaccard/cosine text overlap filtering; invokes LLM pairwise uniqueness judge when overlap is in ambiguous bands. | ≥ 80% |
 | **Grounding Score** | Deterministic | Do the "Further Reading" links point to real articles fetched in the run? | Cross-references cited titles/links in `further_reading` against the exact set of input source articles. | 100% |
-| **Structural Compliance** | Deterministic | Is the summary formatted properly with the right sections, sentence lengths, and bullet counts? | Regex validates mandatory headers (`WHAT HAPPENED`, `SIGNIFICANCE`, `WATCHLIST`) and checks sentence count bounds (3–7 sentences). | 100% |
+| **Structural Compliance** | Deterministic | Is the summary formatted properly with the right sections, sentence lengths, and bullet counts? | Validates the 5 mandatory sections (`what_is_happening`, `engineering_tradeoffs`, `product_impact`, `what_to_watch`, `further_reading`) and checks sentence count bounds (3–7 sentences) on prose sections. | 100% |
 | **Coverage Score** | Deterministic | Did the summary capture key information from all fetched articles, or did it ignore most of them? | Measures source article title/entity token recall across the generated theme summary. | ≥ 70% |
 | **Temporal Coherence** | Deterministic | Is the summary actually updating week-over-week, or is it echoing static past summaries? | Compares active summary against past run summaries to verify evolution claims and flag stale text repetition. | ≥ 75% |
 
@@ -230,8 +244,11 @@ Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_m
 ## 🧪 Tests
 
 ```bash
-pytest tests/                                  # main test suite (fetcher, classifier, summariser, visualiser, evaluator, sage_agent)
-                                               # picks up shared fixtures in tests/conftest.py (CannedLLM, clean_judge_events, integration marker)
+pytest tests/                                  # main suite (~215 tests): fetcher, classifier, tfidf, summariser,
+                                               # non-LLM summariser, gemini, provenance, quota fallback, evaluator,
+                                               # sage_agent, supabase_client, bg_refresher, visualiser, user_feedback
+                                               # picks up shared fixtures in tests/conftest.py (incl. an autouse
+                                               # fixture that resets LLM quota flags around every test)
 pytest -m integration tests/                   # opt-in: exercises the real LLM and Supabase wiring
 python test_supabase.py                        # Supabase connection + write/read smoke test
 python test_backfill.py                        # history.json → Supabase backfill
@@ -250,46 +267,71 @@ python test_llm_optimization.py                # skip-summarise-when-unchanged l
 ```
 ai-pulse/
 ├── app.py                       # Streamlit entry point + sidebar + ingestion state machine
-├── pages/                       # 8 Streamlit pages (Home, Overview … Quality Evaluation)
+├── pages/                       # 8 Streamlit pages (Home, Overview … Feedback & Roadmap)
 ├── core/
+│   ├── ai_gateway/              # Multi-model gateway (routing, fallback, provenance)
+│   │   ├── contracts.py         # TaskType / AITaskRequest / AITaskResult / Provenance
+│   │   ├── gateway.py           # ModelGateway singleton: registry, health, retries
+│   │   ├── deterministic.py     # Zero-LLM fallbacks (rules, extractive, keywords)
+│   │   └── providers/           # GeminiProvider + OllamaCloudProvider adapters
 │   ├── fetcher.py               # Concurrent RSS + BeautifulSoup web scraping
-│   ├── classifier.py            # Weighted keywords + batched LLM classification
-│   ├── summariser.py            # LLM summarisation with memory-injection
-│   ├── visualiser.py            # Word cloud generation
+│   ├── classifier.py            # 4-pass waterfall classification (gate stats tracked)
+│   ├── tfidf_classifier.py      # TF-IDF cosine-similarity classifier (gate 2)
+│   ├── summariser.py            # Gateway summarisation with memory-injection + provenance
+│   ├── non_llm_summariser.py    # Extractive LexRank/Luhn/keyphrase engine (0-cost fallback)
+│   ├── gemini_client.py         # On-demand Deep Dive Gemini synthesis + quota model switching
+│   ├── provenance.py            # Provenance chip renderer + banner stripper
+│   ├── visualiser.py            # Word cloud generation + keyword canonicalization
 │   ├── evaluator.py             # LLM-as-judge quality evaluation pipeline
 │   ├── weekly_evaluator.py      # Weekly cadence helper for the evaluator
 │   ├── quality_schema.py        # Supabase schema for quality_evaluations table
 │   ├── history_manager.py       # JSON / Markdown / Supabase persistence
 │   ├── cache.py                 # st.cache_data + disk cache + content hashing
 │   ├── bg_refresher.py          # BackgroundRefresher thread (singleton)
-│   ├── llm_client.py            # Ollama Cloud wrapper (retries, auth, opt-in event_sink)
-│   ├── sage_agent.py            # Sage chat agent (persona, context builder, relevance scorer)
+│   ├── llm_client.py            # Legacy Ollama wrapper (quota flags, self-heal probe, retries)
+│   ├── sage_agent.py            # Sage chat agent (context builder + automatic Gemini fallback)
 │   ├── shared_sidebar.py        # Consistent nav + status across pages
+│   ├── design_system.py         # Shared CSS tokens + HTML sanitisation
 │   ├── supabase_client.py       # All DB ops, graceful degradation
 │   ├── supabase_ui.py           # Sidebar sync status widget
 │   └── logger.py                # Centralised logging setup
 ├── config/
-│   ├── settings.py              # Days lookback, cache TTL, fetch workers
+│   ├── settings.py              # Lookback, cache TTL, workers, model context windows, tuner overlay
 │   ├── themes.py                # 7 themes with weighted keywords
 │   ├── sources.py               # RSS feeds + web-scrape registry
+│   ├── custom_settings.json     # In-app summariser tuner overrides (created on demand)
+│   ├── custom_keywords.json     # In-app keyword manager overrides (created on demand)
 │   └── Appendix_*.md            # Watchlists: experts, blogs, papers
-├── tests/                       # pytest suite (fetcher/classifier/summariser/visualiser/evaluator/sage_agent)
-│   ├── conftest.py              # Shared fixtures: CannedLLM, llm_table, clean_judge_events, integration marker
+├── tests/                       # pytest suite (~215 tests)
+│   ├── conftest.py              # Shared fixtures + autouse LLM quota-flag reset
 │   ├── test_fetcher.py
 │   ├── test_classifier.py
+│   ├── test_tfidf_classifier.py
 │   ├── test_summariser.py
-│   ├── test_visualiser.py
+│   ├── test_gemini_summariser.py
+│   ├── test_non_llm_summariser.py
+│   ├── test_non_llm_synthetic_cases.py
+│   ├── test_provenance.py
+│   ├── test_quota_exceeded_fallback.py
 │   ├── test_evaluator.py
-│   └── test_sage_agent.py
+│   ├── test_sage_agent.py
+│   ├── test_supabase_client.py
+│   ├── test_bg_refresher.py
+│   ├── test_user_feedback.py
+│   └── test_visualiser.py
 ├── test_backfill.py             # Standalone: history.json → Supabase backfill smoke test
 ├── test_deduplication.py        # Standalone: UPSERT dedup of (content_hash, theme_name)
 ├── test_llm_optimization.py     # Standalone: skip-summarise-when-unchanged logic
 ├── test_supabase.py             # Standalone: Supabase connection + write/read smoke test
 ├── .streamlit/                  # secrets.toml.example
+├── .env.example                 # Supabase + Ollama + Gemini key template
 ├── supabase_schema.sql          # 4 tables, RLS, indexes
 ├── supabase_migration_dedup.sql # Adds (content_hash, theme_name) unique constraint
 ├── supabase_migration_keywords.sql # Adds keyword_suggestions table (used by Quality Evaluation)
 ├── supabase_migration_quality_metrics.sql # Adds 4 new metric columns to quality_evaluations table
+├── supabase_migration_provenance.sql # Adds generation_source / generation_log to theme_summaries
+├── supabase_migration_user_feedback.sql # Adds user_feedback table (Feedback & Roadmap page)
+├── supabase_migration_backfill_articles.sql # Backfills historical articles into the articles table
 ├── SUPABASE_SETUP_GUIDE.md
 ├── SUPABASE_INTEGRATION_README.md
 ├── watch.md                     # User's keyword / engineering blog list
