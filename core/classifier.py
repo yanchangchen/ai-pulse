@@ -3,30 +3,32 @@ Theme classification module for AI Pulse.
 Classifies articles into 7 strategic themes using a 4-pass waterfall pipeline:
 1. Pass 1: Exact weighted keyword matching (keyword_classify)
 2. Pass 2: TF-IDF Cosine Similarity matching (tfidf_classify)
-3. Pass 3: Batched LLM classification (classify_with_ollama)
+3. Pass 3: Batched LLM classification via Model Gateway (with fallback & provenance)
 4. Pass 4: Soft-match heuristic fallback (find_closest_theme)
 """
 
 import re
 import json
 import logging
+import asyncio
 from typing import Dict, List, Optional
 
 from config.themes import THEMES
 from core.llm_client import LLMClient, LLMClientError
 from core.tfidf_classifier import tfidf_classify
+from core.ai_gateway import ModelGateway, get_gateway, AITaskRequest, TaskType
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Shared LLM client instance (initialised lazily)
+# Shared LLM client instance (initialised lazily) - kept for backward compat
 _llm: Optional[LLMClient] = None
 
 # Global store for latest classification gate metrics
 _last_gate_stats: Dict[str, int] = {
     "gate_1_keyword": 0,
     "gate_2_tfidf": 0,
-    "gate_3_ollama": 0,
+    "gate_3_llm": 0,
     "gate_4_heuristic": 0,
     "total": 0,
 }
@@ -71,8 +73,8 @@ def keyword_classify(title: str, summary: str) -> Optional[str]:
     return max(theme_scores, key=theme_scores.get)
 
 
-def classify_with_ollama(title: str, summary: str) -> Optional[str]:
-    """Use the LLM client to classify a single article."""
+async def classify_with_gateway(title: str, summary: str) -> Optional[str]:
+    """Use the Model Gateway to classify a single article with fallback & provenance."""
     prompt = (
         "You are an AI news classifier. Classify this AI news item into exactly one of these seven themes:\n"
         "- Agentic Systems & DevTools\n"
@@ -89,19 +91,31 @@ def classify_with_ollama(title: str, summary: str) -> Optional[str]:
         f"Summary: {summary[:500]}"
     )
 
+    gateway = get_gateway()
+    request = AITaskRequest(
+        task=TaskType.CATEGORISE,
+        input=prompt,
+        temperature=0.1,
+        max_tokens=50,
+    )
+
     try:
-        llm = _get_llm()
-        theme = llm.generate(prompt, temperature=0.1, max_tokens=50).strip()
-
-        valid_themes = list(THEMES.keys())
-        for valid_theme in valid_themes:
-            if valid_theme.lower() in theme.lower():
-                return valid_theme
-
-    except LLMClientError as exc:
-        logger.error("Ollama classification error: %s", exc)
+        result = await gateway.execute(request)
+        if result.is_success():
+            theme = str(result.result).strip()
+            valid_themes = list(THEMES.keys())
+            for valid_theme in valid_themes:
+                if valid_theme.lower() in theme.lower():
+                    return valid_theme
+    except Exception as exc:
+        logger.error("Gateway classification error: %s", exc)
 
     return None
+
+
+def classify_with_ollama(title: str, summary: str) -> Optional[str]:
+    """Synchronous wrapper for backward compatibility."""
+    return asyncio.run(classify_with_gateway(title, summary))
 
 
 def find_closest_theme(title: str, summary: str) -> str:
@@ -193,16 +207,16 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
             unmatched_after_pass2.append(article)
 
     # ------------------------------------------------------------------
-    # Pass 3: Batched Ollama LLM Classification for remaining items
+    # Pass 3: Batched LLM Classification via Model Gateway for remaining items
     # ------------------------------------------------------------------
     unmatched_after_pass3: List[Dict] = []
 
     if unmatched_after_pass2:
         batch_size = 20
-        llm = _get_llm()
 
-        for i in range(0, len(unmatched_after_pass2), batch_size):
-            batch = unmatched_after_pass2[i:i + batch_size]
+        async def _classify_batch(batch: List[Dict]) -> int:
+            """Classify a batch using the Model Gateway."""
+            gateway = get_gateway()
             batch_items = [f"ID {idx}: {a.get('title', '')}" for idx, a in enumerate(batch)]
             items_text = "\n".join(batch_items)
 
@@ -223,11 +237,24 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
 
             prompt = f"Classify these articles:\n\n{items_text}"
 
+            request = AITaskRequest(
+                task=TaskType.CATEGORISE,
+                input=prompt,
+                system=system_prompt,
+                temperature=0.1,
+                max_tokens=1000,
+            )
+
             try:
-                result = llm.generate(prompt, system=system_prompt, temperature=0.1, max_tokens=1000)
-                json_match = re.search(r'\{.*\}', result, re.DOTALL)
-                if json_match:
-                    mapping = json.loads(json_match.group(0))
+                result = await gateway.execute(request)
+                if result.is_success():
+                    mapping = result.result
+                    if isinstance(mapping, str):
+                        json_match = re.search(r'\{.*\}', mapping, re.DOTALL)
+                        if json_match:
+                            mapping = json.loads(json_match.group(0))
+
+                    classified = 0
                     for idx, article in enumerate(batch):
                         id_key = f"ID {idx}"
                         theme_name = mapping.get(id_key)
@@ -236,11 +263,19 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
                                 if valid_theme.lower() in theme_name.lower():
                                     article['theme'] = valid_theme
                                     article['gate'] = 3
-                                    gate_counts["gate_3_ollama"] += 1
-                                    classified_list.append(article)
+                                    article['gate_provenance'] = result.provenance.to_dict() if hasattr(result.provenance, 'to_dict') else {}
+                                    classified += 1
                                     break
+                    return classified
             except Exception as exc:
-                logger.error("Batch JSON Ollama classification error: %s", exc)
+                logger.error("Batch gateway classification error: %s", exc)
+            return 0
+
+        # Run all batches
+        for i in range(0, len(unmatched_after_pass2), batch_size):
+            batch = unmatched_after_pass2[i:i + batch_size]
+            classified_count = asyncio.run(_classify_batch(batch))
+            gate_counts["gate_3_llm"] += classified_count
 
     # Collect any items still unassigned after Pass 3
     for article in unmatched_after_pass2:
@@ -261,11 +296,11 @@ def classify_articles(articles: List[Dict]) -> Dict[str, List[Dict]]:
     _last_gate_stats = gate_counts
 
     logger.info(
-        "Classification complete [%d total]. Pass 1 (Keywords): %d, Pass 2 (TF-IDF): %d, Pass 3 (Ollama): %d, Pass 4 (Heuristic): %d",
+        "Classification complete [%d total]. Pass 1 (Keywords): %d, Pass 2 (TF-IDF): %d, Pass 3 (Gateway): %d, Pass 4 (Heuristic): %d",
         len(articles),
         gate_counts["gate_1_keyword"],
         gate_counts["gate_2_tfidf"],
-        gate_counts["gate_3_ollama"],
+        gate_counts["gate_3_llm"],
         gate_counts["gate_4_heuristic"],
     )
 

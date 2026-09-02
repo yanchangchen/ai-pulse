@@ -147,13 +147,32 @@ EVAL_FAITHFULNESS_SKIP_STRINGS: tuple = (
 )
 
 # ---------------------------------------------------------------------------
-# LLM context window
+# LLM context window - MODEL AWARE
 # ---------------------------------------------------------------------------
-# num_ctx passed to Ollama on every generate() call.  4096 covers ~10
-# articles (each ~500 chars ≈ 150 tokens) + system prompt + ~1500 tokens
-# of output with headroom.  Bump if you increase MAX_ARTICLES_PER_SUMMARY
-# below or if you switch to a model with a larger native context.
-OLLAMA_NUM_CTX: int = 4096
+# Context window sizes per model (tokens).  Ollama Cloud models have specific
+# context limits; using the wrong num_ctx truncates input and causes empty responses.
+OLLAMA_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "nemotron-3-super:cloud": 262144,      # 256K context
+    "nemotron-3-super": 262144,
+    "nemotron-3-ultra:cloud": 262144,      # If available
+    "nemotron-3-ultra": 262144,
+    "gpt-oss:120b-cloud": 131072,          # 128K context
+    "gpt-oss:120b": 131072,
+    "gpt-oss:20b-cloud": 131072,
+    "gpt-oss:20b": 131072,
+    "nemotron-3-nano:30b": 131072,
+    "minimax-m3:cloud": 32768,             # Previous model
+    "minimax-m3": 32768,
+}
+
+def get_ollama_num_ctx(model: str = None) -> int:
+    """Get appropriate num_ctx for the current model."""
+    if model is None:
+        model = OLLAMA_MODEL
+    return OLLAMA_MODEL_CONTEXT_WINDOWS.get(model, 32768)  # Default 32K
+
+# Backward compatibility - compute dynamically for current model
+OLLAMA_NUM_CTX: int = get_ollama_num_ctx()
 MAX_ARTICLES_PER_SUMMARY: int = 12
 MAX_ARTICLES_PER_GEMINI_SUMMARY: int = 75
 # Rough chars-per-token ratio.  Used to budget the input side of num_ctx.

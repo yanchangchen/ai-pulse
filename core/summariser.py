@@ -1,22 +1,24 @@
 """
 LLM summarisation module for AI Pulse.
-Generates theme summaries using the shared LLM client.
+Generates theme summaries using the Model Gateway with routing, fallback, and provenance.
 """
 
 import logging
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from config.themes import THEMES, THEME_ORDER
 from core.llm_client import LLMClient, LLMClientError
 from core.gemini_client import GeminiClient, GeminiClientError, GeminiQuotaError
+from core.ai_gateway import ModelGateway, get_gateway, AITaskRequest, TaskType
 import core.history_manager as history_manager
 from core.history_manager import get_recent_context, save_run_to_history
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Shared LLM client instance (initialised lazily)
+# Shared LLM client instance (initialised lazily) - kept for backward compat
 _llm: Optional[LLMClient] = None
 
 # After this many consecutive empty-response failures within a single run,
@@ -49,6 +51,208 @@ def _with_provenance(summary: Dict[str, str], source: str, **log_fields) -> Dict
     log.update(log_fields)
     summary["_generation_log"] = log
     return summary
+
+
+def _provenance_to_dict(provenance) -> Dict:
+    """Convert Provenance object to dict for storage."""
+    if hasattr(provenance, 'to_dict'):
+        return provenance.to_dict()
+    elif isinstance(provenance, dict):
+        return provenance
+    else:
+        return {"source": str(provenance)}
+
+
+async def generate_theme_summary_gateway(
+    theme_name: str,
+    articles: List[Dict],
+) -> Dict[str, str]:
+    """Generate a comprehensive summary for a theme using the Model Gateway."""
+
+    if not articles:
+        summary = {
+            "what_is_happening": "No articles found for this theme in the past two weeks.",
+            "why_it_matters": "Limited coverage this week.",
+            "what_to_watch": "Check back next week for updates.",
+            "further_reading": ""
+        }
+        return _with_provenance(
+            summary, source="gateway:no_articles",
+            model="none", article_count=0,
+            note="empty_article_pool",
+        )
+
+    # Retrieve memory context
+    past_context = get_recent_context(theme_name)
+
+    if len(articles) < 3:
+        summary = {
+            "what_is_happening": f"Limited coverage this week with only {len(articles)} articles found. {past_context}",
+            "engineering_tradeoffs": "Limited news signal this week.",
+            "product_impact": "Limited news signal this week.",
+            "why_it_matters": "This theme has fewer articles this week, possibly indicating lower activity or a quiet period.",
+            "what_to_watch": "Monitor for upcoming announcements and developments.",
+            "further_reading": ""
+        }
+        return _with_provenance(
+            summary, source="gateway:limited_coverage",
+            model="none", article_count=len(articles),
+            note="fewer_than_3_articles",
+        )
+
+    # Rank articles by relevance to the theme, then format.
+    from config.settings import (
+        MAX_ARTICLES_PER_SUMMARY,
+        OLLAMA_NUM_CTX,
+        CHARS_PER_TOKEN,
+        INPUT_BUDGET_FRACTION,
+    )
+    ranked_articles = _rank_articles_by_relevance(
+        articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
+    )
+    char_budget = int(OLLAMA_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
+    formatted_articles = format_articles_for_prompt(
+        ranked_articles, char_budget=char_budget,
+    )
+
+    num_articles = len(ranked_articles)
+    if num_articles > 30:
+        signal_instruction = (
+            f"Write a comprehensive, detailed factual narrative of 6–10 sentences synthesizing the key trends from these {num_articles} developments. "
+            "Do NOT use bullet points. Lead with the single most significant theme or development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a synthesis of the broader directional shift this signals. Target 180–250 words."
+        )
+    elif num_articles > 15:
+        signal_instruction = (
+            f"Write a detailed factual narrative of 5–8 sentences synthesizing these {num_articles} developments. "
+            "Do NOT use bullet points. Lead with the single most significant theme or development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a sentence on the broader directional shift this signals. Target 120–180 words."
+        )
+    else:
+        signal_instruction = (
+            "Write 4–6 sentences as a tight factual narrative — no bullet points. Lead with the single most significant development. "
+            "When presenting key developments, cite the source name in parentheses next to the fact, model, or release (e.g. '(Anthropic)' or '(Databricks)'). "
+            "End with a sentence on the broader directional shift this signals. Target 80–120 words."
+        )
+
+    user_prompt = f"""You are analyzing AI news summaries from the past two weeks, focused on the theme: {theme_name}
+
+--- SOURCE ARTICLES ---
+{formatted_articles}
+
+{f"--- PRIOR CONTEXT ---\n{past_context}" if past_context else ""}
+--- END OF SOURCES ---
+
+Produce a rigorous technical intelligence brief using the exact structure below.
+
+---
+
+## 1. WHAT IS HAPPENING
+{signal_instruction}
+{"Explicitly call out what is NEW or EVOLVED since the prior brief." if past_context else ""}
+
+## 2. ENGINEERING TRADEOFFS & BLUEPRINT
+*Audience: AI Engineers*
+Write 4–6 sentences as flowing prose. Cover: architectural patterns, API changes, performance parameters (latency / memory / cost), open-weight licenses, or framework upgrades. Close with the core technical tradeoff a practitioner must weigh. Target 80–120 words.
+
+## 3. PRODUCT IMPACT & FEASIBILITY
+*Audience: Product Managers*
+Write 4–6 sentences as flowing prose. Address: speed-to-market, pricing margins, integration overhead, safety/compliance risks, and competitor capability shifts. Close with a direct verdict: is this production-ready for enterprise use, and under what conditions? Target 80–120 words.
+
+## 4. ACTIONABLE WATCHLIST
+List exactly 3–5 items. Each item must follow this format:
+  - **[Item]** — one sentence explaining why it matters and when to act.
+
+Focus on: upcoming API breaking changes, benchmark releases, regulatory deadlines, or high-signal research papers. Every watchlist item MUST reference a specific upcoming event, deadline, release, or research paper found in the SOURCE ARTICLES — do not invent entity names or generic industry trends.
+
+## 5. STRATEGIC FURTHER READING
+List exactly 5 articles from the sources above. You MUST select the most significant articles from the SOURCE ARTICLES, prioritizing those you referenced or drew from in Section 1 (What is Happening) and Section 2 (Engineering Tradeoffs). Format each entry as:
+  - **[Article Title]** | [Source] | [URL]
+    *Why read this:* one sentence stating the concrete technical or product takeaway.
+
+IMPORTANT: Copy each URL VERBATIM from the URL field of the matching article in the SOURCE ARTICLES. Never paraphrase, shorten, or invent URLs.
+
+If you would otherwise produce an empty section, say so explicitly rather than omitting it.
+"""
+
+    system_prompt = """You are an expert AI engineering analyst and product strategist writing for senior tech leaders.
+
+Your role is to cut through noise and surface what actually matters — architectural shifts, API stability, performance tradeoffs, and product feasibility.
+
+Writing style rules:
+- Be precise, direct, and technically rigorous
+- No hype, buzzwords, or vague generalizations
+- Write prose sections in flowing paragraphs
+- Use bullet points only in sections 4 and 5
+- Bold key terms, model names, and company names on first mention
+- Never start two consecutive sentences with the same word
+"""
+
+    from config.settings import get_summariser_settings
+    sum_settings = get_summariser_settings()
+
+    if sum_settings.get("strict_faithfulness_mode"):
+        system_prompt += (
+            "\n- STRICT FAITHFULNESS MANDATE: Every claim must be explicitly supported by the provided SOURCE ARTICLES. "
+            "Do NOT extrapolate, infer unmentioned facts, or invent details."
+        )
+
+    # Use the Model Gateway for summarisation
+    gateway = get_gateway()
+
+    # Build input with system prompt prepended
+    full_prompt = f"System: {system_prompt}\n\nUser: {user_prompt}"
+
+    request = AITaskRequest(
+        task=TaskType.SUMMARISE,
+        input=full_prompt,
+        temperature=float(sum_settings.get("temperature", 0.3)),
+        max_tokens=int(sum_settings.get("max_tokens", 2200)),
+    )
+
+    try:
+        result = await gateway.execute(request)
+
+        if result.is_success():
+            # Parse the result - it should be the structured summary
+            parsed = _parse_summary_sections(str(result.result))
+
+            # Extract provenance info
+            prov = result.provenance
+            source_str = f"{prov.provider}:{prov.model}" if prov.provider else f"deterministic:{prov.task}"
+
+            return _with_provenance(
+                parsed,
+                source=source_str,
+                model=prov.model or "deterministic",
+                article_count=len(articles),
+                note="live_synthesis" if prov.method == "llm" else "deterministic_fallback",
+                latency_ms=prov.latency_ms,
+                attempts=prov.attempts,
+                fallback_used=prov.fallback_used,
+                provenance=prov.to_dict(),
+            )
+        else:
+            raise Exception(result.provenance.error or "Unknown error")
+
+    except Exception as exc:
+        logger.error("Error generating summary for %s: %s", theme_name, exc)
+        summary = {
+            "what_is_happening": f"Error generating summary: {exc}",
+            "engineering_tradeoffs": "Unable to analyze due to error.",
+            "product_impact": "Unable to analyze due to error.",
+            "why_it_matters": "Unable to analyze at this time.",
+            "what_to_watch": "Please try again later.",
+            "further_reading": ""
+        }
+        return _with_provenance(
+            summary, source="gateway:error",
+            model="none", article_count=len(articles),
+            note="gateway_error",
+            error=str(exc),
+        )
 
 
 def _rank_articles_by_relevance(
@@ -608,10 +812,18 @@ def generate_all_summaries(
     full_articles: Optional[List[Dict]] = None
 ) -> Dict[str, Dict[str, str]]:
     """
-    Generate summaries for all themes in THEME_ORDER.
-    Checks for LLM quota/rate limits and falls back to cached summaries or
-    extractive non-LLM summaries when quota is exceeded.
+    Generate summaries for all themes in THEME_ORDER using the Model Gateway.
+    Handles quota, fallback, and provenance tracking.
     """
+    # Run the async version
+    return asyncio.run(_generate_all_summaries_async(themed_articles, full_articles))
+
+
+async def _generate_all_summaries_async(
+    themed_articles: Dict[str, List[Dict]],
+    full_articles: Optional[List[Dict]] = None
+) -> Dict[str, Dict[str, str]]:
+    """Async implementation of summary generation using Model Gateway."""
     summaries: Dict[str, Dict[str, str]] = {}
     article_counts = {}
 
@@ -623,29 +835,7 @@ def generate_all_summaries(
     except Exception:
         pass
 
-    # Active quota probe at the start of every run.  The BG refresher probes
-    # before kicking off its thread, but `generate_all_summaries` is also
-    # called from other entry points (e.g. retry after a partial failure,
-    # scripts, tests) that may not have validated the flag recently.  If the
-    # user has just had their Ollama weekly quota refreshed, a 200 from this
-    # probe clears the stale flag in time for the first theme to use the
-    # live LLM path instead of falling back to extractive.
-    if user_mode != "⚡ Non-LLM Extractive Only":
-        try:
-            if LLMClient.probe_quota_status():
-                logger.info(
-                    "Pre-loop Ollama /api/tags probe OK — live LLM synthesis enabled."
-                )
-            elif LLMClient.is_quota_exceeded():
-                logger.warning(
-                    "Pre-loop Ollama /api/tags probe failed — quota still exceeded; "
-                    "using non-LLM extractive summarisation for this run."
-                )
-        except Exception as exc:
-            # Never let a probe failure block a run — fall through and let the
-            # per-theme is_quota_exceeded() checks decide.
-            logger.debug("Pre-loop quota probe raised (ignoring): %s", exc)
-
+    # The gateway handles quota/health internally, but we still check user mode
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
         article_counts[theme] = len(articles)
@@ -656,35 +846,9 @@ def generate_all_summaries(
             summaries[theme] = extractive_theme_summary(theme, articles)
             continue
 
-        # Detect a degraded LLM path (empty responses, timeouts) BEFORE we burn
-        # 3 × 15-25s of retries per theme.  Treat consecutive empty-response
-        # failures the same as quota exhaustion for the rest of this run.
-        empty_streak = LLMClient._get_empty_response_streak()
-        if empty_streak >= _EMPTY_FAIL_DEGRADE_THRESHOLD:
-            logger.warning(
-                "LLM client has logged %d consecutive empty-response failures — "
-                "switching remaining themes to non-LLM extractive summarisation.",
-                empty_streak,
-            )
-            LLMClient.mark_quota_exceeded(
-                f"Degraded after {empty_streak} consecutive empty-response failures; "
-                f"falling back to extractive summarisation."
-            )
-
-        # Check if LLM quota/rate limit was hit previously or on this run
-        if LLMClient.is_quota_exceeded():
-            logger.warning("LLM quota exceeded (HTTP 429). Initiating non-LLM extractive summarisation for %s", theme)
-            info_prefix = "⚡ *Non-LLM Extractive Summary: Compiled deterministically using LexRank & Luhn extractive NLP (live LLM quota paused).* "
-            extractive = extractive_theme_summary(theme, articles)
-            orig_text = extractive.get("what_is_happening", "")
-            if info_prefix not in orig_text:
-                extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
-            summaries[theme] = extractive
-            continue
-
         existing_hashes = _get_existing_article_hashes(theme)
         new_articles = [
-            a for a in articles 
+            a for a in articles
             if not a.get("content_hash") or a.get("content_hash") not in existing_hashes
         ]
 
@@ -701,49 +865,32 @@ def generate_all_summaries(
             }
             summaries[theme] = _with_provenance(
                 skipped_summary,
-                source=f"ollama:{_get_llm().model}",
-                model=_get_llm().model, article_count=len(articles),
+                source="gateway:skipped",
+                model="none", article_count=len(articles),
                 note="no_new_articles_skip",
             )
             continue
 
-        logger.info("Generating summary for %s (%d new articles out of %d total)", 
+        logger.info("Generating summary for %s (%d new articles out of %d total)",
                    theme, len(new_articles), len(articles))
 
         try:
-            summary = generate_theme_summary(theme, new_articles if new_articles else articles)
+            summary = await generate_theme_summary_gateway(theme, new_articles if new_articles else articles)
             summaries[theme] = summary
         except Exception as exc:
             logger.error("Summary generation failed for %s: %s", theme, exc)
-            if LLMClient.is_quota_exceeded():
-                logger.warning("LLM quota exceeded during %s. Initiating non-LLM extractive summarisation.", theme)
-                info_prefix = "ℹ️ *Non-LLM Extractive Summary: Generated deterministically using lead sentence extraction because live LLM synthesis is paused.*"
-                extractive = extractive_theme_summary(theme, articles)
-                orig_text = extractive.get("what_is_happening", "")
-                if info_prefix not in orig_text:
-                    extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
-                summaries[theme] = extractive
-            else:
-                # Non-quota LLM failure (empty response, timeout, transport error, …).
-                # Fall back to the deterministic extractive summary so the UI keeps
-                # a usable brief instead of an error stub.  The badge makes the
-                # fallback obvious in the rendered card.
-                logger.warning(
-                    "LLM synthesis failed (non-quota) for %s. Falling back to non-LLM "
-                    "extractive summary. Cause: %s",
-                    theme, exc,
-                )
-                info_prefix = (
-                    "⚠️ *Non-LLM Extractive Summary: Live LLM synthesis failed "
-                    "(empty response / timeout), so this brief was compiled "
-                    "deterministically from the article pool using LexRank & Luhn "
-                    "extractive NLP.*"
-                )
-                extractive = extractive_theme_summary(theme, articles)
-                orig_text = extractive.get("what_is_happening", "")
-                if info_prefix not in orig_text:
-                    extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
-                summaries[theme] = extractive
+            # The gateway handles fallback internally, but if it fails completely:
+            info_prefix = (
+                "⚠️ *Non-LLM Extractive Summary: Live LLM synthesis failed "
+                "(empty response / timeout), so this brief was compiled "
+                "deterministically from the article pool using LexRank & Luhn "
+                "extractive NLP.*"
+            )
+            extractive = extractive_theme_summary(theme, articles)
+            orig_text = extractive.get("what_is_happening", "")
+            if info_prefix not in orig_text:
+                extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
+            summaries[theme] = extractive
 
     # Save to memory/wiki
     try:
