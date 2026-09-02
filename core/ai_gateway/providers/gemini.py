@@ -2,9 +2,18 @@
 Google Gemini provider adapter.
 """
 import json
-import google.generativeai as genai
+import logging
 from typing import Dict, Any, Optional
 from .base import ProviderAdapter
+
+logger = logging.getLogger(__name__)
+
+try:
+    import google.generativeai as genai
+    _GENAI_AVAILABLE = True
+except ImportError:
+    genai = None  # type: ignore
+    _GENAI_AVAILABLE = False
 
 
 class GeminiProvider(ProviderAdapter):
@@ -16,6 +25,11 @@ class GeminiProvider(ProviderAdapter):
         model: str = "gemini-3.5-flash",
         thinking_level: str = "low",
     ):
+        if not _GENAI_AVAILABLE:
+            raise ImportError(
+                "google-generativeai is required for GeminiProvider. "
+                "Install it with: pip install google-generativeai"
+            )
         genai.configure(api_key=api_key)
         self.model_name = model
         self.thinking_level = thinking_level

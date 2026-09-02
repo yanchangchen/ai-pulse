@@ -153,16 +153,19 @@ class ModelGateway:
         # Google Gemini
         gemini_key = os.getenv("GEMINI_API_KEY")
         if gemini_key:
-            for name, cfg in self.routing_config["model_registry"].items():
-                if cfg["provider"] == "google":
-                    self.providers[name] = GeminiProvider(
-                        api_key=gemini_key,
-                        model=cfg["model"],
-                        thinking_level=cfg.get("thinking_level", "low"),
-                    )
-                    self.health[name] = ModelHealth(
-                        provider="google", model=cfg["model"]
-                    )
+            try:
+                for name, cfg in self.routing_config["model_registry"].items():
+                    if cfg["provider"] == "google":
+                        self.providers[name] = GeminiProvider(
+                            api_key=gemini_key,
+                            model=cfg["model"],
+                            thinking_level=cfg.get("thinking_level", "low"),
+                        )
+                        self.health[name] = ModelHealth(
+                            provider="google", model=cfg["model"]
+                        )
+            except ImportError as e:
+                logger.warning(f"Gemini provider not available: {e}")
 
         # Ollama Cloud
         ollama_key = os.getenv("OLLAMA_API_KEY")
