@@ -147,13 +147,6 @@ SOURCES = [
         "type": "rss",
         "category": "blog"
     },
-    # Agent & Framework Engineering (Tier 1 — Appendix C2)
-    {
-        "name": "Berkeley AI Research (BAIR)",
-        "url": "https://bair.berkeley.edu/blog/feed.xml",
-        "type": "rss",
-        "category": "blog"
-    },
     # Big Tech Cloud (Tier 1 — Appendix C3)
     {
         "name": "AWS Machine Learning Blog",
