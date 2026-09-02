@@ -31,6 +31,17 @@ def _error_response(status_code, message="error"):
     return resp
 
 
+def _response_with_finish(text, finish_reason):
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {
+        "candidates": [
+            {"content": {"parts": [{"text": text}]}, "finishReason": finish_reason}
+        ]
+    }
+    return resp
+
+
 @patch("core.gemini_client.time.sleep")
 @patch("requests.post")
 def test_gemini_client_retries_transient_503_then_succeeds(mock_post, mock_sleep):
@@ -129,3 +140,106 @@ def test_gateway_provider_structured_config_includes_schema():
 
     assert config.response_mime_type == "application/json"
     assert config.response_schema == schema
+
+
+# ---------------------------------------------------------------------------
+# Deep Dive fixes: MAX_TOKENS budget escalation, thinking_level, upsert
+# ---------------------------------------------------------------------------
+
+@patch("core.gemini_client.time.sleep")
+@patch("requests.post")
+def test_gemini_client_escalates_budget_on_max_tokens(mock_post, mock_sleep):
+    """A MAX_TOKENS-truncated response (Gemini 3 thinking ate the budget)
+    triggers a retry with a doubled maxOutputTokens."""
+    responses = [
+        _response_with_finish("truncated...", "MAX_TOKENS"),
+        _response_with_finish("complete brief", "STOP"),
+    ]
+    captured = []
+
+    def capture(*args, **kwargs):
+        import copy
+        captured.append(copy.deepcopy(kwargs["json"]))
+        return responses.pop(0)
+
+    mock_post.side_effect = capture
+
+    client = GeminiClient(api_key="test_key", default_model="gemini-3.5-flash")
+    result = client.generate_content("write brief", max_output_tokens=2048)
+
+    assert result == "complete brief"
+    assert len(captured) == 2
+    assert captured[0]["generationConfig"]["maxOutputTokens"] == 2048
+    assert captured[1]["generationConfig"]["maxOutputTokens"] == 4096
+
+
+@patch("core.gemini_client.time.sleep")
+@patch("requests.post")
+def test_gemini_client_returns_last_response_when_escalation_exhausts_attempts(mock_post, mock_sleep):
+    mock_post.return_value = _response_with_finish("still truncated", "MAX_TOKENS")
+
+    client = GeminiClient(api_key="test_key", default_model="gemini-3.5-flash")
+    result = client.generate_content("write brief", max_output_tokens=2048)
+
+    # No exception: the caller gets the best-effort (possibly truncated) text
+    # and a logged warning, instead of losing the synthesis entirely.
+    assert result == "still truncated"
+    assert mock_post.call_count == 3  # MAX_ATTEMPTS
+
+
+@patch("core.gemini_client.time.sleep")
+@patch("requests.post")
+def test_gemini_client_thinking_level_in_payload(mock_post, mock_sleep):
+    mock_post.return_value = _response_with_finish("OK", "STOP")
+
+    client = GeminiClient(api_key="test_key", default_model="gemini-3.5-flash")
+    client.generate_content("hi", thinking_level="low")
+
+    gen_cfg = mock_post.call_args.kwargs["json"]["generationConfig"]
+    assert gen_cfg["thinkingConfig"] == {"thinkingLevel": "low"}
+
+
+@patch("core.gemini_client.time.sleep")
+@patch("requests.post")
+def test_gemini_client_no_thinking_config_by_default(mock_post, mock_sleep):
+    mock_post.return_value = _response_with_finish("OK", "STOP")
+
+    client = GeminiClient(api_key="test_key", default_model="gemini-3.5-flash")
+    client.generate_content("hi")
+
+    gen_cfg = mock_post.call_args.kwargs["json"]["generationConfig"]
+    assert "thinkingConfig" not in gen_cfg
+
+
+def test_save_theme_summary_upserts_on_run_theme_conflict():
+    """On-demand re-synthesis for the same run must UPSERT — a plain insert
+    hit 409 duplicate key (theme_summaries_run_id_theme_name_key)."""
+    from core.supabase_client import SupabaseManager
+
+    manager = SupabaseManager()
+    manager.available = True
+    manager.client = MagicMock()
+
+    exec_result = MagicMock()
+    exec_result.data = [{"id": 1, "theme_name": "Enterprise Strategy & ROI"}]
+    table_mock = manager.client.table.return_value
+    table_mock.upsert.return_value.execute.return_value = exec_result
+
+    summary = {
+        "what_is_happening": "hi", "engineering_tradeoffs": "e",
+        "product_impact": "p", "why_it_matters": "w", "what_to_watch": "t",
+        "further_reading": "", "_source": "gemini:gemini-3.5-flash",
+        "_generation_log": {"model": "gemini-3.5-flash"},
+    }
+    result = manager.save_theme_summary(
+        "run-1", "Enterprise Strategy & ROI", summary, article_count=5
+    )
+
+    assert result is exec_result.data[0]
+    table_mock.upsert.assert_called_once()
+    call = table_mock.upsert.call_args
+    assert call.kwargs["on_conflict"] == "run_id,theme_name"
+    assert call.args[0]["run_id"] == "run-1"
+    assert call.args[0]["generation_source"] == "gemini:gemini-3.5-flash"
+    # No plain insert anywhere on the persistence path
+    table_mock.insert.assert_not_called()

@@ -125,7 +125,7 @@ def main() -> None:
             st.caption(f"📅 Last Intelligence Run: **{format_display_timestamp(last_time)}** (Auto-refreshes every 12 hours)")
     with col_h2:
         st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
-        if st.button("⚡ Fetch & Refresh Now", key="main_header_refresh_btn", type="primary", use_container_width=True):
+        if st.button("⚡ Fetch & Refresh Now", key="main_header_refresh_btn", type="primary", width='stretch'):
             from core.llm_client import LLMClient
             # Active probe so the flag reflects reality before the run starts.
             LLMClient.probe_quota_status()
@@ -162,7 +162,7 @@ def main() -> None:
 
         if status_info["status"] == "failed":
             st.error(f"❌ Ingestion Failed: {status_info['error']}")
-            if st.button("⚡ Retry Ingestion Pipeline", key="loading_retry_btn", use_container_width=True):
+            if st.button("⚡ Retry Ingestion Pipeline", key="loading_retry_btn", width='stretch'):
                 BackgroundRefresher.start()
                 st.rerun()
         else:

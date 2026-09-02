@@ -126,7 +126,7 @@ def main() -> None:
                     "Link": st.column_config.LinkColumn("Feed URL", width="medium", display_text="🔗 Visit Feed")
                 },
                 hide_index=True,
-                use_container_width=True
+                width='stretch'
             )
 
     # ----------------------------------------------------
@@ -205,7 +205,7 @@ def main() -> None:
             )
         with col_diag_btn:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            run_diag = st.button("🚀 Run Live Diagnostics", type="primary", use_container_width=True)
+            run_diag = st.button("🚀 Run Live Diagnostics", type="primary", width='stretch')
 
         if run_diag:
             with st.spinner("Probing HTTP endpoints, verifying SSL/headers, parsing XML/DOM structures..."):
@@ -279,7 +279,7 @@ def main() -> None:
                     "URL": st.column_config.LinkColumn("Endpoint URL", width="medium")
                 },
                 hide_index=True,
-                use_container_width=True
+                width='stretch'
             )
 
             # Detailed Breakdown of Issues

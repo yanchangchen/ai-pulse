@@ -130,7 +130,7 @@ def main() -> None:
                 f"🚀 Synthesize '{selected_theme[:22]}...' with Gemini",
                 key=f"btn_gemini_{selected_theme}",
                 type="primary",
-                use_container_width=True
+                width='stretch'
             )
 
         if trigger_gemini:
@@ -275,7 +275,7 @@ def main() -> None:
                 "Link": st.column_config.LinkColumn("Link", width="medium")
             },
             hide_index=True,
-            use_container_width=True
+            width='stretch'
         )
 
         csv = df_articles.to_csv(index=False).encode('utf-8')

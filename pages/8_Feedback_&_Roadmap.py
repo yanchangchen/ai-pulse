@@ -108,7 +108,7 @@ def main() -> None:
                 help="Feel free to use Markdown formatting!"
             )
 
-            submitted = st.form_submit_button("🚀 Submit to Roadmap", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("🚀 Submit to Roadmap", type="primary", width='stretch')
 
             if submitted:
                 if not title.strip() or not description.strip():

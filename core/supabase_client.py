@@ -134,7 +134,12 @@ class SupabaseManager:
                 payload["generation_log"] = generation_log
 
             try:
-                response = self.client.table("theme_summaries").insert(payload).execute()
+                # UPSERT on (run_id, theme_name) — re-synthesising a theme for
+                # the same run (e.g. on-demand Gemini on Deep Dive) must
+                # overwrite the previous row, not violate the unique constraint.
+                response = self.client.table("theme_summaries").upsert(
+                    payload, on_conflict="run_id,theme_name"
+                ).execute()
             except Exception as schema_exc:
                 # Legacy deployments without the new columns: retry without
                 # the optional provenance fields.  We never want a schema
@@ -143,13 +148,13 @@ class SupabaseManager:
                 if "generation_source" in msg or "generation_log" in msg or "column" in msg:
                     logger.warning(
                         "theme_summaries table missing provenance columns; "
-                        "retrying insert without _source/_generation_log. "
+                        "retrying upsert without _source/_generation_log. "
                         "Run supabase_migration_provenance.sql to enable."
                     )
-                    response = self.client.table("theme_summaries").insert({
+                    response = self.client.table("theme_summaries").upsert({
                         k: v for k, v in payload.items()
                         if k not in ("generation_source", "generation_log")
-                    }).execute()
+                    }, on_conflict="run_id,theme_name").execute()
                 else:
                     raise
 

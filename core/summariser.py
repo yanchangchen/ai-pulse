@@ -738,7 +738,11 @@ Writing style rules:
         model=chosen_model,
         temperature=0.2,
         max_output_tokens=6144,
-        timeout=60
+        timeout=60,
+        # Gemini 3 bills thinking tokens against the output budget; cap
+        # thinking so the 5-section brief isn't truncated (client also
+        # escalates the budget automatically on MAX_TOKENS).
+        thinking_level="low",
     )
 
     parsed = _parse_summary_sections(content)

@@ -218,7 +218,7 @@ def render_sidebar_info() -> None:
             st.sidebar.info("No cached data found.")
 
         # ALWAYS show manual trigger button so user can fetch new articles & refresh quota anytime
-        if st.sidebar.button("⚡ Fetch & Refresh Now", key="bg_refresher_trigger_btn", use_container_width=True, type="primary"):
+        if st.sidebar.button("⚡ Fetch & Refresh Now", key="bg_refresher_trigger_btn", width='stretch', type="primary"):
             from core.llm_client import LLMClient
             # Active probe so the flag reflects reality before the run starts.
             LLMClient.probe_quota_status()

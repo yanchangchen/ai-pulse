@@ -25,6 +25,12 @@ RETRYABLE_STATUS_CODES = (500, 502, 503, 504)
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = (1.0, 2.0)  # sleep before attempt 2, then attempt 3
 
+# Gemini 3 models bill "thinking" tokens against maxOutputTokens, so a request
+# that stops with finishReason=MAX_TOKENS produced truncated (or empty) visible
+# output.  When that happens the client retries once per remaining attempt with
+# a doubled budget, up to this ceiling.
+MAX_TOKENS_ESCALATION_CEILING = 16384
+
 
 class GeminiClientError(Exception):
     """Base exception for Gemini API client errors."""
@@ -65,6 +71,7 @@ class GeminiClient:
         temperature: float = 0.2,
         max_output_tokens: int = 4096,
         timeout: int = 30,
+        thinking_level: Optional[str] = None,
     ) -> str:
         """
         Generate text content using Google Gemini API.
@@ -74,8 +81,13 @@ class GeminiClient:
             system_instruction: Optional system instruction text.
             model: Model ID (e.g., 'gemini-3.7-flash').
             temperature: Sampling temperature.
-            max_output_tokens: Max output tokens in response.
+            max_output_tokens: Max output tokens in response. Gemini 3 models
+                bill thinking tokens against this budget; truncated responses
+                are retried with a doubled budget (see
+                MAX_TOKENS_ESCALATION_CEILING).
             timeout: Request timeout in seconds.
+            thinking_level: Optional Gemini 3 thinking level
+                ("minimal" | "low" | "medium" | "high"). Omitted = model default.
 
         Returns:
             Generated response string.
@@ -112,7 +124,11 @@ class GeminiClient:
                 "parts": [{"text": system_instruction}]
             }
 
+        if thinking_level:
+            payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": thinking_level}
+
         resp = None
+        effective_budget = max_output_tokens
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
                 resp = requests.post(
@@ -176,18 +192,37 @@ class GeminiClient:
                     pass
                 raise GeminiClientError(f"Gemini API Error (HTTP {resp.status_code}) for '{target_model}': {error_msg}")
 
-            break  # HTTP 200 — proceed to response parsing
+            # HTTP 200 — parse the response
+            try:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    raise GeminiClientError(f"Gemini returned 0 candidates for model '{target_model}'.")
 
-        try:
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
-                raise GeminiClientError(f"Gemini returned 0 candidates for model '{target_model}'.")
+                parts = candidates[0].get("content", {}).get("parts", [])
+                finish_reason = candidates[0].get("finishReason", "STOP")
+                text_parts = [p.get("text", "") for p in parts if "text" in p]
+                result_text = "".join(text_parts).strip()
+            except (KeyError, ValueError, AttributeError) as e:
+                raise GeminiClientError(f"Failed to parse Gemini response: {e}")
 
-            parts = candidates[0].get("content", {}).get("parts", [])
-            finish_reason = candidates[0].get("finishReason", "STOP")
-            text_parts = [p.get("text", "") for p in parts if "text" in p]
-            result_text = "".join(text_parts).strip()
+            # Truncated output (Gemini 3 thinking tokens ate the budget) —
+            # retry the same request with a doubled budget, up to the ceiling.
+            if (
+                finish_reason == "MAX_TOKENS"
+                and attempt < MAX_ATTEMPTS
+                and effective_budget < MAX_TOKENS_ESCALATION_CEILING
+            ):
+                prev_budget = effective_budget
+                effective_budget = min(effective_budget * 2, MAX_TOKENS_ESCALATION_CEILING)
+                payload["generationConfig"]["maxOutputTokens"] = effective_budget
+                logger.warning(
+                    "Gemini output truncated (MAX_TOKENS) for model '%s' at %d tokens; "
+                    "retrying with max_output_tokens=%d (attempt %d/%d, kept %d chars so far)",
+                    target_model, prev_budget, effective_budget,
+                    attempt + 1, MAX_ATTEMPTS, len(result_text),
+                )
+                continue
 
             if not result_text:
                 raise GeminiClientError(
@@ -204,6 +239,3 @@ class GeminiClient:
                 )
 
             return result_text
-
-        except (KeyError, ValueError) as e:
-            raise GeminiClientError(f"Failed to parse Gemini response: {e}")
