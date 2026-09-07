@@ -1,9 +1,9 @@
 """
-Regression tests for the three Gemini fixes:
+Regression tests for Gemini fixes:
 1. GeminiClient retries transient 5xx responses (never retries 429).
 2. config.settings resolves keys nested under a secrets.toml section ([general]).
-3. Gateway GeminiProvider builds generation configs even when the installed
-   SDK lacks ThinkingConfig (deprecated google.generativeai).
+3. Gateway GeminiProvider builds generation configs via the google-genai SDK
+   (>= 1.0), which natively supports ThinkingConfig.
 """
 
 import pytest
@@ -119,9 +119,9 @@ def test_settings_resolves_keys_nested_under_general_section():
             os.environ["OLLAMA_BASE_URL"] = saved
 
 
-def test_gateway_provider_builds_config_without_thinking_support():
-    """The deprecated google.generativeai SDK lacks ThinkingConfig; the
-    provider must still build a valid GenerationConfig."""
+def test_gateway_provider_builds_config_with_thinking():
+    """The google-genai SDK (>= 1.0) natively supports ThinkingConfig;
+    the provider must attach thinking_level to every generation config."""
     from core.ai_gateway.providers.gemini import GeminiProvider
 
     provider = GeminiProvider(api_key="test_key", model="gemini-3.5-flash-lite")
@@ -129,6 +129,8 @@ def test_gateway_provider_builds_config_without_thinking_support():
 
     assert config.temperature == 0.2
     assert config.max_output_tokens == 64
+    assert config.thinking_config is not None
+    assert config.thinking_config.thinking_level.value == "LOW"
 
 
 def test_gateway_provider_structured_config_includes_schema():

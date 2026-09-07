@@ -1,7 +1,11 @@
 """
 Google Gemini provider adapter.
+
+Uses the ``google-genai`` SDK (>= 1.0) which communicates over REST/httpx,
+replacing the deprecated ``google-generativeai`` package whose gRPC-aio
+transport caused harmless-but-noisy ``InterceptedUnaryUnaryCall`` warnings
+when event loops were torn down between ``asyncio.run()`` calls.
 """
-import json
 import logging
 from typing import Dict, Any, Optional
 from .base import ProviderAdapter
@@ -9,24 +13,17 @@ from .base import ProviderAdapter
 logger = logging.getLogger(__name__)
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
     _GENAI_AVAILABLE = True
 except ImportError:
     genai = None  # type: ignore
+    types = None  # type: ignore
     _GENAI_AVAILABLE = False
-
-# The deprecated `google.generativeai` SDK is frozen and predates the Gemini 3
-# thinking API — its `types` module has no `ThinkingConfig`. Detect it once;
-# when absent, generation configs are built without a thinking_config so calls
-# still work (thinking then defaults per model).
-_THINKING_CONFIG_CLS = (
-    getattr(getattr(genai, "types", None), "ThinkingConfig", None)
-    if _GENAI_AVAILABLE else None
-)
 
 
 class GeminiProvider(ProviderAdapter):
-    """Google Gemini API provider."""
+    """Google Gemini API provider (google-genai >= 1.0, httpx transport)."""
 
     def __init__(
         self,
@@ -36,22 +33,28 @@ class GeminiProvider(ProviderAdapter):
     ):
         if not _GENAI_AVAILABLE:
             raise ImportError(
-                "google-generativeai is required for GeminiProvider. "
-                "Install it with: pip install google-generativeai"
+                "google-genai is required for GeminiProvider. "
+                "Install it with: pip install 'google-genai>=1.0.0'"
             )
-        genai.configure(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
         self.model_name = model
         self.thinking_level = thinking_level
-        self.model = genai.GenerativeModel(model)
+
+    # ------------------------------------------------------------------
+    # Config builder
+    # ------------------------------------------------------------------
 
     def _build_generation_config(
         self,
         temperature: float,
         max_output_tokens: int,
         schema: Optional[Dict] = None,
-    ):
-        """Build a GenerationConfig, attaching thinking_config only when the
-        installed SDK actually supports it (see _THINKING_CONFIG_CLS)."""
+    ) -> "types.GenerateContentConfig":
+        """Build a GenerateContentConfig for the new google-genai SDK.
+
+        The new SDK natively supports ``ThinkingConfig``, so the old
+        feature-detection shim for the deprecated SDK has been removed.
+        """
         kwargs: Dict[str, Any] = {
             "temperature": temperature,
             "max_output_tokens": max_output_tokens,
@@ -59,22 +62,26 @@ class GeminiProvider(ProviderAdapter):
         if schema is not None:
             kwargs["response_mime_type"] = "application/json"
             kwargs["response_schema"] = schema
-        if _THINKING_CONFIG_CLS is not None:
-            try:
-                kwargs["thinking_config"] = _THINKING_CONFIG_CLS(
-                    thinking_level=self.thinking_level
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.debug("thinking_config unavailable (%s); omitting it", exc)
-                kwargs.pop("thinking_config", None)
-        return genai.types.GenerationConfig(**kwargs)
+        if self.thinking_level:
+            kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_level=self.thinking_level,
+            )
+        return types.GenerateContentConfig(**kwargs)
+
+    # ------------------------------------------------------------------
+    # ProviderAdapter interface
+    # ------------------------------------------------------------------
 
     async def generate(self, prompt: str, **kwargs) -> Dict[str, Any]:
         config = self._build_generation_config(
             temperature=kwargs.get("temperature", 0.3),
             max_output_tokens=kwargs.get("max_tokens", 2000),
         )
-        response = await self.model.generate_content_async(prompt, generation_config=config)
+        response = await self.client.aio.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config=config,
+        )
         return {
             "text": response.text,
             "usage": self._extract_usage(response),
@@ -89,25 +96,24 @@ class GeminiProvider(ProviderAdapter):
             max_output_tokens=kwargs.get("max_tokens", 4000),
             schema=schema,
         )
-        response = await self.model.generate_content_async(prompt, generation_config=config)
+        response = await self.client.aio.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config=config,
+        )
         return {
             "json": response.text,
             "usage": self._extract_usage(response),
             "model": self.model_name,
         }
 
-    def _extract_usage(self, response) -> Optional[Dict]:
-        if hasattr(response, "usage_metadata") and response.usage_metadata:
-            return {
-                "input_tokens": response.usage_metadata.prompt_token_count,
-                "output_tokens": response.usage_metadata.candidates_token_count,
-                "total_tokens": response.usage_metadata.total_token_count,
-            }
-        return None
-
     async def health_check(self) -> Dict[str, Any]:
         try:
-            await self.model.generate_content_async("ping")
+            await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents="ping",
+                config=types.GenerateContentConfig(max_output_tokens=8),
+            )
             return {"healthy": True, "model": self.model_name}
         except Exception as e:
             return {"healthy": False, "model": self.model_name, "error": str(e)}
@@ -121,4 +127,24 @@ class GeminiProvider(ProviderAdapter):
             "max_output": 65_536,
             "supports_structured": True,
             "thinking_level": self.thinking_level,
+        }
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_usage(response) -> Optional[Dict]:
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return None
+        prompt = getattr(usage, "prompt_token_count", None)
+        candidates = getattr(usage, "candidates_token_count", None)
+        total = getattr(usage, "total_token_count", None)
+        if prompt is None and candidates is None and total is None:
+            return None
+        return {
+            "input_tokens": prompt,
+            "output_tokens": candidates,
+            "total_tokens": total,
         }
