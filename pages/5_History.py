@@ -193,8 +193,8 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
         # Build context and get Sage's response
         with st.chat_message("assistant", avatar="🔮"):
             with st.spinner("Sage is analysing the archive..."):
-                # Build grounded wiki context
-                wiki_context = build_wiki_context(
+                # Build grounded wiki context — returns a dict with context + stats
+                wiki_ctx = build_wiki_context(
                     supabase=supabase,
                     question=user_input,
                     theme_filter=theme_filter,
@@ -208,10 +208,18 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
                 sage_response = chat_with_sage(
                     llm_client=llm,
                     messages=st.session_state.sage_messages,
-                    wiki_context=wiki_context,
+                    wiki_context=wiki_ctx,
                 )
 
             st.markdown(sage_response)
+
+            # Grounding caption — surface how far Sage actually reached
+            stats = wiki_ctx if isinstance(wiki_ctx, dict) else {}
+            if stats.get("date_count"):
+                st.caption(
+                    f"📚 Grounded in **{stats['run_count']}** runs across "
+                    f"**{stats['date_count']}** dates ({stats['date_range']})"
+                )
 
         st.session_state.sage_messages.append({"role": "assistant", "content": sage_response})
         st.rerun()

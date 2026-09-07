@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from core.llm_client import LLMClient
 from core.history_manager import load_full_history
@@ -57,6 +57,70 @@ SAGE_INTRO = (
     "I'm Sage. I've been watching the AI landscape so you don't have to miss "
     "the signals. Ask me anything about what I've observed."
 )
+
+
+# ---------------------------------------------------------------------------
+# Context budgeting constants
+# ---------------------------------------------------------------------------
+
+# How many of the most recent dates get full 3-field briefs. All older dates
+# are included in condensed form (only what_is_happening, truncated).
+RECENT_DETAIL_COUNT = 2
+
+# Character ceiling for condensed older-date blocks. ~300 chars ≈ 2 sentences
+# of the most information-dense factual lead.
+CONDENSED_CHAR_LIMIT = 300
+
+# Share of the total char budget reserved for the recent tier. The older tier
+# gets the remainder.
+RECENT_BUDGET_SHARE = 0.5
+
+
+# ---------------------------------------------------------------------------
+# Condense / format helpers
+# ---------------------------------------------------------------------------
+
+def _condense_text(text: str, limit: int = CONDENSED_CHAR_LIMIT) -> str:
+    """Truncate ``text`` at the last sentence boundary within ``limit`` chars,
+    appending ``…`` if truncated. Returns the original text unchanged when it
+    already fits."""
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    # Seek the last sentence terminator (., !, ?) followed by whitespace or EOL.
+    import re
+    last_break = max(
+        (m.end() for m in re.finditer(r"[.!?](?:\s|$)", head)),
+        default=limit,
+    )
+    if last_break <= 0 or last_break > limit:
+        last_break = limit
+    return head[:last_break].rstrip() + "…"
+
+
+def _format_full_block(block: Dict) -> str:
+    """Render a full 3-field block for a recent-tier date."""
+    first_tag = " [FIRST APPEARANCE]" if block.get("_first_appearance") else ""
+    return (
+        f"--- [{block['theme_name']}] · Run {block['run_date']}{first_tag} "
+        f"({block.get('article_count', '?')} articles) ---\n"
+        f"What happened: {block.get('what_is_happening', 'N/A')}\n"
+        f"Significance: {block.get('why_it_matters', 'N/A')}\n"
+        f"Watchlist: {block.get('what_to_watch', 'N/A')}\n\n"
+    )
+
+
+def _format_condensed_block(block: Dict) -> str:
+    """Render a condensed single-field block for an older-tier date."""
+    first_tag = " [FIRST APPEARANCE]" if block.get("_first_appearance") else ""
+    condensed = _condense_text(block.get("what_is_happening", "N/A"))
+    return (
+        f"--- [{block['theme_name']}] · Run {block['run_date']}{first_tag} "
+        f"({block.get('article_count', '?')} articles, condensed) ---\n"
+        f"What happened: {condensed}\n\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -142,18 +206,23 @@ def build_wiki_context(
     date_to: Optional[str] = None,
     source_filter: Optional[str] = None,
     history: Optional[Dict] = None,
-    max_chars: int = 12_000,
-) -> str:
-    """Assemble a relevance-ranked, chronologically ordered context string
-    from wiki data for Sage to ground its answers on.
+    max_chars: int = 40_000,
+) -> Dict[str, Any]:
+    """Assemble a per-date-budgeted, time-decayed context string from wiki data.
 
-    Priority logic:
-    1. Fetch all cross-run summaries from Supabase (or local history fallback).
-    2. Score each summary block by keyword overlap with the question.
-    3. Always include the most recent run as an anchor.
-    4. Take the top-N scored blocks until ``max_chars`` is reached.
-    5. Annotate first appearances per theme.
+    The total ``max_chars`` budget is split across two tiers:
+      - Recent tier (last ``RECENT_DETAIL_COUNT`` dates): full 3-field blocks.
+      - Older tier (all earlier dates): condensed blocks (only ``what_is_happening``,
+        truncated to ``CONDENSED_CHAR_LIMIT`` chars at sentence boundary).
+
+    This guarantees every date in the window is represented rather than the
+    latest run's themes greedily consuming the whole budget.
+
+    Returns:
+        A dict ``{"context": str, "run_count": int, "date_count": int, "date_range": str}``
+        so the caller can surface how far Sage actually reached.
     """
+    from collections import defaultdict
     question_kws = _tokenise(question)
 
     # ------- Fetch summaries -------
@@ -192,49 +261,126 @@ def build_wiki_context(
                     })
 
     if not summaries:
-        return "[No wiki data available for the selected filters.]"
+        return {
+            "context": "[No wiki data available for the selected filters.]",
+            "run_count": 0,
+            "date_count": 0,
+            "date_range": "",
+        }
 
     from core.design_system import sanitize_summary_html
 
-    # ------- Score & select -------
+    # ------- Score & sanitise -------
     for s in summaries:
         s["what_is_happening"] = sanitize_summary_html(s.get("what_is_happening", ""))
+        s["why_it_matters"] = sanitize_summary_html(s.get("why_it_matters", ""))
+        s["what_to_watch"] = sanitize_summary_html(s.get("what_to_watch", ""))
         s["_relevance"] = score_summary_relevance(s, question_kws)
 
-    # Ensure the most recent run is always included (anchor)
-    latest_ts = max(s["run_timestamp"] for s in summaries)
-    anchor_blocks = [s for s in summaries if s["run_timestamp"] == latest_ts]
+    # ------- Group by date, sort chronologically ascending -------
+    by_date: Dict[str, List[Dict]] = defaultdict(list)
+    for s in summaries:
+        by_date[s["run_date"]].append(s)
 
-    # Remaining blocks sorted by relevance (descending), then chronologically
-    other_blocks = [s for s in summaries if s["run_timestamp"] != latest_ts]
-    other_blocks.sort(key=lambda s: (-s["_relevance"], s["run_timestamp"]))
+    dates = sorted(by_date.keys())
+    if not dates:
+        return {
+            "context": "[No wiki data available for the selected filters.]",
+            "run_count": 0,
+            "date_count": 0,
+            "date_range": "",
+        }
 
-    selected = anchor_blocks + other_blocks
+    # ------- Split budget between recent & older tiers -------
+    recent_dates = set(dates[-RECENT_DETAIL_COUNT:])
+    recent_dates_list = [d for d in dates if d in recent_dates]
+    older_dates_list = [d for d in dates if d not in recent_dates]
 
-    # ------- Annotate first appearances -------
-    selected.sort(key=lambda s: s["run_timestamp"])
-    annotate_first_appearances(selected)
+    recent_budget = int(max_chars * RECENT_BUDGET_SHARE)
+    older_budget = max_chars - recent_budget
 
-    # ------- Format context string with char budget -------
-    lines: List[str] = ["=== WIKI CONTEXT (chronological) ===\n"]
-    char_count = len(lines[0])
+    per_recent_date = recent_budget // max(len(recent_dates_list), 1)
+    per_older_date = older_budget // max(len(older_dates_list), 1)
 
-    for s in selected:
-        first_tag = " [FIRST APPEARANCE]" if s.get("_first_appearance") else ""
-        block = (
-            f"--- [{s['theme_name']}] · Run {s['run_date']}{first_tag} "
-            f"({s.get('article_count', '?')} articles) ---\n"
-            f"What happened: {s.get('what_is_happening', 'N/A')}\n"
-            f"Significance: {s.get('why_it_matters', 'N/A')}\n"
-            f"Watchlist: {s.get('what_to_watch', 'N/A')}\n\n"
-        )
-        if char_count + len(block) > max_chars:
+    # Minimum block sizes used as a guard: if a date's per-date quota is smaller
+    # than this, we skip that date rather than emit a half-formed block.
+    MIN_FULL_BLOCK = 800
+    MIN_CONDENSED_BLOCK = 200
+
+    selected: List[Dict] = []
+    char_count = 0
+
+    for date in dates:
+        blocks = by_date[date]
+        # Within each date, rank themes by relevance so the most relevant
+        # themes survive when the per-date quota is tight.
+        blocks.sort(key=lambda b: (-b["_relevance"], b["theme_name"]))
+
+        is_recent = date in recent_dates
+        quota = per_recent_date if is_recent else per_older_date
+        min_block = MIN_FULL_BLOCK if is_recent else MIN_CONDENSED_BLOCK
+        formatter = _format_full_block if is_recent else _format_condensed_block
+
+        if quota < min_block:
+            # Date's quota too small — skip it rather than emit a partial block.
+            continue
+
+        date_char_used = 0
+        for b in blocks:
+            block_text = formatter(b)
+            block_len = len(block_text)
+            if date_char_used + block_len > quota and date_char_used > 0:
+                # This date's quota is spent; stop adding themes for this date.
+                break
+            b["_first_appearance"] = False  # placeholder; annotation pass follows
+            selected.append({**b, "_formatted": block_text})
+            date_char_used += block_len
+            char_count += block_len
+            if char_count >= max_chars:
+                break
+        if char_count >= max_chars:
             break
-        lines.append(block)
-        char_count += len(block)
 
+    # ------- Annotate first appearances across selected blocks -------
+    selected.sort(key=lambda s: s["run_timestamp"])
+    seen_themes: set = set()
+    for s in selected:
+        theme = s.get("theme_name", "")
+        if theme not in seen_themes:
+            s["_first_appearance"] = True
+            seen_themes.add(theme)
+        else:
+            s["_first_appearance"] = False
+    # Re-render formatted text with the first-appearance tag now set.
+    for s in selected:
+        is_recent = s["run_date"] in recent_dates
+        formatter = _format_full_block if is_recent else _format_condensed_block
+        s["_formatted"] = formatter(s)
+
+    # ------- Assemble output with metadata header -------
+    date_range_str = (
+        f"{dates[0]} → {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "")
+    )
+    run_count = len(summaries)
+    date_count = len(dates)
+    metadata = (
+        f"[Sage context: {run_count} runs across {date_count} dates, "
+        f"{date_range_str}]\n\n"
+    )
+
+    lines: List[str] = ["=== WIKI CONTEXT (chronological, time-decayed resolution) ===\n", metadata]
+    for s in selected:
+        lines.append(s["_formatted"])
     lines.append("=== END WIKI CONTEXT ===")
-    return "".join(lines)
+
+    context_str = "".join(lines)
+
+    return {
+        "context": context_str,
+        "run_count": run_count,
+        "date_count": date_count,
+        "date_range": date_range_str,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +390,7 @@ def build_wiki_context(
 def chat_with_sage(
     llm_client: LLMClient,
     messages: List[Dict[str, str]],
-    wiki_context: str,
+    wiki_context,  # Union[str, Dict] — dict from build_wiki_context or legacy str
     gemini_client: Optional[Any] = None,
     gemini_model: Optional[str] = None,
 ) -> str:
@@ -254,12 +400,22 @@ def chat_with_sage(
     dicts representing the conversation so far (the latest user message is the
     last element).
 
+    ``wiki_context`` is either a string (legacy) or the dict returned by
+    ``build_wiki_context`` (preferred). When a dict is passed, the actual
+    context text is read from its ``"context"`` key.
+
     Returns Sage's text response.
     """
     from core.gemini_client import GeminiClient, GeminiQuotaError, GeminiClientError
 
+    # Accept both the legacy string form and the new dict form from
+    # build_wiki_context.
+    context_str = (
+        wiki_context["context"] if isinstance(wiki_context, dict) else wiki_context
+    )
+
     # Build the full system prompt with wiki context injected
-    system = f"{SAGE_SYSTEM_PROMPT}\n\n{wiki_context}"
+    system = f"{SAGE_SYSTEM_PROMPT}\n\n{context_str}"
 
     # Build conversational prompt from message history
     prompt_parts: List[str] = []
@@ -283,7 +439,7 @@ def chat_with_sage(
                 prompt=prompt,
                 system=system,
                 temperature=0.4,
-                max_tokens=2000,
+                max_tokens=3000,
             )
             if response and response.strip():
                 return response.strip()
@@ -301,7 +457,7 @@ def chat_with_sage(
                 system_instruction=system,
                 model=target_model,
                 temperature=0.4,
-                max_output_tokens=2000,
+                max_output_tokens=3000,
                 timeout=30,
             )
             if gemini_resp and gemini_resp.strip():

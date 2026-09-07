@@ -122,11 +122,12 @@ class TestBuildWikiContext:
             }
         }
 
-        context = build_wiki_context(
+        result = build_wiki_context(
             supabase=mock_supabase,
             question="What happened with AI models?",
             history=history,
         )
+        context = result["context"]
 
         assert "GPT-5 announced" in context
         assert "WIKI CONTEXT" in context
@@ -136,12 +137,14 @@ class TestBuildWikiContext:
         mock_supabase = MagicMock()
         mock_supabase.is_available.return_value = False
 
-        context = build_wiki_context(
+        result = build_wiki_context(
             supabase=mock_supabase,
             question="anything",
             history={},
         )
-        assert "No wiki data" in context
+        assert "No wiki data" in result["context"]
+        assert result["run_count"] == 0
+        assert result["date_count"] == 0
 
     def test_max_chars_respected(self):
         mock_supabase = MagicMock()
@@ -163,13 +166,14 @@ class TestBuildWikiContext:
                 "counts": {"AI Models": 10},
             }
 
-        context = build_wiki_context(
+        result = build_wiki_context(
             supabase=mock_supabase,
             question="anything",
             history=history,
             max_chars=2000,
         )
-        assert len(context) <= 2500  # some slack for the wrapper lines
+        # Allow slack for the metadata wrapper lines.
+        assert len(result["context"]) <= 3000
 
     def test_supabase_path(self):
         """When Supabase returns data, it is used."""
@@ -188,13 +192,126 @@ class TestBuildWikiContext:
             }
         ]
 
-        context = build_wiki_context(
+        result = build_wiki_context(
             supabase=mock_supabase,
             question="agentic systems trends",
         )
 
-        assert "Agent frameworks emerging" in context
-        assert "Agentic Systems" in context
+        assert "Agent frameworks emerging" in result["context"]
+        assert "Agentic Systems" in result["context"]
+        assert result["run_count"] == 1
+        assert result["date_count"] == 1
+
+    def test_return_dict_shape(self):
+        """build_wiki_context returns a dict with all 4 expected keys."""
+        mock_supabase = MagicMock()
+        mock_supabase.is_available.return_value = True
+        mock_supabase.get_summaries_across_runs.return_value = [
+            {
+                "run_id": "x",
+                "run_timestamp": "2025-07-01 10:00:00",
+                "run_date": "2025-07-01",
+                "theme_name": "AI Models",
+                "what_is_happening": "Something happened.",
+                "why_it_matters": "It matters.",
+                "what_to_watch": "Watch this.",
+                "article_count": 3,
+            }
+        ]
+
+        result = build_wiki_context(supabase=mock_supabase, question="anything")
+
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"context", "run_count", "date_count", "date_range"}
+        assert isinstance(result["context"], str)
+        assert isinstance(result["run_count"], int)
+        assert isinstance(result["date_count"], int)
+        assert isinstance(result["date_range"], str)
+
+    def test_all_dates_in_window_are_represented(self):
+        """With many dates and large blocks, every date must still appear in
+        the context — older dates via condensed blocks, not dropped entirely."""
+        mock_supabase = MagicMock()
+        mock_supabase.is_available.return_value = True
+
+        summaries = []
+        for i in range(30):
+            date = f"2025-07-{i+1:02d}"
+            summaries.append({
+                "run_id": f"r{i}",
+                "run_timestamp": f"{date} 10:00:00",
+                "run_date": date,
+                "theme_name": "AI Models",
+                "what_is_happening": ("A very long sentence. " * 20),
+                "why_it_matters": ("Significance. " * 20),
+                "what_to_watch": ("Watchlist item. " * 20),
+                "article_count": 10,
+            })
+        mock_supabase.get_summaries_across_runs.return_value = summaries
+
+        result = build_wiki_context(
+            supabase=mock_supabase,
+            question="AI models",
+            max_chars=40_000,
+        )
+
+        # Every date from the 30-day window must be mentioned in the context.
+        context = result["context"]
+        for i in range(30):
+            date = f"2025-07-{i+1:02d}"
+            assert date in context, f"Date {date} missing from context"
+        assert result["date_count"] == 30
+        assert result["run_count"] == 30
+
+    def test_recent_runs_get_full_blocks_older_get_condensed(self):
+        """Recent-tier dates (last 2) use full 3-field blocks; older-tier
+        dates use condensed (only what_is_happening, truncated)."""
+        mock_supabase = MagicMock()
+        mock_supabase.is_available.return_value = True
+
+        summaries = []
+        for i in range(10):
+            date = f"2025-08-{i+1:02d}"
+            summaries.append({
+                "run_id": f"r{i}",
+                "run_timestamp": f"{date} 10:00:00",
+                "run_date": date,
+                "theme_name": "AI Models",
+                "what_is_happening": ("Event " + date + ". ") * 5,
+                "why_it_matters": ("Significance " + date + ". ") * 5,
+                "what_to_watch": ("Watch " + date + ". ") * 5,
+                "article_count": 10,
+            })
+        mock_supabase.get_summaries_across_runs.return_value = summaries
+
+        result = build_wiki_context(
+            supabase=mock_supabase,
+            question="AI models",
+            max_chars=40_000,
+        )
+        context = result["context"]
+
+        # Full blocks have "Significance:" label; condensed blocks do not.
+        # RECENT_DETAIL_COUNT=2 → exactly 2 Significance lines.
+        assert context.count("Significance:") == 2
+        # Condensed blocks carry the ", condensed)" tag → 8 for older dates.
+        assert context.count(", condensed)") == 8
+
+    def test_condense_text_truncates_at_sentence_boundary(self):
+        from core.sage_agent import _condense_text
+
+        long_text = "First sentence. " * 100  # very long
+        condensed = _condense_text(long_text, limit=100)
+        assert len(condensed) <= 101  # up to 100 chars + ellipsis
+        assert condensed.endswith("…")
+        # Must not break mid-word at the truncation point.
+        assert "…" in condensed
+
+    def test_condense_text_short_text_unchanged(self):
+        from core.sage_agent import _condense_text
+
+        short = "Hello world."
+        assert _condense_text(short, limit=100) == short
 
 
 # ---------------------------------------------------------------------------
