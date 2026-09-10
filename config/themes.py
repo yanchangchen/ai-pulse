@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict
 
 # Theme definitions for AI Pulse
 # Keywords are weighted dicts: higher weight = stronger signal for that theme.
+
+logger = logging.getLogger(__name__)
 
 THEMES = {
     "Agentic Systems & DevTools": {
@@ -167,14 +170,24 @@ def load_custom_keywords() -> Dict[str, Dict[str, int]]:
     return {}
 
 
-def save_custom_keywords(custom_data: Dict[str, Dict[str, int]]) -> None:
-    """Save custom keywords overlay to JSON."""
-    with open(CUSTOM_KEYWORDS_FILE, "w", encoding="utf-8") as f:
-        json.dump(custom_data, f, indent=2, ensure_ascii=False)
+def save_custom_keywords(custom_data: Dict[str, Dict[str, int]]) -> bool:
+    """Save custom keywords overlay to JSON. Returns True on success."""
+    try:
+        with open(CUSTOM_KEYWORDS_FILE, "w", encoding="utf-8") as f:
+            json.dump(custom_data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to write custom keywords to %s: %s", CUSTOM_KEYWORDS_FILE, exc)
+        return False
 
 
 def add_keywords_to_theme(theme_name: str, new_keywords: Dict[str, int]) -> bool:
-    """Add or update keywords for a theme at runtime and persist to custom_keywords.json."""
+    """Add or update keywords for a theme at runtime and persist to custom_keywords.json.
+
+    The in-memory theme is always updated immediately so classification sees the
+    new keywords in the current process. A warning is logged if the disk overlay
+    cannot be persisted (e.g. read-only filesystem), but the caller can continue.
+    """
     if theme_name not in THEMES:
         return False
     THEMES[theme_name]["keywords"].update(new_keywords)
@@ -182,19 +195,35 @@ def add_keywords_to_theme(theme_name: str, new_keywords: Dict[str, int]) -> bool
     if theme_name not in custom:
         custom[theme_name] = {}
     custom[theme_name].update(new_keywords)
-    save_custom_keywords(custom)
+    success = save_custom_keywords(custom)
+    if not success:
+        logger.warning(
+            "Keywords added in-memory for '%s' but could not be persisted to disk. "
+            "They will be lost on process restart unless the filesystem is writable.",
+            theme_name,
+        )
     return True
 
 
 def remove_keyword_from_theme(theme_name: str, keyword: str) -> bool:
-    """Remove a keyword from a theme at runtime and update custom_keywords.json."""
+    """Remove a keyword from a theme at runtime and update custom_keywords.json.
+
+    Like add_keywords_to_theme, the in-memory theme is updated immediately; a
+    failed disk write only produces a warning.
+    """
     if theme_name not in THEMES or keyword not in THEMES[theme_name]["keywords"]:
         return False
     del THEMES[theme_name]["keywords"][keyword]
     custom = load_custom_keywords()
     if theme_name in custom and keyword in custom[theme_name]:
         del custom[theme_name][keyword]
-        save_custom_keywords(custom)
+        success = save_custom_keywords(custom)
+        if not success:
+            logger.warning(
+                "Keyword '%s' removed in-memory from '%s' but could not be updated on disk.",
+                keyword,
+                theme_name,
+            )
     return True
 
 
