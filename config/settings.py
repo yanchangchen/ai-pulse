@@ -252,3 +252,34 @@ def update_summariser_settings(
     return data
 
 
+# ---------------------------------------------------------------------------
+# Classification Mode & Gate Stats
+# ---------------------------------------------------------------------------
+_CLASSIFICATION_DEFAULTS = {
+    "classification_mode": "hybrid",       # "hybrid" | "deterministic"
+    "gate3_auto_disable_threshold": 0.05,  # switch when Gate 3 rate < 5%
+    "gate_stats_history": [],              # last 20 run snapshots
+}
+
+
+def get_classification_settings() -> dict:
+    """Return classification settings, merging defaults with custom_settings.json."""
+    custom = load_custom_settings()
+    merged = dict(_CLASSIFICATION_DEFAULTS)
+    # Overlay any classification keys from custom_settings
+    for key in _CLASSIFICATION_DEFAULTS:
+        if key in custom:
+            merged[key] = custom[key]
+    return merged
+
+
+def update_classification_settings(**kwargs) -> dict:
+    """Update classification settings and persist to custom_settings.json."""
+    data = load_custom_settings()
+    for key, value in kwargs.items():
+        if key in _CLASSIFICATION_DEFAULTS:
+            data[key] = value
+    save_custom_settings(data)
+    return data
+
+

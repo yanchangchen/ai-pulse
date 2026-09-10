@@ -245,3 +245,23 @@ def test_save_theme_summary_upserts_on_run_theme_conflict():
     assert call.args[0]["generation_source"] == "gemini:gemini-3.5-flash"
     # No plain insert anywhere on the persistence path
     table_mock.insert.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# GeminiProvider timeout
+# ---------------------------------------------------------------------------
+
+def test_gemini_provider_has_request_timeout():
+    """GeminiProvider should accept and store a request_timeout parameter."""
+    from core.ai_gateway.providers.gemini import GeminiProvider
+
+    provider = GeminiProvider(api_key="test_key", model="gemini-3.5-flash", request_timeout=45.0)
+    assert provider.request_timeout == 45.0
+
+
+def test_gemini_provider_default_timeout():
+    """Default timeout should be 30 seconds."""
+    from core.ai_gateway.providers.gemini import GeminiProvider
+
+    provider = GeminiProvider(api_key="test_key", model="gemini-3.5-flash")
+    assert provider.request_timeout == 30.0

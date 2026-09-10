@@ -117,28 +117,28 @@ class ModelGateway:
                     "deterministic_fallback": True,
                 },
                 "summarise": {
-                    "primary": "gemini-3.6-flash",
+                    "primary": "nemotron-3-super",
                     "fallback": [
-                        "nemotron-3-super",
                         "gpt-oss-120b",
+                        "gemini-3.6-flash",
                         "gemini-3.5-flash",
                     ],
                     "deterministic_fallback": True,
                 },
                 "synthesise": {
-                    "primary": "gemini-3.6-flash",
+                    "primary": "nemotron-3-super",
                     "fallback": [
-                        "nemotron-3-super",
                         "gpt-oss-120b",
+                        "gemini-3.6-flash",
                         "gemini-3.5-flash",
                     ],
                     "deterministic_fallback": True,
                 },
                 "project": {
-                    "primary": "gemini-3.6-flash",
+                    "primary": "nemotron-3-super",
                     "fallback": [
-                        "nemotron-3-super",
                         "gpt-oss-120b",
+                        "gemini-3.6-flash",
                         "gemini-3.5-flash",
                     ],
                     "deterministic_fallback": True,
@@ -160,6 +160,7 @@ class ModelGateway:
                             api_key=gemini_key,
                             model=cfg["model"],
                             thinking_level=cfg.get("thinking_level", "low"),
+                            request_timeout=float(os.getenv("GEMINI_REQUEST_TIMEOUT", "30")),
                         )
                         self.health[name] = ModelHealth(
                             provider="google", model=cfg["model"]
@@ -402,8 +403,11 @@ Return JSON: {{"category": "theme name"}}""",
         """Execute deterministic fallback based on task type."""
         task = request.task
 
-        if task == TaskType.SUMMARISE:
-            result = extractive_summarise(request.input)
+        if task in (TaskType.SUMMARISE, TaskType.SYNTHESISE):
+            # Use the proper non-LLM summariser (LexRank + Luhn) instead of
+            # the crude extractive_summarise that operates on raw prompt text.
+            from core.non_llm_summariser import extractive_summarise_from_text
+            result = extractive_summarise_from_text(request.input)
         elif task == TaskType.CATEGORISE:
             result = rule_categorise(request.input)
         elif task == TaskType.EXTRACT:
@@ -413,8 +417,6 @@ Return JSON: {{"category": "theme name"}}""",
             import re
             numbers = [float(n) for n in re.findall(r"\d+\.?\d*", request.input)]
             result = statistical_projection(numbers) if numbers else {"trend": "unknown", "method": "deterministic"}
-        elif task == TaskType.SYNTHESISE:
-            result = extractive_summarise(request.input, max_sentences=8)
         else:
             result = {"error": "No deterministic fallback available", "original_error": str(error)}
 

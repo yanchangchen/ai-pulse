@@ -6,6 +6,7 @@ replacing the deprecated ``google-generativeai`` package whose gRPC-aio
 transport caused harmless-but-noisy ``InterceptedUnaryUnaryCall`` warnings
 when event loops were torn down between ``asyncio.run()`` calls.
 """
+import asyncio
 import logging
 from typing import Dict, Any, Optional
 from .base import ProviderAdapter
@@ -30,6 +31,7 @@ class GeminiProvider(ProviderAdapter):
         api_key: str,
         model: str = "gemini-3.5-flash",
         thinking_level: str = "low",
+        request_timeout: float = 30.0,
     ):
         if not _GENAI_AVAILABLE:
             raise ImportError(
@@ -39,6 +41,7 @@ class GeminiProvider(ProviderAdapter):
         self.client = genai.Client(api_key=api_key)
         self.model_name = model
         self.thinking_level = thinking_level
+        self.request_timeout = request_timeout
 
     # ------------------------------------------------------------------
     # Config builder
@@ -84,11 +87,19 @@ class GeminiProvider(ProviderAdapter):
             temperature=kwargs.get("temperature", 0.3),
             max_output_tokens=kwargs.get("max_tokens", 2000),
         )
-        response = await self.client.aio.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=config,
-        )
+        try:
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=config,
+                ),
+                timeout=self.request_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"GeminiProvider.generate() timed out after {self.request_timeout}s"
+            )
         return {
             "text": response.text,
             "usage": self._extract_usage(response),
@@ -103,11 +114,19 @@ class GeminiProvider(ProviderAdapter):
             max_output_tokens=kwargs.get("max_tokens", 4000),
             schema=schema,
         )
-        response = await self.client.aio.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=config,
-        )
+        try:
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=config,
+                ),
+                timeout=self.request_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"GeminiProvider.generate_structured() timed out after {self.request_timeout}s"
+            )
         return {
             "json": response.text,
             "usage": self._extract_usage(response),
@@ -115,18 +134,24 @@ class GeminiProvider(ProviderAdapter):
         }
 
     async def health_check(self) -> Dict[str, Any]:
+        hc_timeout = min(self.request_timeout, 10.0)
         try:
-            await self.client.aio.models.generate_content(
-                model=self.model_name,
-                contents="ping",
-                config=types.GenerateContentConfig(
-                    max_output_tokens=8,
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=True
+            await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model_name,
+                    contents="ping",
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=8,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                            disable=True
+                        ),
                     ),
                 ),
+                timeout=hc_timeout,
             )
             return {"healthy": True, "model": self.model_name}
+        except asyncio.TimeoutError:
+            return {"healthy": False, "model": self.model_name, "error": f"health check timed out after {hc_timeout}s"}
         except Exception as e:
             return {"healthy": False, "model": self.model_name, "error": str(e)}
 

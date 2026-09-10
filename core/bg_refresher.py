@@ -117,6 +117,17 @@ class BackgroundRefresher:
             cls.update_progress(f"[CLASSIFY] Classifying {len(articles)} articles into new persona-aligned themes...")
             themed_articles = classify_articles(articles)
 
+            # 2.5 Auto-improve keywords from Gate 3/4 articles
+            try:
+                from core.classifier import extract_keyword_suggestions_from_run
+                suggestions = extract_keyword_suggestions_from_run(themed_articles)
+                if suggestions.get("auto_applied"):
+                    cls.update_progress(f"[KEYWORDS] Auto-applied {len(suggestions['auto_applied'])} keyword suggestions")
+                if suggestions.get("pending"):
+                    cls.update_progress(f"[KEYWORDS] {len(suggestions['pending'])} keyword suggestions pending review")
+            except Exception as kw_err:
+                logger.warning("Keyword auto-improvement failed: %s", kw_err)
+
             # 3. Summarize
             cls.update_progress("[LLM] Generating targeted Engineering Blueprint & Product Feasibility briefs...")
             theme_counts = {theme: len(themed_articles.get(theme, [])) for theme in themed_articles}

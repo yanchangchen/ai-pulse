@@ -715,10 +715,20 @@ st.divider()
 st.subheader("🛠️ In-App Pipeline Tuner & Keyword Manager")
 st.caption("Modify taxonomy keywords and tuning parameters directly in the application without editing backend files.")
 
-tab_kw, tab_sum = st.tabs(["🎛️ Theme Keyword Manager", "⚙️ Faithfulness & Summariser Tuner"])
+tab_kw, tab_sum, tab_cls = st.tabs(["🎛️ Theme Keyword Manager", "⚙️ Faithfulness & Summariser Tuner", "🧭 Classification Mode"])
 
 with tab_kw:
     from config.themes import THEMES, THEME_ORDER, add_keywords_to_theme, remove_keyword_from_theme
+    from core.classifier import should_suggest_deterministic_mode
+
+    # Suggest switching to deterministic mode if Gate 3 is rarely needed
+    if should_suggest_deterministic_mode():
+        st.success(
+            "💡 **Suggestion:** Recent runs show Gate 3 (LLM classification) catches fewer than 5% of articles. "
+            "Consider switching to **Deterministic Mode** in the 🧭 Classification Mode tab to skip LLM classification entirely.",
+            icon="🧭",
+        )
+
     selected_theme = st.selectbox("Select Theme to Manage", THEME_ORDER, key="sel_theme_mgr")
     current_keywords = THEMES[selected_theme].get("keywords", {})
 
@@ -788,4 +798,60 @@ with tab_sum:
         st.toast("Saved summariser, faithfulness & coverage settings!", icon="✅")
         st.success("Updated active summariser tuning parameters successfully!")
         st.rerun()
+
+with tab_cls:
+    from config.settings import get_classification_settings, update_classification_settings
+    from core.classifier import get_latest_gate_stats, should_suggest_deterministic_mode
+
+    cls_settings = get_classification_settings()
+    current_mode = cls_settings.get("classification_mode", "hybrid")
+
+    st.markdown("#### 🧭 Classification Mode")
+    st.caption("Control whether the 4-pass classification pipeline uses LLM classification (Gate 3).")
+
+    new_mode = st.radio(
+        "Classification Mode",
+        options=["hybrid", "deterministic"],
+        index=0 if current_mode == "hybrid" else 1,
+        format_func=lambda m: f"{'🔀 Hybrid' if m == 'hybrid' else '🧭 Deterministic'} — "
+                              f"{'4-pass waterfall (keyword → TF-IDF → LLM → heuristic)' if m == 'hybrid' else '3-pass deterministic (keyword → TF-IDF → heuristic, no LLM)'}",
+        help="Hybrid: Uses LLM (Gate 3) for articles that miss keyword/TF-IDF. Deterministic: Skips LLM entirely, uses heuristic fallback only.",
+    )
+
+    if new_mode != current_mode:
+        if st.button(f"Switch to **{new_mode}** mode", key="btn_switch_cls_mode", type="primary"):
+            update_classification_settings(classification_mode=new_mode)
+            st.toast(f"Classification mode changed to **{new_mode}**!", icon="✅")
+            st.rerun()
+    else:
+        st.info(f"Current mode: **{current_mode}**")
+
+    # Gate stats from the most recent run
+    st.divider()
+    st.markdown("#### 📊 Latest Gate Stats")
+    gate_stats = get_latest_gate_stats()
+    if gate_stats.get("total", 0) > 0:
+        total = gate_stats["total"]
+        g1 = gate_stats.get("gate_1_keyword", 0)
+        g2 = gate_stats.get("gate_2_tfidf", 0)
+        g3 = gate_stats.get("gate_3_llm", 0)
+        g4 = gate_stats.get("gate_4_heuristic", 0)
+        col_g1, col_g2, col_g3, col_g4 = st.columns(4)
+        col_g1.metric("Gate 1 (Keywords)", f"{g1} ({g1/total*100:.0f}%)")
+        col_g2.metric("Gate 2 (TF-IDF)", f"{g2} ({g2/total*100:.0f}%)")
+        col_g3.metric("Gate 3 (LLM)", f"{g3} ({g3/total*100:.0f}%)")
+        col_g4.metric("Gate 4 (Heuristic)", f"{g4} ({g4/total*100:.0f}%)")
+    else:
+        st.caption("No classification run recorded yet. Run a data refresh to see gate stats.")
+
+    # Gate stats history table
+    history = cls_settings.get("gate_stats_history", [])
+    if history:
+        st.divider()
+        st.markdown("#### 📈 Gate Stats History (last 20 runs)")
+        import pandas as pd
+        hist_df = pd.DataFrame(history)
+        display_cols = [c for c in ["timestamp", "mode", "total", "gate_1_keyword", "gate_2_tfidf", "gate_3_llm", "gate_4_heuristic", "gate3_rate"] if c in hist_df.columns]
+        if display_cols:
+            st.dataframe(hist_df[display_cols].sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
 

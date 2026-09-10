@@ -161,6 +161,7 @@ def insert_keyword_suggestions(
             "suggested_weight": s.get("suggested_weight"),
             "reason": s.get("reason"),
             "frequency": s.get("frequency"),
+            "status": s.get("status", "pending"),
         }
         if not row["term"]:
             continue

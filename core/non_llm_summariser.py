@@ -456,3 +456,78 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
         "what_to_watch": what_to_watch,
         "further_reading": further_reading
     }
+
+
+def extractive_summarise_from_text(text: str, max_sentences: int = 5) -> Dict[str, Any]:
+    """Produce a multi-section non-LLM summary from raw text.
+
+    This is the gateway deterministic fallback for SUMMARISE/SYNTHESISE
+    tasks when all LLM providers fail.  Unlike the crude
+    ``extractive_summarise()`` in ``deterministic.py``, this uses LexRank
+    and Luhn to extract meaningful sentences and returns the expected
+    multi-section dict shape.
+
+    Parameters
+    ----------
+    text:
+        The raw input text (typically the LLM prompt including any
+        article content).
+    max_sentences:
+        Maximum sentences per section.
+
+    Returns
+    -------
+    dict
+        A summary dict with keys ``what_is_happening``,
+        ``engineering_tradeoffs``, ``product_impact``, ``why_it_matters``,
+        ``what_to_watch``, ``further_reading``, and ``method``.
+    """
+    import typing
+
+    sentences = _split_into_sentences(text)
+    if not sentences:
+        return {
+            "what_is_happening": text[:500] if text else "No content available.",
+            "engineering_tradeoffs": "No technical signals extracted.",
+            "product_impact": "No product signals extracted.",
+            "why_it_matters": "Derived from source text using extractive NLP.",
+            "what_to_watch": "- **[Source Text]** — Monitor for further developments.",
+            "further_reading": "",
+            "method": "non-llm-extractive-v2",
+        }
+
+    # LexRank for what_is_happening — most central sentences
+    top_sentences = lexrank_sentences(sentences, top_n=min(max_sentences, len(sentences)))
+
+    # Engineering tradeoffs — Luhn with technical keywords
+    tech_kws = [
+        "architecture", "api", "latency", "performance", "memory", "model",
+        "training", "inference", "benchmark", "gpu", "compute", "deployment",
+        "open-source", "fine-tuning", "parameter", "neural", "transformer",
+    ]
+    eng_sentences = luhn_sentences(sentences, tech_kws, top_n=2)
+
+    # Product impact — Luhn with product/market keywords
+    prod_kws = [
+        "enterprise", "market", "cost", "pricing", "revenue", "customer",
+        "adoption", "roi", "commercial", "product", "platform", "launch",
+    ]
+    prod_sentences = luhn_sentences(sentences, prod_kws, top_n=2)
+
+    # Keyphrases for watchlist
+    combined = " ".join(sentences)
+    keyphrases = extract_keyphrases(combined, top_n=4)
+    watchlist = "\n".join(
+        f"- **[{kp}]** — Monitor ongoing developments."
+        for kp in keyphrases
+    ) if keyphrases else "- **[Industry Trends]** — Monitor for further developments."
+
+    return {
+        "what_is_happening": " ".join(top_sentences),
+        "engineering_tradeoffs": " ".join(eng_sentences) if eng_sentences else "No technical signals extracted from available content.",
+        "product_impact": " ".join(prod_sentences) if prod_sentences else "No product signals extracted from available content.",
+        "why_it_matters": "Derived from source text using extractive NLP (LexRank + Luhn).",
+        "what_to_watch": watchlist,
+        "further_reading": "",
+        "method": "non-llm-extractive-v2",
+    }

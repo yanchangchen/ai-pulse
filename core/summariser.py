@@ -216,11 +216,24 @@ Writing style rules:
         result = await gateway.execute(request)
 
         if result.is_success():
+            # Belt-and-suspenders: if the gateway used its deterministic fallback
+            # and the result is the crude format (method=extractive-summary-v1),
+            # re-route through the proper non-LLM summariser for a better brief.
+            prov = result.provenance
+            if prov.method == "deterministic":
+                raw = result.result
+                if isinstance(raw, dict) and raw.get("method") == "extractive-summary-v1":
+                    logger.info(
+                        "Gateway returned crude deterministic summary for %s; "
+                        "re-routing through proper non-LLM summariser",
+                        theme_name,
+                    )
+                    return extractive_theme_summary(theme_name, articles)
+
             # Parse the result - it should be the structured summary
             parsed = _parse_summary_sections(str(result.result))
 
             # Extract provenance info
-            prov = result.provenance
             source_str = f"{prov.provider}:{prov.model}" if prov.provider else f"deterministic:{prov.task}"
 
             return _with_provenance(
