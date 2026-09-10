@@ -16,7 +16,7 @@ import json
 import logging
 import asyncio
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from config.themes import THEMES
 from core.llm_client import LLMClient, LLMClientError
