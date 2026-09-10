@@ -21,18 +21,20 @@ def _has_text(html: str, needle: str) -> bool:
 class TestClassify:
     def test_known_exact_source(self):
         assert _classify("extractive_fallback") == "extractive_fallback"
-        assert _classify("ollama:error") == "ollama:error"
-        assert _classify("ollama:no_articles") == "ollama:no_articles"
-        assert _classify("ollama:limited_coverage") == "ollama:limited_coverage"
-        assert _classify("ollama:no_new_articles_skip") == "ollama:no_new_articles_skip"
+        assert _classify("gateway:error") == "gateway:error"
+        assert _classify("gateway:no_articles") == "gateway:no_articles"
+        assert _classify("gateway:limited_coverage") == "gateway:limited_coverage"
+        assert _classify("gateway:skipped") == "gateway:skipped"
 
     def test_ollama_prefix(self):
         assert _classify("ollama:qwen3-coder:30b") == "ollama"
         assert _classify("ollama:minimax-m3:cloud") == "ollama"
 
     def test_gemini_prefix(self):
-        assert _classify("gemini:gemini-2.0-flash") == "gemini"
-        assert _classify("gemini:gemini-1.5-pro") == "gemini"
+        # The gateway emits "google:<model>" tokens; legacy "gemini:<model>"
+        # tokens are normalised to the same Google chip.
+        assert _classify("google:gemini-3.6-flash") == "google"
+        assert _classify("gemini:gemini-2.0-flash") == "google"
 
     def test_unknown_falls_back(self):
         # Unknown tokens are treated as fallback so the user always sees
@@ -46,13 +48,14 @@ class TestClassify:
 class TestFormatLabel:
     def test_known_exact_label(self):
         assert _format_label("extractive_fallback") == "Non-LLM fallback"
-        assert _format_label("ollama:error") == "LLM error"
+        assert _format_label("gateway:error") == "LLM error"
 
     def test_ollama_model_unwraps(self):
         assert _format_label("ollama:qwen3-coder:30b") == "Ollama · qwen3-coder:30b"
 
     def test_gemini_model_unwraps(self):
-        assert _format_label("gemini:gemini-2.0-flash") == "Gemini · gemini-2.0-flash"
+        assert _format_label("google:gemini-3.6-flash") == "Google · gemini-3.6-flash"
+        assert _format_label("gemini:gemini-2.0-flash") == "Google · gemini-2.0-flash"
 
     def test_none_label(self):
         assert _format_label(None) == "Unknown source"
@@ -75,17 +78,18 @@ class TestRenderProvenanceChip:
         assert "Ollama" in chip
         assert "qwen3-coder:30b" in chip
         assert "🧠" in chip
-        assert "#0b4a8a" in chip
+        assert "#3a1d8a" in chip
 
-    def test_gemini_synthesis_emits_gemini_color(self):
+    def test_gemini_synthesis_emits_google_color(self):
         chip = render_provenance_chip({
-            "_source": "gemini:gemini-2.0-flash",
-            "_generation_log": {"model": "gemini-2.0-flash", "article_count": 8},
+            "_source": "google:gemini-3.6-flash",
+            "_generation_log": {"model": "gemini-3.6-flash", "article_count": 8},
         })
-        assert "Gemini" in chip
+        assert "Google" in chip
+        assert "gemini-3.6-flash" in chip
         assert "🛟" not in chip  # not the fallback icon
         assert "✨" in chip
-        assert "#3a1d8a" in chip
+        assert "#0b4a8a" in chip
 
     def test_tooltip_contains_log_fields(self):
         chip = render_provenance_chip(

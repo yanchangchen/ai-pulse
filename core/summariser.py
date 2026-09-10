@@ -21,12 +21,6 @@ logger = logging.getLogger(__name__)
 # Shared LLM client instance (initialised lazily) - kept for backward compat
 _llm: Optional[LLMClient] = None
 
-# After this many consecutive empty-response failures within a single run,
-# treat the LLM as degraded and route the remaining themes through the
-# non-LLM extractive fallback.  Set conservatively — one transient blip
-# should not poison the rest of the run.
-_EMPTY_FAIL_DEGRADE_THRESHOLD = 2
-
 
 def _get_llm() -> LLMClient:
     global _llm
@@ -861,6 +855,12 @@ async def _generate_all_summaries_async(
             logger.info("User selected Non-LLM Extractive Only mode. Generating LexRank/Luhn summary for %s", theme)
             summaries[theme] = extractive_theme_summary(theme, articles)
             continue
+
+        # Note: quota / health gating for live synthesis is owned by the
+        # ModelGateway (per-model health tracking, ordered fallback chain,
+        # deterministic last resort).  The LLMClient sys-level quota flag is
+        # Ollama-specific — consulting it here would bypass the gateway's
+        # Gemini fallback whenever Ollama alone is degraded.
 
         existing_hashes = _get_existing_article_hashes(theme)
         new_articles = [

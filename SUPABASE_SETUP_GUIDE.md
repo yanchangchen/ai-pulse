@@ -58,6 +58,16 @@ SUPABASE_KEY = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 5. Click **"Run"** (or press `Ctrl+Enter`)
 6. Wait for the schema to be created (should take ~5 seconds)
 
+### Create the Feedback Table
+
+The Feedback & Roadmap page uses a table added by a separate migration:
+
+1. In the Supabase SQL Editor, create a new query.
+2. Copy the entire contents of `supabase_migration_user_feedback.sql` from this repository.
+3. Paste it into the SQL editor and click **"Run"**.
+
+This creates the `user_feedback` table, indexes, and Row Level Security policies used by page 8.
+
 **What this creates:**
 - `trend_runs` table: Each ai-pulse execution
 - `theme_summaries` table: Theme insights per run
@@ -211,6 +221,18 @@ for summary in history:
 1. Check your internet connection
 2. Verify the `SUPABASE_URL` is correct (should be `https://your-project.supabase.co`)
 3. Go to Supabase dashboard and confirm your project is running
+
+### "Could not find the table 'public.user_feedback' in the schema cache"
+
+**Problem:** The Feedback & Roadmap page is enabled, but the `user_feedback` migration has not been applied to the configured Supabase project.
+
+**Solution:** Run `supabase_migration_user_feedback.sql` in the Supabase SQL Editor. Then refresh the app. If the table is visible in **Table Editor** but the error persists, run this SQL to refresh PostgREST's schema cache:
+
+```sql
+NOTIFY pgrst, 'reload schema';
+```
+
+The app falls back to `data/feedback.json` when Supabase feedback operations fail, but applying the migration is required for shared cloud feedback and roadmap data.
 
 ### "supabase package not installed"
 

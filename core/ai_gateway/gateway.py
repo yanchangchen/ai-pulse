@@ -26,7 +26,12 @@ from .deterministic import (
     keyword_extract,
     statistical_projection,
 )
-from config.settings import get_ollama_num_ctx
+from config.settings import (
+    get_ollama_num_ctx,
+    GEMINI_API_KEY,
+    OLLAMA_API_KEY,
+    OLLAMA_BASE_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,11 +152,19 @@ class ModelGateway:
         }
 
     def _init_providers(self):
-        """Initialize provider adapters from config and environment."""
+        """Initialize provider adapters from config and environment.
+
+        API keys come from ``config.settings`` which resolves in order
+        ``st.secrets`` → ``.streamlit/secrets.toml`` → env vars → default,
+        so keys stored only in secrets.toml are visible to the gateway
+        (a bare ``os.getenv`` would miss them and leave the gateway with
+        zero providers, silently degrading every task to deterministic
+        fallback).
+        """
         import os
 
         # Google Gemini
-        gemini_key = os.getenv("GEMINI_API_KEY")
+        gemini_key = GEMINI_API_KEY
         if gemini_key:
             try:
                 for name, cfg in self.routing_config["model_registry"].items():
@@ -169,8 +182,8 @@ class ModelGateway:
                 logger.warning(f"Gemini provider not available: {e}")
 
         # Ollama Cloud
-        ollama_key = os.getenv("OLLAMA_API_KEY")
-        ollama_url = os.getenv("OLLAMA_BASE_URL", "https://api.ollama.com")
+        ollama_key = OLLAMA_API_KEY
+        ollama_url = OLLAMA_BASE_URL
         if ollama_key:
             for name, cfg in self.routing_config["model_registry"].items():
                 if cfg["provider"] == "ollama":

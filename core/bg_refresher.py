@@ -167,11 +167,21 @@ def check_and_show_bg_status() -> None:
     """Helper to check background refresh status, display banners, and render control elements."""
     from core.llm_client import LLMClient
     if LLMClient.is_quota_exceeded():
-        st.info(
-            "**Active Non-LLM Extractive Engine**: Live Ollama LLM quota limit reached (HTTP 429). "
-            "Executive summaries are automatically & deterministically compiled using LexRank & Luhn extractive NLP (0-cost, sub-second & 100% faithful).",
-            icon="⚡"
-        )
+        cause = LLMClient.get_degradation_cause()
+        if cause == "empty_response":
+            st.info(
+                "**Active Non-LLM Extractive Engine**: Live Ollama LLM kept returning empty responses, "
+                "so executive summaries are automatically & deterministically compiled using "
+                "LexRank & Luhn extractive NLP (0-cost, sub-second & 100% faithful). "
+                "Click **⚡ Fetch & Refresh Now** in the sidebar to retry the live LLM.",
+                icon="⚡"
+            )
+        else:
+            st.info(
+                "**Active Non-LLM Extractive Engine**: Live Ollama LLM quota limit reached (HTTP 429). "
+                "Executive summaries are automatically & deterministically compiled using LexRank & Luhn extractive NLP (0-cost, sub-second & 100% faithful).",
+                icon="⚡"
+            )
 
     # 1. Top-of-page alert banner if new data is available in the persistence layer
     if st.session_state.get('data_loaded') and st.session_state.get('loaded_timestamp'):

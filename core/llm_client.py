@@ -44,9 +44,22 @@ class LLMQuotaExceededError(LLMClientError):
     """Raised when the LLM API quota or rate limit is exhausted (HTTP 429 / usage limit)."""
 
 
+# Two distinct causes the LLM client may be unusable:
+#   * quota_429     — Ollama returned HTTP 429 (weekly usage limit)
+#   * empty_response — Ollama returned 200 with an empty body, repeatedly
+# Both states prevent live synthesis, but they mean different things to the
+# user.  Downstream UI consults ``get_degradation_cause()`` to render an
+# honest banner; ``is_quota_exceeded()`` continues to return True for BOTH
+# so existing fallback paths (summariser, evaluator, Sage, sidebar) keep
+# skipping live LLM calls.
+_DEGRADATION_CAUSE_NONE = "none"
+_DEGRADATION_CAUSE_QUOTA = "quota_429"
+_DEGRADATION_CAUSE_EMPTY = "empty_response"
+
 _QUOTA_EXCEEDED_FLAG = "_aipulse_llm_quota_exceeded"
 _QUOTA_MSG_FLAG = "_aipulse_llm_quota_message"
 _QUOTA_TIME_FLAG = "_aipulse_llm_quota_time"
+_QUOTA_CAUSE_FLAG = "_aipulse_llm_quota_cause"
 
 # Process-local counter of consecutive empty-response failures across all
 # client instances.  Incremented on each empty 200, reset on a successful
@@ -78,7 +91,17 @@ class LLMClient:
 
     @classmethod
     def is_quota_exceeded(cls) -> bool:
-        """Return True if the LLM API rate limit / weekly quota has been exceeded."""
+        """Return True if the LLM API is currently unusable.
+
+        "Quota exceeded" is the legacy name; in practice the flag covers two
+        distinct causes tracked separately via :func:`get_degradation_cause`:
+
+        * ``quota_429``     — Ollama returned HTTP 429 (weekly usage limit)
+        * ``empty_response`` — Ollama returned 200 with an empty body repeatedly
+
+        Both states mean "skip live LLM, fall back to extractive" so the
+        summariser / evaluator / Sage all consult this single boolean.
+        """
         flag = getattr(sys, _QUOTA_EXCEEDED_FLAG, False)
         if flag:
             # Auto-reset quota flag after 1 hour (3600 seconds) so system automatically retries
@@ -89,18 +112,59 @@ class LLMClient:
         return flag
 
     @classmethod
+    def get_degradation_cause(cls) -> str:
+        """Return the underlying reason live LLM synthesis is paused.
+
+        One of:
+            * ``"none"``            — LLM is healthy, no degradation in effect
+            * ``"quota_429"``       — Ollama returned HTTP 429 (weekly usage limit)
+            * ``"empty_response"``  — Ollama repeatedly returned 200 with empty body
+
+        The cause survives :func:`reset_quota_status` only when explicitly
+        re-marked.  This lets the sidebar render an honest banner ("quota
+        limit reached (HTTP 429)" vs "returning empty responses") instead of
+        always blaming quota.
+        """
+        return getattr(sys, _QUOTA_CAUSE_FLAG, _DEGRADATION_CAUSE_NONE)
+
+    @classmethod
     def get_quota_message(cls) -> str:
         """Return details of the quota error message if present."""
         return getattr(sys, _QUOTA_MSG_FLAG, "")
 
     @classmethod
     def mark_quota_exceeded(cls, msg: str = "") -> None:
-        """Mark LLM API quota as exceeded to stop further LLM calls across threads/session."""
+        """Mark the LLM as unusable due to a real 429 / quota response.
+
+        Use this for genuine HTTP 429 / weekly-limit responses.  For
+        empty-body degradation, prefer :func:`mark_degraded_empty_response`
+        so the UI can distinguish the cause.
+        """
+        cls._mark_degraded(_DEGRADATION_CAUSE_QUOTA, msg)
+
+    @classmethod
+    def mark_degraded_empty_response(cls, msg: str = "") -> None:
+        """Mark the LLM as unusable because it keeps returning empty bodies.
+
+        Distinct from :func:`mark_quota_exceeded` so the UI can show an
+        honest "live Ollama LLM returning empty responses" banner rather
+        than blaming quota.  ``is_quota_exceeded()`` still returns True so
+        the summariser, evaluator and Sage all skip live synthesis.
+        """
+        cls._mark_degraded(_DEGRADATION_CAUSE_EMPTY, msg)
+
+    @classmethod
+    def _mark_degraded(cls, cause: str, msg: str) -> None:
+        """Internal: set the unified "LLM is paused" flag with a cause tag."""
         setattr(sys, _QUOTA_EXCEEDED_FLAG, True)
         setattr(sys, _QUOTA_TIME_FLAG, time.time())
+        setattr(sys, _QUOTA_CAUSE_FLAG, cause)
         if msg:
             setattr(sys, _QUOTA_MSG_FLAG, msg)
-        logger.error("LLM Quota Exceeded flag set: %s", msg)
+        if cause == _DEGRADATION_CAUSE_QUOTA:
+            logger.error("LLM Quota Exceeded flag set: %s", msg)
+        else:
+            logger.error("LLM degraded (%s) flag set: %s", cause, msg)
 
     @classmethod
     def reset_quota_status(cls) -> None:
@@ -108,6 +172,7 @@ class LLMClient:
         setattr(sys, _QUOTA_EXCEEDED_FLAG, False)
         setattr(sys, _QUOTA_MSG_FLAG, "")
         setattr(sys, _QUOTA_TIME_FLAG, 0)
+        setattr(sys, _QUOTA_CAUSE_FLAG, _DEGRADATION_CAUSE_NONE)
         setattr(sys, _EMPTY_FAIL_COUNTER, 0)
         logger.info("LLM Quota Exceeded status reset.")
 
@@ -192,6 +257,35 @@ class LLMClient:
     def _get_empty_response_streak(cls) -> int:
         """Return the current consecutive-empty-response failure count."""
         return getattr(sys, _EMPTY_FAIL_COUNTER, 0)
+
+    @classmethod
+    def _probe_recovery_available(cls) -> bool:
+        """Single-shot /api/tags probe to see if a fresh request would succeed.
+
+        Called from inside :func:`generate` after an empty-200 response.  A
+        200 here means the upstream endpoint is healthy enough to retry
+        the original prompt — so we should NOT bump the per-run streak.
+        Anything else (429 / 5xx / network) means the LLM is genuinely
+        degraded for now and the streak should advance.
+        """
+        try:
+            client = cls()
+            headers = client._auth_headers()
+            resp = requests.get(
+                f"{client.base_url}/api/tags",
+                headers=headers,
+                timeout=10,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Empty-response recovery probe failed (%s); counting toward streak.",
+                exc,
+            )
+            return False
+        if resp.status_code == 200:
+            return True
+        # 429 or anything else: model-side is the bottleneck, count it.
+        return False
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -319,7 +413,6 @@ class LLMClient:
                         return result
                     else:
                         last_error = LLMClientError("Ollama returned an empty response.")
-                        LLMClient._record_empty_response()
                         if _LLM_DEBUG:
                             _dump_failure(
                                 label="empty_response",
@@ -329,6 +422,26 @@ class LLMClient:
                                 resp=resp,
                                 system=system,
                             )
+                        # Self-heal: an empty 200 often means the upstream
+                        # model is briefly wedged, not that the model is
+                        # gone.  Hit /api/tags once to see if a fresh
+                        # request would succeed.  Only on probe-fail do we
+                        # count this toward the per-run degradation streak
+                        # and (at the threshold) flip the degraded flag.
+                        if LLMClient._probe_recovery_available():
+                            logger.info(
+                                "Empty 200 on attempt %d/%d for model=%s — "
+                                "/api/tags probe returned 200; will retry the "
+                                "original prompt without bumping streak.",
+                                attempt, MAX_RETRIES, self.model,
+                            )
+                        else:
+                            LLMClient._record_empty_response()
+                            if attempt == MAX_RETRIES:
+                                LLMClient.mark_degraded_empty_response(
+                                    f"Empty 200 on all {MAX_RETRIES} attempts; "
+                                    f"/api/tags probe did not confirm recovery."
+                                )
                 else:
                     last_error = LLMClientError(
                         f"HTTP {resp.status_code}: {resp.text[:200]}"
