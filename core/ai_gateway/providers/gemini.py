@@ -54,10 +54,17 @@ class GeminiProvider(ProviderAdapter):
 
         The new SDK natively supports ``ThinkingConfig``, so the old
         feature-detection shim for the deprecated SDK has been removed.
+
+        AFC (Automatic Function Calling) is disabled because the gateway
+        never passes tools — leaving it on produces noisy SDK warnings
+        about using ``generate_content`` instead of ``Chat.send_message``.
         """
         kwargs: Dict[str, Any] = {
             "temperature": temperature,
             "max_output_tokens": max_output_tokens,
+            "automatic_function_calling": types.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
         }
         if schema is not None:
             kwargs["response_mime_type"] = "application/json"
@@ -112,7 +119,12 @@ class GeminiProvider(ProviderAdapter):
             await self.client.aio.models.generate_content(
                 model=self.model_name,
                 contents="ping",
-                config=types.GenerateContentConfig(max_output_tokens=8),
+                config=types.GenerateContentConfig(
+                    max_output_tokens=8,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        disable=True
+                    ),
+                ),
             )
             return {"healthy": True, "model": self.model_name}
         except Exception as e:
