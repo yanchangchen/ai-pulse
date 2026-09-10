@@ -216,19 +216,18 @@ Writing style rules:
         result = await gateway.execute(request)
 
         if result.is_success():
-            # Belt-and-suspenders: if the gateway used its deterministic fallback
-            # and the result is the crude format (method=extractive-summary-v1),
-            # re-route through the proper non-LLM summariser for a better brief.
+            # Belt-and-suspenders: if the gateway used its deterministic fallback,
+            # re-route through the proper non-LLM summariser. The gateway fallback
+            # only has raw prompt text, whereas the summariser has the structured
+            # article pool and can produce a proper 5-section brief.
             prov = result.provenance
             if prov.method == "deterministic":
-                raw = result.result
-                if isinstance(raw, dict) and raw.get("method") == "extractive-summary-v1":
-                    logger.info(
-                        "Gateway returned crude deterministic summary for %s; "
-                        "re-routing through proper non-LLM summariser",
-                        theme_name,
-                    )
-                    return extractive_theme_summary(theme_name, articles)
+                logger.info(
+                    "Gateway used deterministic fallback for %s; "
+                    "re-routing through proper non-LLM summariser",
+                    theme_name,
+                )
+                return extractive_theme_summary(theme_name, articles)
 
             # Parse the result - it should be the structured summary
             parsed = _parse_summary_sections(str(result.result))
