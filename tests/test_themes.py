@@ -11,14 +11,13 @@ import pytest
 def _reset_themes(monkeypatch, tmp_path):
     """Reload themes.py with a clean, temporary custom_keywords.json."""
     import importlib
-    import sys
 
     from config import themes
 
-    # Point the overlay file to a temp path so tests don't interfere.
-    monkeypatch.setattr(themes, "CUSTOM_KEYWORDS_FILE", tmp_path / "custom_keywords.json")
-    # Reset THEME keyword dicts to base values (no overlay).
+    # Reload first to reset any state from previous tests.
     importlib.reload(themes)
+    # Then patch the overlay file to a temp path so tests don't interfere.
+    monkeypatch.setattr(themes, "CUSTOM_KEYWORDS_FILE", tmp_path / "custom_keywords.json")
     yield
     importlib.reload(themes)
 

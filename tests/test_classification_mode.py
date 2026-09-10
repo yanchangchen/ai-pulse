@@ -235,6 +235,78 @@ class TestExtractKeywordSuggestions:
         pending_terms = [s["term"] for s in result["pending"]]
         auto_terms = [s["term"] for s in result["auto_applied"]]
         # "zeroday" appears in 2 articles → pending, not auto-applied
-        assert any("zeroday" in t for t in pending_terms) or len(pending_terms) >= 0
+        assert any("zeroday" in t for t in pending_terms)
         # Should NOT be auto-applied
         assert not any("zeroday" in t for t in auto_terms)
+
+    def test_stopwords_and_noise_terms_are_filtered(self):
+        """Common stopwords like 'your', 'across', and noisy domain terms
+        should not be suggested as keywords."""
+        articles = {
+            "Agentic Systems & DevTools": [
+                {"title": "Your phone across the platform", "summary": "Your phone works across the system.", "gate": 4},
+                {"title": "Photos and more photos", "summary": "Photos show the new photos feature.", "gate": 4},
+            ]
+        }
+        with patch("config.themes.add_keywords_to_theme") as mock_add, \
+             patch("core.classifier._store_keyword_suggestions"):
+            result = extract_keyword_suggestions_from_run(articles)
+
+        all_terms = [s["term"] for s in result["auto_applied"] + result["pending"]]
+        noise_terms = {"your", "across", "phone", "photos"}
+        for term in all_terms:
+            assert term not in noise_terms
+
+    def test_cross_theme_generic_terms_are_filtered(self):
+        """A term that appears across multiple themes should be considered
+        too generic and not suggested."""
+        articles = {
+            "Agentic Systems & DevTools": [
+                {"title": "Neural agents deployed", "summary": "Neural agents run tasks.", "gate": 4},
+                {"title": "Neural agent update", "summary": "Neural agent improvements.", "gate": 4},
+            ],
+            "Frontier Models & Benchmarks": [
+                {"title": "Neural model released", "summary": "Neural model trains faster.", "gate": 4},
+                {"title": "Neural benchmark set", "summary": "Neural benchmark results.", "gate": 4},
+            ],
+        }
+        with patch("config.themes.add_keywords_to_theme") as mock_add, \
+             patch("core.classifier._store_keyword_suggestions"):
+            result = extract_keyword_suggestions_from_run(articles)
+
+        all_terms = [s["term"] for s in result["auto_applied"] + result["pending"]]
+        assert "neural" not in all_terms
+
+    def test_unigrams_must_appear_in_title(self):
+        """Unigrams should only be suggested if they appear in at least one
+        article title."""
+        articles = {
+            "AI Security & Trust": [
+                {"title": "New attack found", "summary": "Zeroday attack in LLM.", "gate": 4},
+                {"title": "Patch fixes attack", "summary": "Attack patched.", "gate": 4},
+            ]
+        }
+        with patch("config.themes.add_keywords_to_theme") as mock_add, \
+             patch("core.classifier._store_keyword_suggestions"):
+            result = extract_keyword_suggestions_from_run(articles)
+
+        all_terms = [s["term"] for s in result["auto_applied"] + result["pending"]]
+        # "attack" appears in both titles → should be suggested
+        assert any("attack" in t for t in all_terms)
+
+    def test_unigrams_only_in_summary_are_not_suggested(self):
+        """Unigrams that only appear in article summaries (never in titles)
+        should not be suggested as keywords."""
+        articles = {
+            "AI Security & Trust": [
+                {"title": "New exploit found", "summary": "Zeroday vulnerability details.", "gate": 4},
+                {"title": "Patch released", "summary": "Zeroday vulnerability patched.", "gate": 4},
+            ]
+        }
+        with patch("config.themes.add_keywords_to_theme") as mock_add, \
+             patch("core.classifier._store_keyword_suggestions"):
+            result = extract_keyword_suggestions_from_run(articles)
+
+        all_terms = [s["term"] for s in result["auto_applied"] + result["pending"]]
+        # "vulnerability" only appears in summaries, never in titles
+        assert "vulnerability" not in all_terms

@@ -392,16 +392,67 @@ AUTO_APPLY_MIN_ARTICLES = 3
 MIN_TERM_LENGTH = 4
 
 # Stopwords specific to keyword extraction (supplements the general set).
+# Expanded to cover common English function words and news-domain noise.
 _KEYWORD_STOPWORDS = frozenset({
-    "also", "about", "after", "another", "because", "between", "both",
-    "could", "every", "first", "from", "have", "into", "just", "made",
-    "many", "more", "most", "much", "must", "other", "over", "some",
-    "such", "than", "that", "their", "them", "then", "there", "these",
-    "this", "those", "through", "under", "very", "were", "what", "when",
-    "where", "which", "while", "will", "with", "would", "year",
-    "week", "month", "time", "report", "according", "company", "said",
-    "announced", "released", "launch", "launches", "launching",
+    # Pronouns / determiners
+    "a", "an", "the", "this", "that", "these", "those", "my", "your", "his",
+    "her", "its", "our", "their", "its", "what", "which", "who", "whom",
+    "whose", "another", "each", "every", "all", "any", "both", "few",
+    "more", "most", "other", "some", "such", "no", "not", "only", "own",
+    "same", "so", "than", "too", "very", "can", "will", "just", "should",
+    "now", "under", "again", "further", "then", "once", "here", "there",
+    "when", "where", "why", "how",
+    # Common verbs / auxiliaries
+    "be", "been", "being", "have", "has", "had", "do", "does", "did", "done",
+    "doing", "get", "gets", "got", "gotten", "getting", "make", "made",
+    "makes", "making", "take", "took", "taken", "takes", "taking", "use",
+    "used", "uses", "using", "say", "said", "says", "saying", "go", "goes",
+    "going", "went", "gone", "come", "came", "comes", "coming", "know",
+    "knew", "known", "knows", "knowing", "think", "thought", "thinks",
+    "thinking", "see", "saw", "seen", "sees", "seeing", "want", "wanted",
+    "wanting", "wants", "give", "gave", "given", "gives", "giving", "look",
+    "looked", "looking", "looks", "find", "found", "finding", "finds",
+    "tell", "told", "telling", "tells", "become", "became", "becomes",
+    "becoming", "leave", "left", "leaves", "leaving", "put", "puts",
+    "putting", "keep", "keeps", "kept", "keeping", "bring", "brought",
+    "bringing", "brings", "begin", "began", "begun", "beginning", "begins",
+    "seem", "seemed", "seeming", "seems", "help", "helped", "helping",
+    "helps", "show", "showed", "shown", "showing", "shows", "hear", "heard",
+    "hearing", "hears", "play", "played", "playing", "plays", "run", "ran",
+    "running", "runs", "move", "moved", "moves", "moving", "live", "lived",
+    "lives", "living", "believe", "believed", "believes", "believing",
+    "bring", "bring", "let", "lets", "letting", "set", "sets", "setting",
+    # Prepositions / conjunctions
+    "about", "above", "across", "after", "against", "along", "among",
+    "around", "as", "at", "before", "behind", "below", "beneath", "beside",
+    "between", "beyond", "but", "by", "despite", "down", "during", "except",
+    "for", "from", "in", "inside", "into", "like", "near", "next", "of",
+    "off", "on", "onto", "out", "outside", "over", "past", "per", "since",
+    "through", "throughout", "till", "to", "toward", "towards", "under",
+    "until", "unto", "up", "upon", "via", "with", "within", "without",
+    "and", "because", "or", "nor", "yet", "although", "though", "whereas",
+    # News / tech noise words
+    "also", "report", "reports", "reported", "reporting", "according",
+    "company", "companies", "said", "says", "announced", "announces",
+    "announcing", "release", "released", "releases", "releasing", "launch",
+    "launches", "launching", "introduce", "introduced", "introduces",
+    "introducing", "unveil", "unveiled", "unveiling", "unveils", "new",
+    "latest", "update", "updates", "updated", "weekly", "week", "month",
+    "year", "today", "yesterday", "tomorrow", "time", "day", "days",
+    # Generic tech / web words that are too broad to be useful keywords
+    "app", "apps", "phone", "mobile", "device", "devices", "user", "users",
+    "photo", "photos", "image", "images", "video", "videos", "data",
+    "online", "website", "websites", "platform", "platforms", "service",
+    "services", "feature", "features", "tool", "tools", "product",
+    "products", "solution", "solutions", "blog", "blogs", "news",
+    "article", "articles", "post", "posts", "page", "pages",
+    # Domain-specific noise seen in production runs
+    "ainews",
 })
+
+# Maximum number of themes a term may appear in before being considered
+# too generic to be a useful keyword suggestion.
+MAX_GENERIC_THEME_COUNT = 1
 
 
 def extract_keyword_suggestions_from_run(
@@ -420,7 +471,7 @@ def extract_keyword_suggestions_from_run(
       - ``pending``: list of the same shape for suggestions below the
         auto-apply threshold (stored to Supabase for UI review).
     """
-    from collections import Counter
+    from collections import Counter, defaultdict
     from config.themes import THEMES, add_keywords_to_theme
 
     # Build a reverse index: which themes already own which keywords?
@@ -429,35 +480,43 @@ def extract_keyword_suggestions_from_run(
         for kw in theme_data["keywords"]:
             all_existing_keywords[kw.lower()] = theme_name
 
-    # Collect candidate terms per theme from Gate 3/4 articles
-    # theme_name → Counter of candidate terms
-    theme_candidates: Dict[str, Counter] = {}
+    # Collect candidate terms per theme from Gate 3/4 articles.
+    # theme_name → Counter of candidate term article counts
+    theme_term_counts: Dict[str, Counter] = {}
+    # theme_name → Counter of candidate term title occurrences
+    theme_title_counts: Dict[str, Counter] = {}
+    # term_lower → set of themes in which the term appears
+    term_themes: Dict[str, set] = defaultdict(set)
 
     for theme_name, articles in themed_articles.items():
         if theme_name not in THEMES:
             continue
         theme_existing = {k.lower() for k in THEMES[theme_name]["keywords"]}
-        # Track per-article term presence, not total occurrences
-        theme_terms_by_article: List[set] = []
+        # term → set of article indices in which it appears for this theme
+        term_article_sets: Dict[str, set] = {}
+        # term → count of title occurrences in this theme
+        title_counter: Counter = Counter()
 
-        for article in articles:
+        for idx, article in enumerate(articles):
             gate = article.get("gate", 1)
             if gate not in (3, 4):
                 continue  # Only analyse articles that fell through to LLM/heuristic
 
             title = article.get("title", "")
             summary = article.get("summary", "")
-            text = f"{title} {summary}"
+            full_text = f"{title} {summary}"
 
-            # Extract candidate terms: alpha tokens of length >= MIN_TERM_LENGTH
-            tokens = [
-                w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]+", text)
+            # Unigram candidates from the full article text
+            unigrams = [
+                w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]+", full_text)
                 if len(w) >= MIN_TERM_LENGTH
                 and w.lower() not in _KEYWORD_STOPWORDS
                 and w.lower() not in theme_existing
             ]
-            # Also extract bigrams (two-word phrases)
-            words = text.split()
+
+            # Bigram candidates from the full article text
+            words = full_text.split()
+            bigrams = []
             for i in range(len(words) - 1):
                 w1, w2 = words[i].strip(".,;:!?()[]"), words[i + 1].strip(".,;:!?()[]")
                 if (len(w1) >= 3 and len(w2) >= 3
@@ -466,29 +525,48 @@ def extract_keyword_suggestions_from_run(
                         and w2.lower() not in _KEYWORD_STOPWORDS):
                     bigram = f"{w1} {w2}"
                     if bigram.lower() not in theme_existing:
-                        tokens.append(bigram)
+                        bigrams.append(bigram)
 
-            # Count each term once per article
-            article_terms = {t.lower() for t in tokens}
-            theme_terms_by_article.append(article_terms)
+            # Combine and dedupe per article
+            all_terms = set(unigrams) | set(bigrams)
+            for term in all_terms:
+                term_lower = term.lower()
+                if term_lower not in term_article_sets:
+                    term_article_sets[term_lower] = set()
+                term_article_sets[term_lower].add(idx)
+                term_themes[term_lower].add(theme_name)
 
-        # Count how many articles contain each term
-        term_article_counts: Counter = Counter()
-        for article_terms in theme_terms_by_article:
-            for term in article_terms:
-                term_article_counts[term] += 1
+            # Track unigram title occurrences specifically (for title-preference filter)
+            title_words = re.findall(r"[A-Za-z][A-Za-z0-9\-]+", title)
+            for w in title_words:
+                if (len(w) >= MIN_TERM_LENGTH
+                        and w.lower() not in _KEYWORD_STOPWORDS
+                        and w.lower() not in theme_existing):
+                    title_counter[w.lower()] += 1
 
-        if term_article_counts:
-            theme_candidates[theme_name] = term_article_counts
+        if term_article_sets:
+            theme_term_counts[theme_name] = Counter({t: len(s) for t, s in term_article_sets.items()})
+            theme_title_counts[theme_name] = title_counter
 
     # Classify candidates into auto-applied vs pending
     auto_applied: List[Dict] = []
     pending: List[Dict] = []
 
-    for theme_name, counter in theme_candidates.items():
-        for term, count in counter.most_common(20):
+    for theme_name, counts in theme_term_counts.items():
+        for term, count in counts.most_common(20):
             # Skip if the term already belongs to another theme
             if term in all_existing_keywords and all_existing_keywords[term] != theme_name:
+                continue
+
+            # Skip generic terms that appear across multiple themes
+            if len(term_themes[term]) > MAX_GENERIC_THEME_COUNT:
+                continue
+
+            # Unigrams must appear in at least one article title to be useful
+            # keywords; bigrams can come from anywhere because they are usually
+            # proper noun phrases.
+            is_unigram = " " not in term
+            if is_unigram and theme_title_counts[theme_name].get(term, 0) == 0:
                 continue
 
             suggestion = {
