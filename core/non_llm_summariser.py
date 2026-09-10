@@ -3,7 +3,7 @@ import re
 import math
 import logging
 from collections import Counter
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from config.themes import THEMES
 
