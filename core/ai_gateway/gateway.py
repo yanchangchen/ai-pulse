@@ -178,6 +178,7 @@ class ModelGateway:
                         base_url=ollama_url,
                         api_key=ollama_key,
                         model=cfg["model"],
+                        request_timeout=float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "60")),
                     )
                     self.health[name] = ModelHealth(
                         provider="ollama", model=cfg["model"]

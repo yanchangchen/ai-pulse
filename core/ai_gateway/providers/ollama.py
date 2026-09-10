@@ -1,6 +1,7 @@
 """
 Ollama Cloud provider adapter.
 """
+import asyncio
 import httpx
 import json
 from typing import Dict, Any, Optional
@@ -15,14 +16,16 @@ class OllamaCloudProvider(ProviderAdapter):
         base_url: str,
         api_key: str,
         model: str = "nemotron-3-super:cloud",
+        request_timeout: float = 60.0,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.request_timeout = request_timeout
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=180.0,
+            timeout=request_timeout,
         )
 
     async def generate(self, prompt: str, **kwargs) -> Dict[str, Any]:
@@ -36,7 +39,15 @@ class OllamaCloudProvider(ProviderAdapter):
                 **kwargs.get("options", {}),
             },
         }
-        response = await self.client.post("/api/generate", json=payload)
+        try:
+            response = await asyncio.wait_for(
+                self.client.post("/api/generate", json=payload),
+                timeout=self.request_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"OllamaCloudProvider.generate() timed out after {self.request_timeout}s"
+            )
         response.raise_for_status()
         data = response.json()
         return {
@@ -58,7 +69,15 @@ class OllamaCloudProvider(ProviderAdapter):
             "format": "json",
             "options": kwargs.get("options", {}),
         }
-        response = await self.client.post("/api/generate", json=payload)
+        try:
+            response = await asyncio.wait_for(
+                self.client.post("/api/generate", json=payload),
+                timeout=self.request_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"OllamaCloudProvider.generate_structured() timed out after {self.request_timeout}s"
+            )
         response.raise_for_status()
         data = response.json()
         return {

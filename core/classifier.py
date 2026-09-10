@@ -565,7 +565,7 @@ def _store_keyword_suggestions(
             })
 
         if rows:
-            insert_keyword_suggestions(rows, supabase=supabase)
+            insert_keyword_suggestions(supabase, rows)
 
     except ImportError:
         logger.debug("quality_schema or supabase_client not available, skipping suggestion storage")
