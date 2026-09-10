@@ -4,8 +4,9 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 
 ## 🚀 Key Features
 
-- **Multi-model AI gateway** (`core/ai_gateway/`) — task-typed LLM calls (categorise / extract / summarise / synthesise / project) routed across Google Gemini and Ollama Cloud models with per-task fallback chains, per-model health tracking, context-window fit checks, exponential-backoff retries, JSON-schema validation, a deterministic last-resort fallback, and full **provenance** on every result (rendered as UI chips on theme cards).
-- **7 strategic themes** — 4-pass waterfall classification (weighted keywords → TF-IDF → gateway LLM → soft-match heuristic), with LLM calls reserved for genuinely ambiguous articles.
+- **Multi-model AI gateway** (`core/ai_gateway/`) — task-typed LLM calls (categorise / extract / summarise / synthesise / project) routed across Google Gemini and Ollama Cloud models with per-task fallback chains, per-model health tracking, context-window fit checks, exponential-backoff retries, JSON-schema validation, a deterministic last-resort fallback, and full **provenance** on every result (rendered as UI chips on theme cards). Summarise/synthesise/project route **Ollama primary → Gemini fallback**; categorise/extract keep Gemini flash-lite primary. Per-provider request timeouts (`OLLAMA_REQUEST_TIMEOUT`, `GEMINI_REQUEST_TIMEOUT`) prevent hung calls from blocking the fallback chain.
+- **7 strategic themes** — 4-pass waterfall classification (weighted keywords → TF-IDF → optional gateway LLM → soft-match heuristic). The LLM gate can be disabled entirely via **Deterministic Mode**; gate stats are persisted and surfaced in the UI.
+- **Self-improving keywords** — after every run, articles that fell through to the LLM/heuristic gate are analysed heuristically; high-signal missing keywords are auto-applied to the theme's keyword dict, and lower-confidence candidates are stored in Supabase for review.
 - **Background ingestion** — first load and 12-hour-expiry refreshes run in a daemon thread (`core/bg_refresher.py`); the UI stays responsive while the pipeline runs.
 - **Persistent memory** — every run is appended to `history.json` (machine-readable), `memory.md` (human-readable wiki), and optionally Supabase (cloud). The last 2 runs' summaries are injected into the next LLM prompt so the model reports on **evolutions**, not static snapshots.
 - **Token optimisation** — content-based SHA-256 hashing skips redundant LLM calls when fetched articles are unchanged; `articles` table uses `(content_hash, theme_name)` UPSERT to deduplicate across runs.
@@ -20,6 +21,18 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 4. **Persistence** — write to `memory.md`, `history.json`, and Supabase, creating a permanent record of industry shifts.
 
 ## 🛠️ Architecture
+
+### Classification Modes
+
+The classifier now supports two modes, controlled from the **Quality Evaluation → 🧭 Classification Mode** tab (`config/custom_settings.json`):
+
+- **Hybrid (default):** Runs the full 4-pass waterfall (keywords → TF-IDF → LLM → heuristic). Used when you expect some articles to need LLM disambiguation.
+- **Deterministic:** Skips the LLM gate. Articles that miss keywords and TF-IDF go straight to the heuristic fallback. Ideal once keyword coverage is mature — gate stats are persisted and the UI suggests switching when the LLM gate catches fewer than 5% of articles for 5 consecutive runs.
+
+```
+Hybrid:   Keywords → TF-IDF → LLM (Gateway) → Heuristic
+Deterministic: Keywords → TF-IDF → Heuristic
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -42,13 +55,16 @@ An advanced AI news intelligence dashboard that aggregates, analyses, and persis
 ├─────────────────────────────────────────────────────────────────┤
 │  Core Intelligence Layer                                         │
 │  • AI Gateway    (multi-model routing, fallback chains, health   │
-│                   tracking, deterministic fallback, provenance)  │
+│                   tracking, deterministic fallback, provenance;  │
+│                   Ollama primary for summarise/synthesise/       │
+│                   project, Gemini fallback)                        │
 │  • Fetcher       (concurrent RSS + web scraping)                 │
-│  • Classifier    (4-pass waterfall: keywords → TF-IDF → LLM     │
-│                   → soft-match; gate counters tracked)           │
+│  • Classifier    (4-pass waterfall: keywords → TF-IDF → optional │
+│                   LLM → soft-match; gate counters tracked;        │
+│                   hybrid/deterministic mode)                      │
 │  • TF-IDF Classifier (cosine-similarity fallback for gate 2)     │
 │  • Summariser    (gateway synthesis with memory-injection        │
-│                   + provenance)                                  │
+│                   + provenance; non-LLM extractive fallback)     │
 │  • Non-LLM Summariser (extractive LexRank/Luhn fallback)         │
 │  • Provenance    (chip renderer + banner stripper)               │
 │  • History Mgr   (JSON + Markdown + Supabase persistence)        │
@@ -87,12 +103,12 @@ flowchart TD
         Themed --> ModeCheck{"Engine Mode"}
 
         ModeCheck -- "LLM Synthesis (Default)" --> Gateway["Model Gateway\n(routing, health, retries, context-fit)"]
-        Gateway --> Gemini["Google Gemini models"]
-        Gateway --> Ollama["Ollama Cloud models"]
-        Gemini -- "Success" --> StructOut["Structured 5-Section Brief\n+ Provenance chip"]
-        Ollama -- "Success" --> StructOut
-        Gemini -- "Quota / errors" --> Ollama
-        Ollama -- "All LLMs failed" --> NonLLMFallback["⚡ Non-LLM Extractive Engine"]
+        Gateway --> Ollama["Ollama Cloud models\n(primary for summarise/synthesise/project)"]
+        Gateway --> Gemini["Google Gemini models\n(fallback for summarise/synthesise/project; primary for categorise/extract)"]
+        Ollama -- "Success" --> StructOut["Structured 5-Section Brief\n+ Provenance chip"]
+        Gemini -- "Success" --> StructOut
+        Ollama -- "Timeout / errors" --> Gemini
+        Gemini -- "All LLMs failed" --> NonLLMFallback["⚡ Non-LLM Extractive Engine"]
 
         ModeCheck -- "Non-LLM Extractive Only" --> NonLLMFallback
 
@@ -136,6 +152,15 @@ GEMINI_MODEL    = "gemini-3.7-flash"
 
 > **Note:** the Model Gateway (`core/ai_gateway/`) initialises its providers from **OS environment variables** (`OLLAMA_API_KEY`, `OLLAMA_BASE_URL`, `GEMINI_API_KEY`) rather than Streamlit secrets. If you want gateway-routed synthesis, export those variables in the environment you launch Streamlit from; otherwise the app degrades gracefully to the deterministic/extractive engine.
 
+```bash
+export OLLAMA_BASE_URL="https://api.ollama.com"
+export OLLAMA_API_KEY="your-ollama-api-key"
+export GEMINI_API_KEY="your-gemini-api-key"
+# Optional: tighten per-provider request timeouts
+export OLLAMA_REQUEST_TIMEOUT="60"   # seconds; default 60
+export GEMINI_REQUEST_TIMEOUT="30"   # seconds; default 30
+```
+
 ### 3. Configure Supabase (Optional)
 For cloud persistence, create `.env`:
 ```env
@@ -163,7 +188,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 | 4 | Sources | All RSS feeds and web sources with article counts |
 | 5 | Memory Wiki | **🔮 Ask Sage** (default tab) — conversational chat agent grounded in wiki data with chronological citations; 📖 Memory Timeline — browse past runs; ⚖️ Compare Runs — side-by-side diff |
 | 6 | Trend Analytics | Cross-run thematic momentum line chart & detailed theme historical drilldown timeline |
-| 7 | Quality Evaluation | Weekly automated evaluation engine scoring 7 metrics: 3 LLM-as-judge (Categoriser, Faithfulness, Uniqueness) + 4 sub-millisecond deterministic judges (Grounding, Structural Compliance, Coverage, Temporal Coherence) with a live progress panel; results persist to Supabase. Also surfaces **in-app theme keyword manager, 1-click apply buttons, and summariser tuner**. |
+| 7 | Quality Evaluation | Weekly automated evaluation engine scoring 7 metrics: 3 LLM-as-judge (Categoriser, Faithfulness, Uniqueness) + 4 sub-millisecond deterministic judges (Grounding, Structural Compliance, Coverage, Temporal Coherence) with a live progress panel; results persist to Supabase. Also surfaces **in-app theme keyword manager, 1-click apply buttons, summariser tuner, and 🧭 Classification Mode switch (hybrid ↔ deterministic)**. |
 | 8 | Feedback & Roadmap | Submit feature requests, bug reports, UX ideas (Spec-Driven Development prompts); persisted to the `user_feedback` Supabase table with a public roadmap tracker. |
 
 All pages share a sidebar nav (`core/shared_sidebar.py`) and live background-status panel.
@@ -183,10 +208,19 @@ Defined in `config/themes.py` with **weighted keywords** (1–3 — higher weigh
 The classifier processes articles through a **4-pass waterfall pipeline** (`core/classifier.py`, `core/tfidf_classifier.py`):
 1. **Pass 1 (Weighted Keywords)**: Fast exact keyword matching using `config/themes.py` weights (~75% of items).
 2. **Pass 2 (TF-IDF Cosine Similarity)**: Sub-millisecond vector cosine angle matching against theme vocabulary vectors (~20% of items).
-3. **Pass 3 (Model Gateway LLM)**: LLM classification routed through the AI Gateway (multi-model fallback + provenance), reserved strictly for remaining ambiguous items (< 5% of items).
+3. **Pass 3 (Model Gateway LLM)**: LLM classification routed through the AI Gateway (multi-model fallback + provenance), reserved strictly for remaining ambiguous items (< 5% of items). **Skipped in Deterministic Mode.**
 4. **Pass 4 (Soft-Match Heuristic)**: Guaranteed fuzzy token/substring fallback to ensure 100% coverage.
 
-Gate breakdown metrics (Pass 1/2/3/4 item counts and percentages) are tracked automatically and rendered on the **Quality Evaluation** page (`pages/7_Quality_Evaluation.py`) to monitor gate efficiency over time.
+Gate breakdown metrics (Pass 1/2/3/4 item counts and percentages) are tracked automatically, **persisted to `config/custom_settings.json`**, and rendered on the **Quality Evaluation** page (`pages/7_Quality_Evaluation.py`) to monitor gate efficiency over time. When Gate 3 catches fewer than 5% of articles for 5 consecutive hybrid runs, the page suggests switching to Deterministic Mode.
+
+### 🔄 Self-Improving Keywords
+
+After each classification run, `extract_keyword_suggestions_from_run()` (in `core/classifier.py`) analyses the articles that fell through to Gate 3/4 and heuristically extracts high-signal terms missing from the assigned theme's keyword dict:
+
+- Terms appearing in **3+ articles** for the same theme (and not already a keyword in another theme) are **auto-applied** to the theme keyword dict via `add_keywords_to_theme()` and persisted to `config/custom_keywords.json`.
+- Lower-confidence candidates (2 articles) are stored in the Supabase `keyword_suggestions` table with status `pending` for review in the Theme Keyword Manager.
+
+This is a purely heuristic loop — zero LLM cost — so keyword coverage improves run-over-run without external dependencies, gradually shrinking the need for LLM classification.
 
 ### 🔬 Quality Evaluation Suite & Judge Metrics
 
@@ -244,9 +278,10 @@ Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_m
 ## 🧪 Tests
 
 ```bash
-pytest tests/                                  # main suite (~215 tests): fetcher, classifier, tfidf, summariser,
-                                               # non-LLM summariser, gemini, provenance, quota fallback, evaluator,
-                                               # sage_agent, supabase_client, bg_refresher, visualiser, user_feedback
+pytest tests/                                  # main suite (~240 tests): fetcher, classifier, classification_mode,
+                                               # tfidf, summariser, non-LLM summariser, gemini, provenance, quota
+                                               # fallback, routing_overhaul, ollama_timeout, evaluator, sage_agent,
+                                               # supabase_client, bg_refresher, visualiser, user_feedback
                                                # picks up shared fixtures in tests/conftest.py (incl. an autouse
                                                # fixture that resets LLM quota flags around every test)
 pytest -m integration tests/                   # opt-in: exercises the real LLM and Supabase wiring
@@ -271,14 +306,18 @@ ai-pulse/
 ├── core/
 │   ├── ai_gateway/              # Multi-model gateway (routing, fallback, provenance)
 │   │   ├── contracts.py         # TaskType / AITaskRequest / AITaskResult / Provenance
-│   │   ├── gateway.py           # ModelGateway singleton: registry, health, retries
+│   │   ├── gateway.py           # ModelGateway singleton: registry, health, retries;
+│   │   │                        # Ollama-primary routing for summarise/synthesise/project
 │   │   ├── deterministic.py     # Zero-LLM fallbacks (rules, extractive, keywords)
 │   │   └── providers/           # GeminiProvider + OllamaCloudProvider adapters
+│   │                            # (both with per-request timeouts)
 │   ├── fetcher.py               # Concurrent RSS + BeautifulSoup web scraping
-│   ├── classifier.py            # 4-pass waterfall classification (gate stats tracked)
+│   ├── classifier.py            # 4-pass waterfall classification; gate stats persisted;
+│   │                            # extract_keyword_suggestions_from_run() auto-improver
 │   ├── tfidf_classifier.py      # TF-IDF cosine-similarity classifier (gate 2)
 │   ├── summariser.py            # Gateway summarisation with memory-injection + provenance
-│   ├── non_llm_summariser.py    # Extractive LexRank/Luhn/keyphrase engine (0-cost fallback)
+│   ├── non_llm_summariser.py    # Extractive LexRank/Luhn/keyphrase engine (0-cost fallback);
+│   │                            # extractive_summarise_from_text() for gateway fallback
 │   ├── gemini_client.py         # On-demand Deep Dive Gemini synthesis + quota model switching
 │   ├── provenance.py            # Provenance chip renderer + banner stripper
 │   ├── visualiser.py            # Word cloud generation + keyword canonicalization
@@ -296,16 +335,18 @@ ai-pulse/
 │   ├── supabase_ui.py           # Sidebar sync status widget
 │   └── logger.py                # Centralised logging setup
 ├── config/
-│   ├── settings.py              # Lookback, cache TTL, workers, model context windows, tuner overlay
+│   ├── settings.py              # Lookback, cache TTL, workers, model context windows,
+│   │                            # tuner overlay, classification settings (mode + gate history)
 │   ├── themes.py                # 7 themes with weighted keywords
 │   ├── sources.py               # RSS feeds + web-scrape registry
-│   ├── custom_settings.json     # In-app summariser tuner overrides (created on demand)
+│   ├── custom_settings.json     # In-app summariser tuner + classification mode (on demand)
 │   ├── custom_keywords.json     # In-app keyword manager overrides (created on demand)
 │   └── Appendix_*.md            # Watchlists: experts, blogs, papers
-├── tests/                       # pytest suite (~215 tests)
+├── tests/                       # pytest suite (~240 tests)
 │   ├── conftest.py              # Shared fixtures + autouse LLM quota-flag reset
 │   ├── test_fetcher.py
 │   ├── test_classifier.py
+│   ├── test_classification_mode.py  # deterministic mode, gate-stats persistence, keyword auto-improvement
 │   ├── test_tfidf_classifier.py
 │   ├── test_summariser.py
 │   ├── test_gemini_summariser.py
@@ -313,6 +354,8 @@ ai-pulse/
 │   ├── test_non_llm_synthetic_cases.py
 │   ├── test_provenance.py
 │   ├── test_quota_exceeded_fallback.py
+│   ├── test_routing_overhaul.py # Ollama-primary summarise routing + extractive_summarise_from_text
+│   ├── test_ollama_timeout.py   # OllamaCloudProvider request-timeout behaviour
 │   ├── test_evaluator.py
 │   ├── test_sage_agent.py
 │   ├── test_supabase_client.py
