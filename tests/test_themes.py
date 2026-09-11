@@ -65,3 +65,98 @@ def test_add_keywords_to_theme_returns_false_for_unknown_theme(tmp_path):
     from config.themes import add_keywords_to_theme
 
     assert add_keywords_to_theme("Not a real theme", {"foo": 1}) is False
+
+
+class FakeSupabaseResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class FakeSupabaseClient:
+    def __init__(self, data=None):
+        self.data = data or []
+        self.last_upsert = None
+
+    def table(self, name):
+        return FakeTable(self, name, self.data)
+
+
+class FakeTable:
+    def __init__(self, client, name, data):
+        self.client = client
+        self.name = name
+        self.data = data
+
+    def select(self, *args):
+        return FakeQuery(self, self.data)
+
+    def upsert(self, rows, on_conflict=None):
+        self.client.last_upsert = rows
+        return FakeQuery(self, [])
+
+
+class FakeQuery:
+    def __init__(self, table, data):
+        self.table = table
+        self.data = data
+
+    def execute(self):
+        return FakeSupabaseResponse(self.data)
+
+
+class FakeSupabaseManager:
+    def __init__(self, data=None):
+        self.client = FakeSupabaseClient(data)
+        self._available = True
+
+    def is_available(self):
+        return self._available
+
+
+def test_load_custom_keywords_prefers_supabase(tmp_path):
+    from config import themes
+
+    fake_data = [
+        {"theme_name": "Agentic Systems & DevTools", "keywords": {"supabase-term": 3}}
+    ]
+    manager = FakeSupabaseManager(fake_data)
+
+    with patch.object(themes, "_get_supabase_manager", return_value=manager):
+        data = themes.load_custom_keywords()
+
+    assert data["Agentic Systems & DevTools"]["supabase-term"] == 3
+
+
+def test_save_custom_keywords_writes_to_supabase(tmp_path):
+    from config import themes
+
+    manager = FakeSupabaseManager()
+
+    custom_data = {
+        "Agentic Systems & DevTools": {"supabase-term": 3},
+    }
+
+    with patch.object(themes, "_get_supabase_manager", return_value=manager):
+        success = themes.save_custom_keywords(custom_data)
+
+    assert success is True
+    assert manager.client.last_upsert is not None
+    rows = manager.client.last_upsert
+    assert any(r["theme_name"] == "Agentic Systems & DevTools" for r in rows)
+
+
+def test_load_custom_keywords_falls_back_to_local_file(tmp_path):
+    from config import themes
+    from config.themes import load_custom_keywords, CUSTOM_KEYWORDS_FILE
+
+    # No Supabase available, but local file has data
+    local_data = {"Agentic Systems & DevTools": {"local-term": 2}}
+    CUSTOM_KEYWORDS_FILE.write_text(json.dumps(local_data), encoding="utf-8")
+
+    manager = FakeSupabaseManager()
+    manager._available = False
+
+    with patch.object(themes, "_get_supabase_manager", return_value=manager):
+        data = load_custom_keywords()
+
+    assert data["Agentic Systems & DevTools"]["local-term"] == 2

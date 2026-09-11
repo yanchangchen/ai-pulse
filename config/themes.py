@@ -159,8 +159,70 @@ from pathlib import Path
 CUSTOM_KEYWORDS_FILE = Path(__file__).parent / "custom_keywords.json"
 
 
+def _get_supabase_manager():
+    """Lazy import of Supabase manager to avoid circular dependencies."""
+    from core.supabase_client import get_supabase_manager
+    return get_supabase_manager()
+
+
+def _load_custom_keywords_from_supabase() -> Dict[str, Dict[str, int]]:
+    """Load custom keywords from Supabase if available."""
+    try:
+        manager = _get_supabase_manager()
+        if not manager.is_available():
+            return {}
+
+        response = manager.client.table("custom_keywords")\
+            .select("theme_name, keywords")\
+            .execute()
+
+        result: Dict[str, Dict[str, int]] = {}
+        if not response.data:
+            return result
+
+        for row in response.data:
+            theme_name = row.get("theme_name")
+            keywords = row.get("keywords") or {}
+            if theme_name and isinstance(keywords, dict):
+                # Coerce keyword values to int weights
+                result[theme_name] = {
+                    k: int(v) for k, v in keywords.items() if isinstance(v, (int, float, str))
+                }
+        return result
+    except Exception as exc:
+        logger.warning("Failed to load custom keywords from Supabase: %s", exc)
+        return {}
+
+
+def _save_custom_keywords_to_supabase(custom_data: Dict[str, Dict[str, int]]) -> bool:
+    """Save custom keywords to Supabase using upsert."""
+    try:
+        manager = _get_supabase_manager()
+        if not manager.is_available():
+            return False
+
+        rows = [
+            {"theme_name": theme_name, "keywords": keywords}
+            for theme_name, keywords in custom_data.items()
+        ]
+        if rows:
+            manager.client.table("custom_keywords")\
+                .upsert(rows, on_conflict="theme_name")\
+                .execute()
+        return True
+    except Exception as exc:
+        logger.warning("Failed to save custom keywords to Supabase: %s", exc)
+        return False
+
+
 def load_custom_keywords() -> Dict[str, Dict[str, int]]:
-    """Load custom keywords overlay from JSON if it exists."""
+    """Load custom keywords overlay from Supabase or local JSON."""
+    # Prefer Supabase if available
+    supabase_data = _load_custom_keywords_from_supabase()
+    if supabase_data:
+        return supabase_data
+
+    # Fallback to local JSON
     if CUSTOM_KEYWORDS_FILE.exists():
         try:
             with open(CUSTOM_KEYWORDS_FILE, "r", encoding="utf-8") as f:
@@ -171,14 +233,18 @@ def load_custom_keywords() -> Dict[str, Dict[str, int]]:
 
 
 def save_custom_keywords(custom_data: Dict[str, Dict[str, int]]) -> bool:
-    """Save custom keywords overlay to JSON. Returns True on success."""
+    """Save custom keywords overlay to Supabase and local JSON."""
+    # Try Supabase first; if it succeeds, also keep local file as a cache.
+    supabase_success = _save_custom_keywords_to_supabase(custom_data)
+
     try:
         with open(CUSTOM_KEYWORDS_FILE, "w", encoding="utf-8") as f:
             json.dump(custom_data, f, indent=2, ensure_ascii=False)
-        return True
     except Exception as exc:
         logger.warning("Failed to write custom keywords to %s: %s", CUSTOM_KEYWORDS_FILE, exc)
-        return False
+        return supabase_success
+
+    return True
 
 
 def add_keywords_to_theme(theme_name: str, new_keywords: Dict[str, int]) -> bool:
@@ -198,8 +264,8 @@ def add_keywords_to_theme(theme_name: str, new_keywords: Dict[str, int]) -> bool
     success = save_custom_keywords(custom)
     if not success:
         logger.warning(
-            "Keywords added in-memory for '%s' but could not be persisted to disk. "
-            "They will be lost on process restart unless the filesystem is writable.",
+            "Keywords added in-memory for '%s' but could not be persisted. "
+            "They will be lost on process restart unless Supabase or the filesystem is available.",
             theme_name,
         )
     return True
