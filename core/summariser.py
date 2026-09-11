@@ -226,6 +226,18 @@ Writing style rules:
             # Parse the result - it should be the structured summary
             parsed = _parse_summary_sections(str(result.result))
 
+            # Belt-and-suspenders part 2: if the LLM returned a success response
+            # but the content itself contains a failure/refusal string, treat it as
+            # a failed synthesis and fall back to the extractive engine.
+            if _summary_contains_failure_text(parsed):
+                logger.warning(
+                    "Gateway returned failure text for %s via %s; "
+                    "re-routing through proper non-LLM summariser",
+                    theme_name,
+                    prov.model or "unknown",
+                )
+                return extractive_theme_summary(theme_name, articles)
+
             # Extract provenance info
             source_str = f"{prov.provider}:{prov.model}" if prov.provider else f"deterministic:{prov.task}"
 
@@ -621,6 +633,26 @@ def _parse_summary_sections(content: str) -> Dict[str, str]:
         "further_reading": sections.get('further_reading', '')
     }
 
+
+def _summary_contains_failure_text(summary: Dict[str, str]) -> bool:
+    """Return True if any section contains a known LLM failure/refusal phrase.
+
+    The strings we look for are the same ones the quality-evaluation judge skips
+    so that a terse "Unable to generate summary" does not score as faithful.
+    Treating these as failures lets the pipeline fall back to the non-LLM
+    extractive engine instead of surfacing a blank brief.
+    """
+    from config.settings import EVAL_FAITHFULNESS_SKIP_STRINGS
+    text_to_check = " ".join(
+        summary.get(section, "") or ""
+        for section in (
+            "what_is_happening",
+            "engineering_tradeoffs",
+            "product_impact",
+            "why_it_matters",
+        )
+    ).lower()
+    return any(skip.lower() in text_to_check for skip in EVAL_FAITHFULNESS_SKIP_STRINGS)
 
 def generate_gemini_theme_summary(
     theme_name: str,
