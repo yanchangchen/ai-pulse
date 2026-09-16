@@ -88,9 +88,11 @@ def test_evaluator_runs_deterministic_only_on_quota():
 def test_format_display_timestamp():
     from core.design_system import format_display_timestamp
 
-    assert format_display_timestamp("2026-08-11T11:04:58+00:00") == "11/08/2026 11:04:58"
-    assert format_display_timestamp("2026-08-11 11:04:58") == "11/08/2026 11:04:58"
-    assert format_display_timestamp("2026-08-11T11:04:58Z") == "11/08/2026 11:04:58"
+    # Inputs are interpreted as UTC and converted to Asia/Singapore (UTC+8)
+    assert format_display_timestamp("2026-08-11T11:04:58+00:00") == "11/08/2026 19:04:58"
+    assert format_display_timestamp("2026-08-11 11:04:58") == "11/08/2026 19:04:58"
+    assert format_display_timestamp("2026-08-11T11:04:58Z") == "11/08/2026 19:04:58"
+    assert format_display_timestamp("2026-08-11T21:04:58+00:00") == "12/08/2026 05:04:58"
     assert format_display_timestamp("") == ""
     assert format_display_timestamp(None) == ""
 

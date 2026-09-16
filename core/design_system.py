@@ -134,32 +134,51 @@ def sanitize_summary_html(text: str) -> str:
     return cleaned.strip()
 
 
+from datetime import datetime, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+    _SINGAPORE = ZoneInfo("Asia/Singapore")
+except Exception:
+    # Fallback for older Python versions if zoneinfo data is missing
+    from dateutil.tz import gettz
+    _SINGAPORE = gettz("Asia/Singapore") or timezone.utc
+
+
 def format_display_timestamp(ts: Any) -> str:
     """Format any timestamp string or datetime object into DD/MM/YYYY HH:MM:SS format.
-    Strips GMT/UTC timezone offset suffixes (e.g. +00:00 or Z).
+
+    Input is interpreted as UTC and converted to Asia/Singapore (UTC+8) before
+    formatting, so all displayed run times are in Singapore time.
     """
-    from datetime import datetime
     if not ts:
         return ""
+
+    dt = None
     if isinstance(ts, datetime):
-        return ts.strftime("%d/%m/%Y %H:%M:%S")
-
-    ts_str = str(ts).strip()
-    try:
-        # Standardize ISO string by replacing Z with +00:00 if needed
-        clean_str = ts_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean_str)
-        return dt.strftime("%d/%m/%Y %H:%M:%S")
-    except Exception:
-        pass
-
-    # Try common string formats if fromisoformat fails
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        dt = ts
+    else:
+        ts_str = str(ts).strip()
         try:
-            clean_token = ts_str.split(".")[0].split("+")[0].replace("T", " ")
-            dt = datetime.strptime(clean_token, fmt)
-            return dt.strftime("%d/%m/%Y %H:%M:%S")
+            clean_str = ts_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_str)
         except Exception:
-            continue
+            pass
 
-    return ts_str
+        if dt is None:
+            # Try common string formats if fromisoformat fails
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                try:
+                    clean_token = ts_str.split(".")[0].split("+")[0].replace("T", " ")
+                    dt = datetime.strptime(clean_token, fmt)
+                except Exception:
+                    continue
+
+    if dt is None:
+        return str(ts)
+
+    # Assume naive datetimes are UTC, then convert to Singapore time
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_sg = dt.astimezone(_SINGAPORE)
+    return dt_sg.strftime("%d/%m/%Y %H:%M:%S")
