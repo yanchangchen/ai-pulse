@@ -23,7 +23,7 @@ def test_ollama_provider_default_timeout():
         api_key="test-key",
         model="nemotron-3-super:cloud",
     )
-    assert provider.request_timeout == 60.0
+    assert provider.request_timeout == 180.0
 
 
 def test_ollama_generate_raises_timeout():

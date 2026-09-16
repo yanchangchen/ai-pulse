@@ -2,6 +2,7 @@
 Model Gateway - Routes tasks to models with fallback, validation, and provenance.
 """
 import asyncio
+import os
 import time
 import json
 import jsonschema
@@ -45,6 +46,7 @@ class ModelHealth:
     error_rate: float = 0.0
     consecutive_failures: int = 0
     last_check: float = 0
+    last_failure: float = 0.0  # monotonic-ish wall clock of most recent failure
     status: str = "healthy"  # healthy, degraded, unavailable
 
 
@@ -55,6 +57,13 @@ class ModelGateway:
         self.routing_config = routing_config or self._default_routing_config()
         self.providers: Dict[str, ProviderAdapter] = {}
         self.health: Dict[str, ModelHealth] = {}
+        # Circuit-breaker cooldown: a model latched 'unavailable' is retried
+        # (half-open) this many seconds after its last failure, so a transient
+        # Ollama Cloud outage doesn't permanently demote the primary model for
+        # the rest of the process lifetime.
+        self.health_reset_seconds = float(
+            os.getenv("GATEWAY_HEALTH_RESET_SECONDS", "300")
+        )
         self._init_providers()
 
     def _default_routing_config(self) -> Dict:
@@ -161,8 +170,6 @@ class ModelGateway:
         zero providers, silently degrading every task to deterministic
         fallback).
         """
-        import os
-
         # Google Gemini
         gemini_key = GEMINI_API_KEY
         if gemini_key:
@@ -191,7 +198,7 @@ class ModelGateway:
                         base_url=ollama_url,
                         api_key=ollama_key,
                         model=cfg["model"],
-                        request_timeout=float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "60")),
+                        request_timeout=float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "180")),
                     )
                     self.health[name] = ModelHealth(
                         provider="ollama", model=cfg["model"]
@@ -220,7 +227,23 @@ class ModelGateway:
 
     def _is_healthy(self, model_key: str) -> bool:
         h = self.health.get(model_key)
-        return h is not None and h.status != "unavailable"
+        if h is None:
+            return False
+        if h.status != "unavailable":
+            return True
+        # Circuit-breaker half-open: once the cooldown has elapsed, let the
+        # model prove itself again instead of staying latched off forever.
+        # It comes back as 'degraded' with 3 strikes, so two more failures
+        # re-latch it; a single success fully restores it.
+        if time.time() - h.last_failure >= self.health_reset_seconds:
+            h.status = "degraded"
+            h.consecutive_failures = 3
+            logger.info(
+                f"Health auto-reset: '{model_key}' cooled down after "
+                f"{self.health_reset_seconds:.0f}s; retrying as degraded"
+            )
+            return True
+        return False
 
     def _classify_error(self, error: Exception) -> ErrorType:
         err_str = str(error).lower()
@@ -234,12 +257,23 @@ class ModelGateway:
 
     def _record_failure(self, model_key: str):
         h = self.health.get(model_key)
-        if h:
-            h.consecutive_failures += 1
-            if h.consecutive_failures >= 3:
-                h.status = "degraded"
-            if h.consecutive_failures >= 5:
-                h.status = "unavailable"
+        if not h:
+            return
+        h.consecutive_failures += 1
+        h.last_failure = time.time()
+        if h.consecutive_failures >= 5 and h.status != "unavailable":
+            h.status = "unavailable"
+            logger.warning(
+                f"Model '{model_key}' marked UNAVAILABLE after "
+                f"{h.consecutive_failures} consecutive failures; auto-resets "
+                f"{self.health_reset_seconds:.0f}s after the last failure"
+            )
+        elif h.consecutive_failures >= 3 and h.status == "healthy":
+            h.status = "degraded"
+            logger.info(
+                f"Model '{model_key}' degraded after "
+                f"{h.consecutive_failures} consecutive failures"
+            )
 
     def _record_success(self, model_key: str):
         h = self.health.get(model_key)
@@ -305,7 +339,23 @@ Return JSON: {{"category": "theme name"}}""",
 
         for model_key in candidates:
             if not self._is_healthy(model_key):
-                logger.debug(f"Skipping unhealthy model: {model_key}")
+                h = self.health.get(model_key)
+                detail = (
+                    f"{h.consecutive_failures} consecutive failures"
+                    if h
+                    else "no health record"
+                )
+                msg = (
+                    f"[{task.value}] Skipping '{model_key}': marked unavailable "
+                    f"({detail}); auto-resets {self.health_reset_seconds:.0f}s "
+                    f"after the last failure"
+                )
+                # Make primary skips loud — this is why nemotron silently
+                # stops being used once it latches off.
+                if model_key == policy.get("primary"):
+                    logger.warning(msg)
+                else:
+                    logger.info(msg)
                 continue
 
             if not self._check_context_fit(model_key, input_tokens):
@@ -352,6 +402,11 @@ Return JSON: {{"category": "theme name"}}""",
                     if error_type in (ErrorType.RETRYABLE, ErrorType.OUTPUT_FAILURE):
                         # Try next model in fallback chain
                         self._record_failure(model_key)
+                        logger.warning(
+                            f"[{task.value}] '{model_key}' failed after "
+                            f"{attempt + 1} attempt(s) ({error_type.value}): {e} "
+                            f"— falling back to next model in chain"
+                        )
                         if not fallback_used:
                             fallback_from = model_key
                         fallback_used = True
@@ -359,6 +414,10 @@ Return JSON: {{"category": "theme name"}}""",
 
                     # Non-retryable - don't try other models
                     self._record_failure(model_key)
+                    logger.warning(
+                        f"[{task.value}] '{model_key}' failed with "
+                        f"non-retryable error ({error_type.value}): {e}"
+                    )
                     break
 
         # All LLMs failed - deterministic fallback
@@ -416,6 +475,10 @@ Return JSON: {{"category": "theme name"}}""",
     ) -> AITaskResult:
         """Execute deterministic fallback based on task type."""
         task = request.task
+        logger.warning(
+            f"[{task.value}] All LLM candidates failed (last error: {error}); "
+            f"using deterministic fallback"
+        )
 
         if task in (TaskType.SUMMARISE, TaskType.SYNTHESISE):
             # Use the proper non-LLM summariser (LexRank + Luhn) instead of
@@ -449,10 +512,18 @@ Return JSON: {{"category": "theme name"}}""",
         return AITaskResult.success(result, provenance)
 
     async def health_check_all(self) -> Dict[str, Dict]:
-        """Check health of all providers."""
+        """Check health of all providers.
+
+        A healthy probe also clears latched failure state, so a model marked
+        'unavailable' recovers as soon as it responds again — no process
+        restart needed.
+        """
         results = {}
         for name, provider in self.providers.items():
-            results[name] = await provider.health_check()
+            result = await provider.health_check()
+            results[name] = result
+            if result.get("healthy"):
+                self._record_success(name)
         return results
 
     def get_model_info(self) -> Dict[str, Dict]:

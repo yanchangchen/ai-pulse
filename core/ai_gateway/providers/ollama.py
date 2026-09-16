@@ -16,7 +16,7 @@ class OllamaCloudProvider(ProviderAdapter):
         base_url: str,
         api_key: str,
         model: str = "nemotron-3-super:cloud",
-        request_timeout: float = 60.0,
+        request_timeout: float = 180.0,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key

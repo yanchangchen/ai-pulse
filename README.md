@@ -45,9 +45,10 @@ The Model Gateway reads from OS env vars, not Streamlit secrets:
 export OLLAMA_BASE_URL="https://api.ollama.com"
 export OLLAMA_API_KEY="your-ollama-api-key"
 export GEMINI_API_KEY="your-gemini-api-key"
-# Optional: tighten per-provider request timeouts
-export OLLAMA_REQUEST_TIMEOUT="60"   # seconds; default 60
-export GEMINI_REQUEST_TIMEOUT="30"   # seconds; default 30
+# Optional: tune per-provider request timeouts and health recovery
+export OLLAMA_REQUEST_TIMEOUT="180"         # seconds; default 180 (cloud models can be slow under load)
+export GEMINI_REQUEST_TIMEOUT="30"          # seconds; default 30
+export GATEWAY_HEALTH_RESET_SECONDS="300"   # cooldown before an "unavailable" model is retried; default 300
 ```
 
 ### 3. Configure Supabase (Optional)
