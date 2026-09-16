@@ -99,8 +99,12 @@ class BackgroundRefresher:
             from core.fetcher import fetch_all_news
             from core.classifier import classify_articles
             from core.summariser import generate_all_summaries
-            from core.history_manager import save_run_to_history
-            
+            from core.history_manager import (
+                save_run_to_history,
+                compute_run_fingerprint,
+                is_duplicate_run,
+            )
+
             # 1. Fetch news
             cls.update_progress("[FETCH] Ingesting and fetching AI news from RSS and web sources...")
             articles = fetch_all_news()
@@ -131,19 +135,32 @@ class BackgroundRefresher:
             # 3. Summarize
             cls.update_progress("[LLM] Generating targeted Engineering Blueprint & Product Feasibility briefs...")
             theme_counts = {theme: len(themed_articles.get(theme, [])) for theme in themed_articles}
-            summaries = generate_all_summaries(themed_articles, articles)
+            summaries, processed_per_theme = generate_all_summaries(themed_articles, articles)
 
-            # 4. Save to history
-            cls.update_progress("[CACHE] Saving intelligence run to persistent cache and Memory Wiki...")
-            save_run_to_history(summaries, theme_counts, articles, themed_articles)
+            # 4. Save to history only if there was real synthesis and it isn't a duplicate
+            any_processed = any(processed_per_theme.get(theme, []) for theme in processed_per_theme)
+            if not any_processed:
+                cls.update_progress("[CACHE] No new articles to summarise; skipping persistence.")
+                logger.info("BG Pipeline: no unprocessed articles; not persisting a new run.")
+            else:
+                fingerprint = compute_run_fingerprint(articles)
+                if is_duplicate_run(fingerprint):
+                    cls.update_progress("[CACHE] Duplicate run detected; skipping persistence.")
+                    logger.info("BG Pipeline: duplicate run fingerprint; not persisting.")
+                else:
+                    cls.update_progress("[CACHE] Saving intelligence run to persistent cache and Memory Wiki...")
+                    save_run_to_history(
+                        summaries, theme_counts, articles, themed_articles,
+                        article_fingerprint=fingerprint,
+                    )
 
-            # Clear Streamlit cache so that subsequent normal loads get the fresh data
-            try:
-                import streamlit as st
-                st.cache_data.clear()
-                logger.info("BG Pipeline: Streamlit cache cleared successfully.")
-            except Exception as cache_err:
-                logger.debug("BG Pipeline: Failed to clear streamlit cache (expected if run outside main thread): %s", cache_err)
+                    # Clear Streamlit cache so that subsequent normal loads get the fresh data
+                    try:
+                        import streamlit as st
+                        st.cache_data.clear()
+                        logger.info("BG Pipeline: Streamlit cache cleared successfully.")
+                    except Exception as cache_err:
+                        logger.debug("BG Pipeline: Failed to clear streamlit cache (expected if run outside main thread): %s", cache_err)
 
             with cls._lock:
                 state = cls._get_state()

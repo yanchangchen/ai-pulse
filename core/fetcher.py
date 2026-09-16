@@ -206,6 +206,7 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
 
         item = {
             'id': item_id,
+            'content_hash': item_id,
             'title': title,
             'summary': clean_summary,
             'link': link,
@@ -302,6 +303,7 @@ def scrape_web_source(source: Dict) -> List[Dict]:
 
                 items.append({
                     'id': item_id,
+                    'content_hash': item_id,
                     'title': title,
                     'summary': summary[:RSS_SUMMARY_MAX_CHARS] if summary else '',
                     'link': link,
@@ -358,6 +360,7 @@ def scrape_web_source(source: Dict) -> List[Dict]:
 
                 items.append({
                     'id': item_id,
+                    'content_hash': item_id,
                     'title': title,
                     'summary': summary[:RSS_SUMMARY_MAX_CHARS] if summary else '',
                     'link': link,

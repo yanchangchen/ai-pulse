@@ -6,14 +6,14 @@ Generates theme summaries using the Model Gateway with routing, fallback, and pr
 import logging
 import asyncio
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from config.themes import THEMES, THEME_ORDER
 from core.llm_client import LLMClient, LLMClientError
 from core.gemini_client import GeminiClient, GeminiClientError, GeminiQuotaError
 from core.ai_gateway import ModelGateway, get_gateway, AITaskRequest, TaskType
-import core.history_manager as history_manager
-from core.history_manager import get_recent_context, save_run_to_history
+import core.processed_articles as processed_articles
+from core.history_manager import get_recent_context
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -60,8 +60,12 @@ def _provenance_to_dict(provenance) -> Dict:
 async def generate_theme_summary_gateway(
     theme_name: str,
     articles: List[Dict],
-) -> Dict[str, str]:
-    """Generate a comprehensive summary for a theme using the Model Gateway."""
+) -> Tuple[Dict[str, str], List[str]]:
+    """Generate a comprehensive summary for a theme using the Model Gateway.
+
+    Returns:
+        Tuple of ``(summary_dict, included_article_hashes)``.
+    """
 
     if not articles:
         summary = {
@@ -74,7 +78,7 @@ async def generate_theme_summary_gateway(
             summary, source="gateway:no_articles",
             model="none", article_count=0,
             note="empty_article_pool",
-        )
+        ), []
 
     # Retrieve memory context
     past_context = get_recent_context(theme_name)
@@ -92,7 +96,7 @@ async def generate_theme_summary_gateway(
             summary, source="gateway:limited_coverage",
             model="none", article_count=len(articles),
             note="fewer_than_3_articles",
-        )
+        ), []
 
     # Rank articles by relevance to the theme, then format.
     from config.settings import (
@@ -105,7 +109,7 @@ async def generate_theme_summary_gateway(
         articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
     )
     char_budget = int(OLLAMA_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
-    formatted_articles = format_articles_for_prompt(
+    formatted_articles, included_articles = split_articles_for_prompt(
         ranked_articles, char_budget=char_budget,
     )
 
@@ -241,6 +245,9 @@ Writing style rules:
             # Extract provenance info
             source_str = f"{prov.provider}:{prov.model}" if prov.provider else f"deterministic:{prov.task}"
 
+            included_hashes = [
+                processed_articles.article_hash(a) for a in included_articles
+            ]
             return _with_provenance(
                 parsed,
                 source=source_str,
@@ -251,7 +258,7 @@ Writing style rules:
                 attempts=prov.attempts,
                 fallback_used=prov.fallback_used,
                 provenance=prov.to_dict(),
-            )
+            ), included_hashes
         else:
             raise Exception(result.provenance.error or "Unknown error")
 
@@ -270,7 +277,7 @@ Writing style rules:
             model="none", article_count=len(articles),
             note="gateway_error",
             error=str(exc),
-        )
+        ), []
 
 
 def _rank_articles_by_relevance(
@@ -299,7 +306,15 @@ def _rank_articles_by_relevance(
 
 
 def format_articles_for_prompt(articles: List[Dict], char_budget: Optional[int] = None) -> str:
-    """Format articles for the summarisation prompt.
+    """Format articles for the summarisation prompt (text-only wrapper)."""
+    return split_articles_for_prompt(articles, char_budget=char_budget)[0]
+
+
+def split_articles_for_prompt(
+    articles: List[Dict],
+    char_budget: Optional[int] = None,
+) -> Tuple[str, List[Dict]]:
+    """Format articles for the summarisation prompt and return those included.
 
     Each article is capped at ~500 chars (title + 300-char summary + source +
     link).  If `char_budget` is provided, articles are appended in order
@@ -310,6 +325,7 @@ def format_articles_for_prompt(articles: List[Dict], char_budget: Optional[int] 
     (see config.settings.CHARS_PER_TOKEN and INPUT_BUDGET_FRACTION).
     """
     formatted: List[str] = []
+    included: List[Dict] = []
 
     for i, article in enumerate(articles, 1):
         title = article.get('title', 'Untitled')
@@ -332,8 +348,9 @@ def format_articles_for_prompt(articles: List[Dict], char_budget: Optional[int] 
                 break
 
         formatted.append(block)
+        included.append(article)
 
-    return "\n".join(formatted)
+    return "\n".join(formatted), included
 
 
 def generate_theme_summary(
@@ -386,7 +403,7 @@ def generate_theme_summary(
         articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
     )
     char_budget = int(OLLAMA_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
-    formatted_articles = format_articles_for_prompt(
+    formatted_articles, included_articles = split_articles_for_prompt(
         ranked_articles, char_budget=char_budget,
     )
 
@@ -832,30 +849,38 @@ def _extract_last_summaries(last_run: Optional[Dict]) -> Dict:
     return last_run.get("summaries", {})
 
 
-def extractive_theme_summary(theme_name: str, articles: List[Dict]) -> Dict[str, str]:
+def extractive_theme_summary(theme_name: str, articles: List[Dict]) -> Tuple[Dict[str, str], List[str]]:
     """Non-LLM Extractive Summarisation algorithm.
     Extracts top news items using LexRank sentence centrality and Luhn keyword scoring.
     Executes in <10ms with 0 LLM API calls and 0% hallucination risk.
 
     Provenance: the returned dict carries `_source = "extractive_fallback"`
     so the UI can render an honest chip above the brief.
+
+    Returns:
+        Tuple of ``(summary_dict, included_article_hashes)``.
     """
     from core.non_llm_summariser import generate_non_llm_theme_summary
     summary = generate_non_llm_theme_summary(theme_name, articles)
-    return _with_provenance(
+    summary = _with_provenance(
         summary, source="extractive_fallback",
         model=None, article_count=len(articles),
         note="non_llm_extractive",
     )
+    included_hashes = [processed_articles.article_hash(a) for a in articles]
+    return summary, included_hashes
 
 
 def generate_all_summaries(
     themed_articles: Dict[str, List[Dict]],
     full_articles: Optional[List[Dict]] = None
-) -> Dict[str, Dict[str, str]]:
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]]]:
     """
     Generate summaries for all themes in THEME_ORDER using the Model Gateway.
     Handles quota, fallback, and provenance tracking.
+
+    Returns:
+        Tuple of ``(summaries, processed_per_theme)``.
     """
     # Run the async version
     return asyncio.run(_generate_all_summaries_async(themed_articles, full_articles))
@@ -864,10 +889,18 @@ def generate_all_summaries(
 async def _generate_all_summaries_async(
     themed_articles: Dict[str, List[Dict]],
     full_articles: Optional[List[Dict]] = None
-) -> Dict[str, Dict[str, str]]:
-    """Async implementation of summary generation using Model Gateway."""
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]]]:
+    """Async implementation of summary generation using Model Gateway.
+
+    Returns:
+        Tuple of ``(summaries, processed_per_theme)`` where
+        ``processed_per_theme`` maps each theme to the list of content hashes
+        that were actually included in a summary prompt.
+    """
     summaries: Dict[str, Dict[str, str]] = {}
     article_counts = {}
+    processed_per_theme: Dict[str, List[str]] = {}
+    any_synthesised = False
 
     # Check user-selected summariser mode from session state
     user_mode = None
@@ -877,7 +910,8 @@ async def _generate_all_summaries_async(
     except Exception:
         pass
 
-    # The gateway handles quota/health internally, but we still check user mode
+    from config.settings import MAX_ARTICLES_PER_SUMMARY
+
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
         article_counts[theme] = len(articles)
@@ -885,26 +919,20 @@ async def _generate_all_summaries_async(
         # Force Non-LLM Extractive if user selected "Non-LLM Extractive Only" mode
         if user_mode == "⚡ Non-LLM Extractive Only":
             logger.info("User selected Non-LLM Extractive Only mode. Generating LexRank/Luhn summary for %s", theme)
-            summaries[theme] = extractive_theme_summary(theme, articles)
+            summary, included = extractive_theme_summary(theme, articles)
+            summaries[theme] = summary
+            processed_per_theme[theme] = included
+            any_synthesised = True
             continue
 
-        # Note: quota / health gating for live synthesis is owned by the
-        # ModelGateway (per-model health tracking, ordered fallback chain,
-        # deterministic last resort).  The LLMClient sys-level quota flag is
-        # Ollama-specific — consulting it here would bypass the gateway's
-        # Gemini fallback whenever Ollama alone is degraded.
+        # Only process articles that have not already been summarised for this theme.
+        unprocessed = processed_articles.filter_unprocessed(theme, articles)
 
-        existing_hashes = _get_existing_article_hashes(theme)
-        new_articles = [
-            a for a in articles
-            if not a.get("content_hash") or a.get("content_hash") not in existing_hashes
-        ]
-
-        if not new_articles and articles:
-            logger.info("Skipping LLM summary for %s: all %d articles already summarized",
+        if not unprocessed and articles:
+            logger.info("Skipping LLM summary for %s: all %d articles already summarised",
                        theme, len(articles))
             skipped_summary = {
-                "what_is_happening": f"No new articles this period. ({len(articles)} existing articles in database)",
+                "what_is_happening": f"No new articles this period. ({len(articles)} existing articles tracked)",
                 "engineering_tradeoffs": "Refer to previous summaries.",
                 "product_impact": "Refer to previous summaries.",
                 "why_it_matters": "No new developments to report.",
@@ -919,11 +947,24 @@ async def _generate_all_summaries_async(
             )
             continue
 
-        logger.info("Generating summary for %s (%d new articles out of %d total)",
-                   theme, len(new_articles), len(articles))
+        # If we have only a handful of unprocessed articles, pad with the most
+        # relevant already-processed articles so the brief still has signal.
+        if len(unprocessed) < 3:
+            processed_hashes = processed_articles.get_processed_hashes(theme)
+            processed = [a for a in articles if processed_articles.article_hash(a) in processed_hashes]
+            processed = _rank_articles_by_relevance(
+                processed, theme, MAX_ARTICLES_PER_SUMMARY,
+            )
+            selected = unprocessed + processed[:max(0, 3 - len(unprocessed))]
+        else:
+            selected = unprocessed
 
+        logger.info("Generating summary for %s (%d unprocessed articles out of %d total)",
+                   theme, len(unprocessed), len(articles))
+
+        included: List[str] = []
         try:
-            summary = await generate_theme_summary_gateway(theme, new_articles if new_articles else articles)
+            summary, included = await generate_theme_summary_gateway(theme, selected)
             summaries[theme] = summary
         except Exception as exc:
             logger.error("Summary generation failed for %s: %s", theme, exc)
@@ -934,19 +975,19 @@ async def _generate_all_summaries_async(
                 "deterministically from the article pool using LexRank & Luhn "
                 "extractive NLP.*"
             )
-            extractive = extractive_theme_summary(theme, articles)
+            extractive, included = extractive_theme_summary(theme, selected)
             orig_text = extractive.get("what_is_happening", "")
             if info_prefix not in orig_text:
                 extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
             summaries[theme] = extractive
 
-    # Save to memory/wiki
-    try:
-        save_run_to_history(summaries, article_counts, full_articles, themed_articles)
-    except Exception as e:
-        logger.error("Failed to save history: %s", e)
+        if included:
+            processed_articles.mark_processed(theme, included)
+            processed_per_theme[theme] = included
+            any_synthesised = True
 
-    return summaries
+    logger.info("Summary generation complete. Synthesised: %s", any_synthesised)
+    return summaries, processed_per_theme
 
 
 def parse_further_reading(further_reading_text: str) -> List[Dict]:
@@ -1006,7 +1047,7 @@ def ensure_extractive_summary(s: dict, supabase=None, run_id: str = "", theme: s
 
         if articles:
             info_prefix = "ℹ️ *Non-LLM Extractive Summary: Generated deterministically using lead sentence extraction because live LLM synthesis was paused.*"
-            extractive = extractive_theme_summary(theme, articles)
+            extractive, _ = extractive_theme_summary(theme, articles)
             orig_text = extractive.get("what_is_happening", "")
             extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
             return extractive

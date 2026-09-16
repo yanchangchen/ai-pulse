@@ -94,7 +94,7 @@ def cache_classify_articles(articles: list, articles_hash: str) -> dict:
 
 
 @st.cache_data(ttl=CACHE_TTL)
-def cache_generate_summaries(themed_articles: dict, articles: list, articles_hash: str) -> dict:
+def cache_generate_summaries(themed_articles: dict, articles: list, articles_hash: str) -> tuple:
     """
     Cache summary generation with 6-hour TTL.
     Uses articles_hash as a key to skip LLM calls if content is unchanged.

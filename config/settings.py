@@ -203,6 +203,10 @@ CHARS_PER_TOKEN: int = 3
 # Fraction of num_ctx reserved for input (rest is for system + output).
 INPUT_BUDGET_FRACTION: float = 0.6
 
+# How close together (in minutes) two runs with the same article fingerprint
+# must be for the later one to be treated as a duplicate and skipped.
+DUPLICATE_RUN_WINDOW_MINUTES: int = 30
+
 # ---------------------------------------------------------------------------
 # Dynamic Summariser & Faithfulness Tuning (In-App Editing Support)
 # ---------------------------------------------------------------------------

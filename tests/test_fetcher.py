@@ -196,3 +196,24 @@ def test_scrape_web_source_summary_extraction():
         assert "introducing a novel architectural optimization" in items[0]["summary"]
 
 
+def test_content_hash_assigned_by_fetcher():
+    from core.fetcher import fetch_rss_feed
+    import hashlib
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = b"""<rss><channel><item>
+        <title>Test Article</title>
+        <description>A test article</description>
+        <link>https://example.com/item</link>
+    </item></channel></rss>"""
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        items = fetch_rss_feed({"name": "Test Feed", "url": "https://example.com/rss", "type": "rss"})
+        assert len(items) == 1
+        assert items[0]["content_hash"] == hashlib.md5(
+            "https://example.com/itemTest Article".encode()
+        ).hexdigest()
+        assert items[0]["content_hash"] == items[0]["id"]
+
+

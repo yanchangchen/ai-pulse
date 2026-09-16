@@ -188,7 +188,7 @@ No product impact analyzed.
         fake_gateway.execute = AsyncMock(return_value=fake_result)
 
         with patch("core.summariser.get_gateway", return_value=fake_gateway):
-            summary = asyncio.run(
+            summary, included = asyncio.run(
                 generate_theme_summary_gateway("Frontier Models & Benchmarks", articles)
             )
 
@@ -232,7 +232,7 @@ Enterprise adoption is accelerating.
         fake_gateway.execute = AsyncMock(return_value=fake_result)
 
         with patch("core.summariser.get_gateway", return_value=fake_gateway):
-            summary = asyncio.run(
+            summary, included = asyncio.run(
                 generate_theme_summary_gateway("Frontier Models & Benchmarks", articles)
             )
 

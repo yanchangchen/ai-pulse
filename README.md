@@ -19,6 +19,8 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 - **Self-improving keywords** — after each run, missing keywords are heuristically extracted from LLM/heuristic articles and auto-applied if they appear in 3+ articles. [How it works →](docs/ARCHITECTURE.md#self-improving-keywords)
 - **Non-LLM fallback** — LexRank + Luhn extractive engine produces 5-section briefs in <50ms, zero tokens, 100% faithful.
 - **Persistent memory** — every run persisted to `history.json`, `memory.md`, and optionally Supabase. The last 2 runs' summaries are injected into the next prompt so the model reports on **evolutions**, not static snapshots.
+- **Duplicate-run suppression** — a stable article-set fingerprint stops the same fetched set from being persisted twice within a configurable window.
+- **Processed-article ledger** — tracks which articles have actually been included in a summary prompt, so only new/unprocessed articles are summarised and the rest are carried forward to the next run.
 - **Quality evaluation** — 7 automated metrics (3 LLM-as-judge + 4 deterministic) with in-app remediation. [Details →](docs/QUALITY_EVALUATION.md)
 - **Sage agent** — conversational AI research analyst grounded in the Memory Wiki archive with chronological citations.
 
@@ -57,6 +59,22 @@ SUPABASE_KEY=your-anon-key
 ```
 
 See [`SUPABASE_SETUP_GUIDE.md`](./SUPABASE_SETUP_GUIDE.md) for the full schema and migrations.
+
+#### Supabase migration for processed-article tracking
+
+If you are upgrading an existing Supabase project, also run:
+
+```sql
+-- Run in Supabase SQL Editor
+\i supabase_migration_processed_articles.sql
+```
+
+This adds:
+
+- `trend_runs.article_fingerprint` for duplicate-run detection
+- `processed_articles` table for tracking which articles have been summarised
+
+If your existing `articles` table contains duplicate `(content_hash, theme_name)` rows, clean them first before backfilling `content_hash`. See the migration file for the deduplication pattern.
 
 ### 4. Run
 

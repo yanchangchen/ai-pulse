@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS trend_runs (
   run_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
   run_date DATE NOT NULL,
   total_articles INT NOT NULL,
+  article_fingerprint VARCHAR(64),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(run_timestamp)
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS trend_runs (
 CREATE INDEX IF NOT EXISTS idx_trend_runs_run_date ON trend_runs(run_date DESC);
 CREATE INDEX IF NOT EXISTS idx_trend_runs_created_at ON trend_runs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trend_runs_run_timestamp ON trend_runs(run_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_trend_runs_fingerprint ON trend_runs(article_fingerprint);
 
 -- Table 2: Theme Summaries
 -- Individual theme summaries for each run
@@ -195,6 +197,27 @@ ALTER TABLE quality_evaluations ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Public read access for quality_evaluations"
     ON quality_evaluations FOR SELECT
     USING (true);
+
+-- Table 6: Processed Articles
+-- Tracks which (theme_name, content_hash) pairs have already been included
+-- in a summary prompt so we don't re-summarise the same article repeatedly.
+CREATE TABLE IF NOT EXISTS processed_articles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  theme_name VARCHAR(255) NOT NULL,
+  content_hash VARCHAR(64) NOT NULL,
+  processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(theme_name, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_processed_articles_theme_hash
+  ON processed_articles(theme_name, content_hash);
+
+ALTER TABLE processed_articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "processed_articles_read" ON processed_articles
+  FOR SELECT USING (true);
+
+GRANT SELECT, INSERT, UPDATE ON processed_articles TO anon;
 
 -- End of schema setup
 -- You can now use the ai-pulse app with Supabase persistence!

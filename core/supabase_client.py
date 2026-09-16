@@ -54,29 +54,35 @@ class SupabaseManager:
         """Check if Supabase is available."""
         return self.available
     
-    def save_trend_run(self, run_timestamp: str, run_date: str, 
-                      total_articles: int) -> Optional[Dict]:
+    def save_trend_run(self, run_timestamp: str, run_date: str,
+                       total_articles: int,
+                       article_fingerprint: Optional[str] = None) -> Optional[Dict]:
         """
         Save a new trend run to the database.
-        
+
         Args:
             run_timestamp: ISO format timestamp (e.g., "2026-05-29 16:10:37")
             run_date: Date string (e.g., "2026-05-29")
             total_articles: Total number of articles in this run
-        
+            article_fingerprint: Optional stable fingerprint of the article set
+
         Returns:
             Dict with run record including 'id', or None if failed
         """
         if not self.available:
             return None
-        
+
         try:
-            response = self.client.table("trend_runs").insert({
+            payload = {
                 "run_timestamp": run_timestamp,
                 "run_date": run_date,
-                "total_articles": total_articles
-            }).execute()
-            
+                "total_articles": total_articles,
+            }
+            if article_fingerprint:
+                payload["article_fingerprint"] = article_fingerprint
+
+            response = self.client.table("trend_runs").insert(payload).execute()
+
             if response.data:
                 logger.info(f"Saved trend run to Supabase: {response.data[0]['id']}")
                 return response.data[0]
@@ -230,7 +236,40 @@ class SupabaseManager:
         except Exception as e:
             logger.error(f"Failed to save articles for {theme_name}: {e}")
             return None
-    
+
+    def get_processed_hashes(self, theme_name: str) -> set:
+        """Return the set of content hashes already summarised for a theme."""
+        if not self.available:
+            return set()
+        try:
+            response = self.client.table("processed_articles") \
+                .select("content_hash") \
+                .eq("theme_name", theme_name) \
+                .execute()
+            if response.data:
+                return {row["content_hash"] for row in response.data if row.get("content_hash")}
+        except Exception as e:
+            logger.error(f"Failed to get processed hashes for {theme_name}: {e}")
+        return set()
+
+    def mark_processed(self, theme_name: str, content_hashes: List[str]) -> None:
+        """Mark content hashes as summarised for a theme."""
+        if not self.available or not content_hashes:
+            return
+        try:
+            rows = [
+                {"theme_name": theme_name, "content_hash": h}
+                for h in set(content_hashes) if h
+            ]
+            if not rows:
+                return
+            self.client.table("processed_articles").upsert(
+                rows, on_conflict="theme_name,content_hash"
+            ).execute()
+            logger.info(f"Marked {len(rows)} articles as processed for {theme_name}")
+        except Exception as e:
+            logger.error(f"Failed to mark processed for {theme_name}: {e}")
+
     def get_latest_run(self) -> Optional[Dict]:
         """
         Retrieve the most recent trend run.

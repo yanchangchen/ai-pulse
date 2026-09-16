@@ -2,13 +2,15 @@
 Handles persisting summaries to JSON (for parsing), memory.md (for context/wiki), and Supabase (cloud).
 """
 
+import hashlib
 import json
-import os
 import logging
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from config.settings import DUPLICATE_RUN_WINDOW_MINUTES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,11 +23,85 @@ MEMORY_MD = ROOT_DIR / "memory.md"
 # In-memory history cache to optimize disk I/O performance
 _history_cache: Optional[Dict] = None
 
+
+def compute_run_fingerprint(full_articles: List[Dict]) -> str:
+    """Return a stable SHA-256 fingerprint of the article set.
+
+    Uses ``content_hash`` when available; falls back to a hash of the
+    article's title + link.
+    """
+    if not full_articles:
+        return "empty"
+    hashes = []
+    for article in full_articles:
+        content_hash = article.get("content_hash")
+        if not content_hash:
+            title = article.get("title", "") or ""
+            link = article.get("link", "") or ""
+            content_hash = hashlib.md5(f"{link}{title}".encode()).hexdigest()
+        hashes.append(str(content_hash))
+    return hashlib.sha256("".join(sorted(hashes)).encode()).hexdigest()
+
+
+def _latest_local_run_timestamp_and_fingerprint() -> tuple:
+    """Return (timestamp, fingerprint) of the latest local run, or (None, None)."""
+    try:
+        history = load_full_history()
+        if not history:
+            return None, None
+        latest_ts = sorted(history.keys(), reverse=True)[0]
+        entry = history[latest_ts]
+        return latest_ts, entry.get("article_fingerprint")
+    except Exception:
+        return None, None
+
+
+def is_duplicate_run(fingerprint: str) -> bool:
+    """Return True if the same article set was persisted within the configured window."""
+    if not fingerprint or fingerprint == "empty":
+        return False
+
+    window = timedelta(minutes=DUPLICATE_RUN_WINDOW_MINUTES)
+
+    # Check Supabase first (shared across workers)
+    try:
+        from core.supabase_client import get_supabase_manager
+        supabase = get_supabase_manager()
+        if supabase.is_available():
+            latest = supabase.get_latest_run()
+            if latest:
+                latest_fp = latest.get("article_fingerprint")
+                latest_ts = latest.get("run_timestamp")
+                if latest_fp and latest_ts:
+                    run_time = datetime.strptime(latest_ts, "%Y-%m-%d %H:%M:%S")
+                    if latest_fp == fingerprint and (datetime.now() - run_time) <= window:
+                        logger.info("Duplicate run fingerprint detected in Supabase (within %s minutes)",
+                                    DUPLICATE_RUN_WINDOW_MINUTES)
+                        return True
+    except Exception as e:
+        logger.debug("Supabase duplicate check failed: %s", e)
+
+    # Fall back to local history
+    latest_ts, latest_fp = _latest_local_run_timestamp_and_fingerprint()
+    if latest_fp and latest_ts:
+        try:
+            run_time = datetime.strptime(latest_ts, "%Y-%m-%d %H:%M:%S")
+            if latest_fp == fingerprint and (datetime.now() - run_time) <= window:
+                logger.info("Duplicate run fingerprint detected in local history (within %s minutes)",
+                            DUPLICATE_RUN_WINDOW_MINUTES)
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
 def save_run_to_history(
-    summaries: Dict[str, Dict[str, str]], 
+    summaries: Dict[str, Dict[str, str]],
     article_counts: Dict[str, int],
     full_articles: List[Dict],
-    themed_articles: Dict[str, List[Dict]]
+    themed_articles: Dict[str, List[Dict]],
+    article_fingerprint: Optional[str] = None,
 ) -> None:
     """Save the current summaries and full state to both JSON and Markdown history."""
     global _history_cache
@@ -42,7 +118,8 @@ def save_run_to_history(
         "summaries": summaries,
         "counts": article_counts,
         "full_articles": full_articles,
-        "themed_articles": themed_articles
+        "themed_articles": themed_articles,
+        "article_fingerprint": article_fingerprint,
     }
 
     # Trim to most recent N runs
@@ -76,7 +153,10 @@ def save_run_to_history(
         f.write(new_entry)
     
     # 3. Persist to Supabase (graceful degradation if unavailable)
-    _save_to_supabase(timestamp, date_key, summaries, article_counts, full_articles, themed_articles)
+    _save_to_supabase(
+        timestamp, date_key, summaries, article_counts,
+        full_articles, themed_articles, article_fingerprint,
+    )
 
 def get_recent_context(theme_name: str, limit: int = 2) -> str:
     """Retrieve the most recent summaries for a theme to provide context to the LLM."""
@@ -147,22 +227,24 @@ def _save_to_supabase(
     summaries: Dict[str, Dict[str, str]],
     article_counts: Dict[str, int],
     full_articles: List[Dict],
-    themed_articles: Dict[str, List[Dict]]
+    themed_articles: Dict[str, List[Dict]],
+    article_fingerprint: Optional[str] = None,
 ) -> None:
     """Save run data to Supabase with graceful error handling."""
     try:
         from core.supabase_client import get_supabase_manager
         supabase = get_supabase_manager()
-        
+
         if not supabase.is_available():
             logger.debug("Supabase not available, skipping cloud persistence")
             return
-        
+
         # 1. Create trend run record
         run_record = supabase.save_trend_run(
             run_timestamp=timestamp,
             run_date=date_key,
-            total_articles=len(full_articles)
+            total_articles=len(full_articles),
+            article_fingerprint=article_fingerprint,
         )
         
         if not run_record:
