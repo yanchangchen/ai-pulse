@@ -4,6 +4,28 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-09-11 to 2026-09-16 — Silent fallbacks and the cost of failing quietly
+
+**Problem**: Three production issues in one week, all sharing the same root pattern — the system was failing *quietly*. Fallbacks did their job so well that nobody knew the primary path was gone.
+
+**What happened**:
+
+1. **The zero-provider gateway.** `ModelGateway._init_providers()` read API keys straight from `os.getenv`, but our deployments keep them in `secrets.toml`. The gateway started with zero providers, every task silently landed on the deterministic fallback, and the only clue was a wall of "Non-LLM" provenance chips. Fixed by routing provider init through `config.settings` (`st.secrets` → TOML parse → env vars). *Lesson: a fallback is for outages, not misconfiguration — if degradation is silent, a setup bug can run for weeks unnoticed.*
+
+2. **HTTP 200, body "Unable to generate summary."** Some LLM responses returned success status codes with failure text inside. The summariser stored them as valid briefs. Now every parsed section is checked against known failure/refusal strings, and any theme that trips the check is re-routed through the extractive engine. *Lesson: validate content, not status codes.*
+
+3. **The circuit breaker that never reset.** A transient Ollama Cloud slowdown (60s default timeout) latched Nemotron `unavailable` after 5 consecutive failures — for the entire process lifetime, with no logs. It kept losing its primary slot to `gpt-oss:120b-cloud` long after recovering. Fixed with: timeout raised to 180s, WARNING logs on *every* fallback transition, half-open retry after 300s (1 success fully restores, 2 failures re-latch), and `health_check_all()` clearing latched state without a restart. *Lesson: a circuit breaker without auto-recovery is just a permanent outage with extra steps.*
+
+**Also shipped**:
+
+- **Run deduplication + processed-article tracking.** The fetcher now assigns `content_hash` at ingest; a `processed_articles` tracker (Supabase with local JSON fallback) means the summariser only spends LLM tokens on articles it hasn't summarised before, and runs whose fingerprint duplicates one from the last 30 minutes are skipped entirely.
+- **Learned keywords survive deployments.** Custom keyword overlays — the output of the classifier's self-improvement loop — now persist to Supabase first with local JSON as cache, so a read-only deployment filesystem no longer wipes them.
+- **Singapore time everywhere.** UI timestamps are interpreted as UTC and displayed in Asia/Singapore (UTC+8) instead of server-local time.
+
+**Result**: Fallbacks still exist — we rely on them — but every degradation now leaves a WARNING trail, a provenance chip, and (for health latches) an automatic path back to the primary model.
+
+---
+
 ## 2026-09-10 — The day classification went fully deterministic
 
 **Problem**: We had a 4-pass waterfall classifier (Keywords → TF-IDF → LLM → Heuristic). The LLM pass felt like insurance — but insurance costs tokens, latency, and failure modes.
