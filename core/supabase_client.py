@@ -99,14 +99,18 @@ class SupabaseManager:
         Args:
             run_id: UUID of the trend run
             theme_name: Name of the theme
-            summary: Dict with keys: what_is_happening, why_it_matters, what_to_watch
+            summary: Dict with keys: what_is_happening, engineering_tradeoffs,
+                product_impact, why_it_matters, what_to_watch, further_reading
             article_count: Number of articles for this theme
 
         The summary dict may also carry `_source` and `_generation_log` keys
         set by the summariser.  If the `theme_summaries` table has the
         optional `generation_source` and `generation_log` columns (see
         ``supabase_migration_provenance.sql``), they are populated; otherwise
-        the writes silently fall back to the legacy row shape.
+        the writes silently fall back to the legacy row shape.  The same
+        graceful degradation applies to `further_reading` (see
+        ``supabase_migration_further_reading.sql``) — required by the
+        Quality Evaluation grounding judge.
 
         Returns:
             Dict with summary record, or None if failed
@@ -132,6 +136,7 @@ class SupabaseManager:
                 "product_impact": summary.get("product_impact", ""),
                 "why_it_matters": summary.get("why_it_matters", ""),
                 "what_to_watch": summary.get("what_to_watch", ""),
+                "further_reading": summary.get("further_reading", ""),
                 "article_count": article_count,
             }
             if generation_source is not None:
@@ -139,30 +144,56 @@ class SupabaseManager:
             if generation_log is not None:
                 payload["generation_log"] = generation_log
 
-            try:
-                # UPSERT on (run_id, theme_name) — re-synthesising a theme for
-                # the same run (e.g. on-demand Gemini on Deep Dive) must
-                # overwrite the previous row, not violate the unique constraint.
-                response = self.client.table("theme_summaries").upsert(
-                    payload, on_conflict="run_id,theme_name"
+            # Columns added by migrations; older deployments may lack any
+            # subset of them.  On a schema error we drop the offending
+            # column(s) and retry, so persistence never hard-fails.
+            optional_cols = (
+                "generation_source", "generation_log", "further_reading",
+                "engineering_tradeoffs", "product_impact",
+            )
+
+            def _upsert(data: Dict[str, object]):
+                # UPSERT on (run_id, theme_name) — re-synthesising a theme
+                # for the same run (e.g. on-demand Gemini on Deep Dive) must
+                # overwrite the previous row, not violate the constraint.
+                return self.client.table("theme_summaries").upsert(
+                    data, on_conflict="run_id,theme_name"
                 ).execute()
+
+            def _is_schema_drift(exc: Exception) -> bool:
+                m = str(exc).lower()
+                return "column" in m or any(c in m for c in optional_cols)
+
+            try:
+                response = _upsert(payload)
             except Exception as schema_exc:
-                # Legacy deployments without the new columns: retry without
-                # the optional provenance fields.  We never want a schema
-                # drift to break the persistence path.
-                msg = str(schema_exc).lower()
-                if "generation_source" in msg or "generation_log" in msg or "column" in msg:
-                    logger.warning(
-                        "theme_summaries table missing provenance columns; "
-                        "retrying upsert without _source/_generation_log. "
-                        "Run supabase_migration_provenance.sql to enable."
-                    )
-                    response = self.client.table("theme_summaries").upsert({
-                        k: v for k, v in payload.items()
-                        if k not in ("generation_source", "generation_log")
-                    }, on_conflict="run_id,theme_name").execute()
-                else:
+                if not _is_schema_drift(schema_exc):
                     raise
+                msg = str(schema_exc).lower()
+                named = [c for c in optional_cols if c in msg]
+                drop = set(named) if named else set(optional_cols)
+                logger.warning(
+                    "theme_summaries schema drift; retrying upsert without %s. "
+                    "Run supabase_migration_further_reading.sql / "
+                    "supabase_migration_provenance.sql to enable the full row shape.",
+                    sorted(drop),
+                )
+                try:
+                    response = _upsert(
+                        {k: v for k, v in payload.items() if k not in drop}
+                    )
+                except Exception as retry_exc:
+                    if not _is_schema_drift(retry_exc):
+                        raise
+                    # Final attempt: core columns only.
+                    logger.warning(
+                        "theme_summaries still rejecting optional columns; "
+                        "final retry with core columns only."
+                    )
+                    response = _upsert({
+                        k: v for k, v in payload.items()
+                        if k not in set(optional_cols)
+                    })
 
             if response.data:
                 logger.info(f"Saved theme summary for {theme_name}")

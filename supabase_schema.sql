@@ -48,6 +48,15 @@ ALTER TABLE theme_summaries
 ALTER TABLE theme_summaries
   ADD COLUMN IF NOT EXISTS product_impact TEXT NOT NULL DEFAULT '';
 
+-- Add further_reading column for the Quality Evaluation grounding judge
+-- (core/evaluator.py).  The summariser has always produced a "Strategic
+-- Further Reading" section, but it was never persisted, so the grounding
+-- judge had nothing to verify and structural compliance could never pass
+-- its 5-section check.  Idempotent: safe to run on a fresh table or an
+-- older deployment.  Older rows keep '' (no citations to verify).
+ALTER TABLE theme_summaries
+  ADD COLUMN IF NOT EXISTS further_reading TEXT NOT NULL DEFAULT '';
+
 -- Indexes for theme_summaries
 CREATE INDEX IF NOT EXISTS idx_theme_summaries_run_id ON theme_summaries(run_id);
 CREATE INDEX IF NOT EXISTS idx_theme_summaries_theme_name ON theme_summaries(theme_name);

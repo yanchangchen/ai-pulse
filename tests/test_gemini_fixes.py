@@ -230,7 +230,8 @@ def test_save_theme_summary_upserts_on_run_theme_conflict():
     summary = {
         "what_is_happening": "hi", "engineering_tradeoffs": "e",
         "product_impact": "p", "why_it_matters": "w", "what_to_watch": "t",
-        "further_reading": "", "_source": "gemini:gemini-3.5-flash",
+        "further_reading": "- Deep Dive Article | Src | https://example.com/x",
+        "_source": "gemini:gemini-3.5-flash",
         "_generation_log": {"model": "gemini-3.5-flash"},
     }
     result = manager.save_theme_summary(
@@ -243,8 +244,46 @@ def test_save_theme_summary_upserts_on_run_theme_conflict():
     assert call.kwargs["on_conflict"] == "run_id,theme_name"
     assert call.args[0]["run_id"] == "run-1"
     assert call.args[0]["generation_source"] == "gemini:gemini-3.5-flash"
+    # further_reading must be persisted — the grounding judge reads it back.
+    assert call.args[0]["further_reading"] == "- Deep Dive Article | Src | https://example.com/x"
     # No plain insert anywhere on the persistence path
     table_mock.insert.assert_not_called()
+
+
+def test_save_theme_summary_drops_missing_columns_on_legacy_schema():
+    """A deployment that hasn't run supabase_migration_further_reading.sql
+    must still persist summaries — the retry drops only the offending
+    optional column(s) instead of failing the write."""
+    from core.supabase_client import SupabaseManager
+
+    manager = SupabaseManager()
+    manager.available = True
+    manager.client = MagicMock()
+
+    exec_result = MagicMock()
+    exec_result.data = [{"id": 1}]
+    table_mock = manager.client.table.return_value
+    retry_upsert = MagicMock()
+    retry_upsert.execute.return_value = exec_result
+    table_mock.upsert.side_effect = [
+        Exception('column "further_reading" of relation "theme_summaries" does not exist'),
+        retry_upsert,
+    ]
+
+    summary = {
+        "what_is_happening": "hi", "engineering_tradeoffs": "e",
+        "product_impact": "p", "why_it_matters": "w", "what_to_watch": "t",
+        "further_reading": "- Cited | Src | https://example.com/x",
+    }
+    result = manager.save_theme_summary("run-1", "Theme A", summary, article_count=2)
+
+    assert result == {"id": 1}
+    assert table_mock.upsert.call_count == 2
+    retry_payload = table_mock.upsert.call_args_list[1].args[0]
+    assert "further_reading" not in retry_payload
+    # Core columns survive the retry.
+    assert retry_payload["what_is_happening"] == "hi"
+    assert retry_payload["what_to_watch"] == "t"
 
 
 # ---------------------------------------------------------------------------

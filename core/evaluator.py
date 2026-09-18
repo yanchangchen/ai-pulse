@@ -284,17 +284,39 @@ def _load_articles_for_run(supabase, run_id: str) -> List[Dict]:
 
 
 def _load_summaries_for_run(supabase, run_id: str) -> Dict[str, Dict]:
-    """Return {theme_name: summary_dict} for a run."""
+    """Return {theme_name: summary_dict} for a run.
+
+    Includes ``further_reading`` (needed by the grounding and structural
+    compliance judges).  Deployments that haven't run
+    ``supabase_migration_further_reading.sql`` yet get a graceful retry
+    without that column instead of an empty result.
+    """
+    base_cols = ("theme_name, what_is_happening, engineering_tradeoffs, "
+                 "product_impact, why_it_matters, what_to_watch")
     try:
         resp = supabase.client.table("theme_summaries") \
-            .select("theme_name, what_is_happening, engineering_tradeoffs, "
-                    "product_impact, why_it_matters, what_to_watch") \
+            .select(f"{base_cols}, further_reading") \
             .eq("run_id", run_id) \
             .execute()
         return {row["theme_name"]: row for row in (resp.data or [])}
     except Exception as exc:
-        logger.warning("Failed to load summaries for run %s: %s", run_id, exc)
-        return {}
+        if "further_reading" not in str(exc).lower() and "column" not in str(exc).lower():
+            logger.warning("Failed to load summaries for run %s: %s", run_id, exc)
+            return {}
+        logger.warning(
+            "theme_summaries lacks further_reading (run "
+            "supabase_migration_further_reading.sql); retrying without it "
+            "for run %s: %s", run_id, exc,
+        )
+        try:
+            resp = supabase.client.table("theme_summaries") \
+                .select(base_cols) \
+                .eq("run_id", run_id) \
+                .execute()
+            return {row["theme_name"]: row for row in (resp.data or [])}
+        except Exception as exc2:
+            logger.warning("Failed to load summaries for run %s: %s", run_id, exc2)
+            return {}
 
 
 # ---------------------------------------------------------------------------
@@ -524,8 +546,18 @@ Summary: {summary}
 """
 
 
-def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, str]:
-    """Classify a single article via the LLM.  Returns (correct, predicted_name)."""
+def _judge_single_classification(
+    llm: LLMClient, article: Dict
+) -> Tuple[Optional[bool], str, Optional[str]]:
+    """Classify a single article via the LLM.
+
+    Returns ``(correct, predicted_name, failure)`` where ``failure`` is
+    ``None`` on a judged sample, ``"infra_error"`` when the LLM call
+    failed, or ``"unmatched"`` when the response couldn't be mapped to a
+    canonical theme.  Failed samples are EXCLUDED from the accuracy
+    denominator by the caller — an Ollama outage must not masquerade as
+    mass misclassification.
+    """
     run_id = article.get("run_id", "")
     article_id = str(article.get("id", ""))
     t0 = time.monotonic()
@@ -548,9 +580,9 @@ def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, s
             item_id=article_id,
             latency_ms=0,
             parse_ok=False,
-            score=0.0,
+            score=None,
         )
-        return (False, "")
+        return (None, "", "infra_error")
 
     predicted = _match_theme(response)
     if not predicted:
@@ -565,16 +597,25 @@ def _judge_single_classification(llm: LLMClient, article: Dict) -> Tuple[bool, s
                 "Categoriser judge: could not match theme in response: %r",
                 (response or "")[:200],
             )
-    correct = bool(predicted and predicted == article.get("theme_name"))
+        _record_event(
+            judge="categoriser",
+            run_id=run_id,
+            item_id=article_id,
+            latency_ms=latency_ms,
+            parse_ok=False,
+            score=None,
+        )
+        return (None, "", "unmatched")
+    correct = bool(predicted == article.get("theme_name"))
     _record_event(
         judge="categoriser",
         run_id=run_id,
         item_id=article_id,
         latency_ms=latency_ms,
-        parse_ok=bool(predicted),
+        parse_ok=True,
         score=1.0 if correct else 0.0,
     )
-    return (correct, predicted or "")
+    return (correct, predicted, None)
 
 
 def categoriser_judge(
@@ -583,8 +624,17 @@ def categoriser_judge(
 ) -> Tuple[float, Dict[str, float], Dict]:
     """Score classifier accuracy across all sampled articles.  Returns
     (overall_score, per_theme_scores, raw_metrics).
+
+    Samples where the judge itself failed (LLM error or unparseable
+    response) are excluded from the denominator and counted in
+    ``raw["infra_errors"]`` / ``raw["unmatched"]``.  If NO sample could
+    be judged, the judge is marked ``skipped`` so the placeholder score
+    is never mistaken for a real result.
     """
     all_correct: List[bool] = []
+    infra_errors = 0
+    unmatched = 0
+    attempted = 0
     per_theme_total: Dict[str, int] = {t: 0 for t in THEMES}
     per_theme_correct: Dict[str, int] = {t: 0 for t in THEMES}
     per_run_breakdown: Dict[str, Dict] = {}
@@ -592,9 +642,18 @@ def categoriser_judge(
     for run_id, articles in articles_by_run.items():
         sample = _stratified_sample(articles, EVALUATION_SAMPLE_SIZE)
         run_correct = 0
+        run_judged = 0
         for art in sample:
-            correct, predicted = _judge_single_classification(llm, art)
+            attempted += 1
+            correct, predicted, failure = _judge_single_classification(llm, art)
+            if correct is None:
+                if failure == "infra_error":
+                    infra_errors += 1
+                else:
+                    unmatched += 1
+                continue
             all_correct.append(correct)
+            run_judged += 1
             theme = art.get("theme_name", "_unknown")
             if theme in per_theme_total:
                 per_theme_total[theme] += 1
@@ -604,7 +663,19 @@ def categoriser_judge(
                 run_correct += 1
         per_run_breakdown[run_id] = {
             "sampled": len(sample),
+            "judged": run_judged,
             "correct": run_correct,
+        }
+
+    if attempted > 0 and not all_correct:
+        # Every sample failed at the judge level — no signal, not a zero.
+        return 1.0, {}, {
+            "skipped": True,
+            "samples_judged": 0,
+            "samples_attempted": attempted,
+            "infra_errors": infra_errors,
+            "unmatched": unmatched,
+            "per_run": per_run_breakdown,
         }
 
     overall = _safe_mean([1.0 if c else 0.0 for c in all_correct])
@@ -614,6 +685,9 @@ def categoriser_judge(
     }
     raw = {
         "samples_judged": len(all_correct),
+        "samples_attempted": attempted,
+        "infra_errors": infra_errors,
+        "unmatched": unmatched,
         "per_run": per_run_breakdown,
     }
     return overall, per_theme, raw
@@ -675,11 +749,19 @@ def _judge_faithfulness_one(
     articles: List[Dict],
     run_id: str = "",
     item_id: str = "",
-) -> Optional[float]:
+) -> Tuple[Optional[float], Optional[str]]:
+    """Fact-check one summary section.
+
+    Returns ``(score, failure)``.  ``failure`` is ``None`` on success,
+    ``"infra_error"`` when the LLM call failed, or ``"parse_failure"``
+    when the response carried no usable score.  Failed sections are
+    EXCLUDED from the mean by the caller — judge outages must not
+    masquerade as hallucination.
+    """
     if not summary_text or not summary_text.strip():
         # Empty summaries are excluded from scoring (return None) rather
         # than scored 1.0, which would inflate the metric.
-        return None
+        return None, None
     prompt = FAITHFULNESS_PROMPT.format(
         summary=summary_text[:EVAL_FAITHFULNESS_SUMMARY_CHARS],
         articles=_format_articles_for_judge(articles),
@@ -701,9 +783,9 @@ def _judge_faithfulness_one(
             item_id=item_id,
             latency_ms=0,
             parse_ok=False,
-            score=0.0,
+            score=None,
         )
-        return 0.0
+        return None, "infra_error"
     parsed = _extract_json(resp)
     score = _coerce_score(parsed)
     if score is None:
@@ -720,9 +802,9 @@ def _judge_faithfulness_one(
             item_id=item_id,
             latency_ms=latency_ms,
             parse_ok=False,
-            score=0.0,
+            score=None,
         )
-        return 0.0
+        return None, "parse_failure"
     _record_event(
         judge="faithfulness",
         run_id=run_id,
@@ -731,7 +813,7 @@ def _judge_faithfulness_one(
         parse_ok=True,
         score=score,
     )
-    return score
+    return score, None
 
 
 def faithfulness_judge(
@@ -744,6 +826,10 @@ def faithfulness_judge(
     Evaluates all themes (not a subset) and filters articles to only
     those matching the theme being judged.  Empty or known-fallback
     sections are excluded from the mean to avoid inflating the score.
+    Judge-level failures (LLM errors, unparseable responses) are also
+    excluded and counted in ``raw["infra_errors"]`` /
+    ``raw["parse_failures"]``; if nothing at all could be judged the
+    result is marked ``skipped``.
     """
     sections_to_judge = [
         "what_is_happening",
@@ -751,6 +837,9 @@ def faithfulness_judge(
         "product_impact",
     ]
     scores: List[float] = []
+    attempted = 0
+    infra_errors = 0
+    parse_failures = 0
     raw_per_run: Dict[str, Dict] = {}
 
     for run_id, summaries in summaries_by_run.items():
@@ -765,16 +854,36 @@ def faithfulness_judge(
                 # Skip empty or known-fallback sections
                 if not text or not text.strip() or text.strip() in EVAL_FAITHFULNESS_SKIP_STRINGS:
                     continue
-                score = _judge_faithfulness_one(
+                attempted += 1
+                score, failure = _judge_faithfulness_one(
                     llm, text, theme_articles,
                     run_id=run_id, item_id=f"{theme}|{section}",
                 )
-                if score is not None:
+                if failure == "infra_error":
+                    infra_errors += 1
+                elif failure == "parse_failure":
+                    parse_failures += 1
+                elif score is not None:
                     scores.append(score)
                     run_scores.append(score)
         raw_per_run[run_id] = {"scores": run_scores}
 
-    return _safe_mean(scores), {"per_run": raw_per_run, "samples": len(scores)}
+    if attempted > 0 and not scores:
+        return 1.0, {
+            "skipped": True,
+            "samples": 0,
+            "attempted": attempted,
+            "infra_errors": infra_errors,
+            "parse_failures": parse_failures,
+            "per_run": raw_per_run,
+        }
+    return _safe_mean(scores), {
+        "per_run": raw_per_run,
+        "samples": len(scores),
+        "attempted": attempted,
+        "infra_errors": infra_errors,
+        "parse_failures": parse_failures,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -814,11 +923,15 @@ def _judge_overlap(
     run_id: str = "",
     item_id: str = "",
     pair_cache: Optional[Dict[str, float]] = None,
-) -> float:
+) -> Optional[float]:
     """Return overlap for a single (a, b) pair, using a deterministic
     short-circuit when the heuristic is confident, and a per-evaluation
     cache so the same pair is only sent to the LLM once even if it
     appears in both the within-run and cross-run loops.
+
+    Returns ``None`` when the LLM call fails or the response is
+    unparseable — the caller excludes those pairs rather than treating
+    an outage as "zero overlap" (which would inflate uniqueness).
     """
     cache_key = item_id or f"{hash((a, b)) & 0xFFFFFFFF:08x}"
     if pair_cache is not None and cache_key in pair_cache:
@@ -864,9 +977,9 @@ def _judge_overlap(
             item_id=item_id or cache_key,
             latency_ms=0,
             parse_ok=False,
-            score=0.0,
+            score=None,
         )
-        return 0.0
+        return None
     parsed = _extract_json(resp)
     overlap = _coerce_score({"score": parsed.get("overlap") if parsed else None}) \
         if parsed else None
@@ -886,9 +999,9 @@ def _judge_overlap(
             item_id=item_id or cache_key,
             latency_ms=latency_ms,
             parse_ok=False,
-            score=0.0,
+            score=None,
         )
-        return 0.0
+        return None
     if pair_cache is not None:
         pair_cache[cache_key] = overlap
     _record_event(
@@ -910,10 +1023,24 @@ def uniqueness_judge(
     """Score uniqueness across (a) within-run theme pairs and
     (b) cross-run same-theme pairs if `prior_summaries_by_run` is provided.
 
-    Uses a local per-evaluation cache so concurrent evaluations don't interfere.
+    Uses a local per-evaluation cache so concurrent evaluations don't
+    interfere.  Pairs where the LLM judge failed are excluded (counted in
+    ``raw["failed_pairs"]``) rather than scored as zero overlap, which
+    would inflate uniqueness during an outage.  If no pair could be
+    judged at all, the result is marked ``skipped``.
     """
     overlaps: List[float] = []
+    failed_pairs = 0
+    attempted = 0
     pair_cache: Dict[str, float] = {}
+
+    def _collect(val: Optional[float]) -> None:
+        nonlocal failed_pairs, attempted
+        attempted += 1
+        if val is None:
+            failed_pairs += 1
+        else:
+            overlaps.append(val)
 
     # (a) Within-run pairwise overlap
     for run_id, summaries in summaries_by_run.items():
@@ -923,7 +1050,7 @@ def uniqueness_judge(
                 a = _summaries_to_text(summaries, themes[i])
                 b = _summaries_to_text(summaries, themes[j])
                 item_id = f"within|{run_id}|{themes[i]}|{themes[j]}"
-                overlaps.append(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache))
+                _collect(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache))
 
     # (b) Cross-run same-theme overlap
     if prior_summaries_by_run:
@@ -937,11 +1064,23 @@ def uniqueness_judge(
                 a = _summaries_to_text(summaries, theme)
                 b = _summaries_to_text(prior, theme)
                 item_id = f"cross|{run_id}|{theme}"
-                overlaps.append(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache))
+                _collect(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache))
 
+    if attempted > 0 and not overlaps:
+        return 1.0, {
+            "skipped": True,
+            "samples": 0,
+            "attempted": attempted,
+            "failed_pairs": failed_pairs,
+        }
     mean_overlap = _safe_mean(overlaps)
     uniqueness = 1.0 - mean_overlap
-    return uniqueness, {"samples": len(overlaps), "mean_overlap": mean_overlap}
+    return uniqueness, {
+        "samples": len(overlaps),
+        "mean_overlap": mean_overlap,
+        "attempted": attempted,
+        "failed_pairs": failed_pairs,
+    }
 
 
 def parse_further_reading_titles(further_reading_text: str) -> List[str]:
@@ -980,7 +1119,14 @@ def grounding_judge(
                 t_lower = title.lower().strip()
                 if any(t_lower in at or at in t_lower for at in article_titles):
                     matched += 1
-    score = matched / total if total > 0 else 1.0
+    if total == 0:
+        # No citations to verify — a vacuous 1.0 would masquerade as a
+        # perfect score.  Mark skipped so the UI/recommendations ignore it.
+        # (Legacy runs pre-dating supabase_migration_further_reading.sql
+        # have no persisted further_reading section.)
+        return 1.0, {"matched": 0, "total": 0, "skipped": True,
+                     "notes": "no further_reading citations found"}
+    score = matched / total
     return round(score, 4), {"matched": matched, "total": total}
 
 
@@ -1001,12 +1147,19 @@ def structural_compliance_judge(
     for run_id, summaries in summaries_by_run.items():
         for theme, sections in summaries.items():
             for sec in required_sections:
+                if sec not in sections:
+                    # Key absent (not merely empty) means the column was
+                    # never loaded — legacy schema without the
+                    # further_reading migration.  Skip rather than fail.
+                    continue
                 checks_total += 1
                 val = sections.get(sec, "")
                 if val and val.strip() and val.strip() not in EVAL_FAITHFULNESS_SKIP_STRINGS:
                     checks_passed += 1
 
             for sec in prose_sections:
+                if sec not in sections:
+                    continue
                 checks_total += 1
                 text = sections.get(sec, "")
                 sentences = [s for s in re.split(r"[.!?]+", text) if s.strip()]
@@ -1487,6 +1640,11 @@ def _execute_judges_and_build_report(
     deterministic_enabled = (judge_selection in ("all", "deterministic")) or quota_exceeded_before
 
     results: Dict[str, Tuple] = {}
+    # Bound up-front: keyword suggestions below need an LLM client, and in
+    # deterministic-only / quota-exceeded mode there is none.  (Referencing
+    # an unbound local here used to raise UnboundLocalError, which the
+    # suggestion try/except swallowed and mis-reported.)
+    llm: Optional[LLMClient] = None
 
     if llm_enabled:
         llm = _get_llm()
@@ -1589,21 +1747,26 @@ def _execute_judges_and_build_report(
     )
     report.recommendations = generate_recommendations(report)
 
-    try:
-        kw_report = generate_keyword_suggestions(
-            llm,
-            report,
-            articles_by_run,
-            summaries_by_run,
-        )
-        report.keyword_suggestions = kw_report.to_dict()
-        logger.info(
-            "Keyword suggestions: %d themes, %d watchlist terms",
-            len(kw_report.theme_suggestions),
-            len(kw_report.watchlist_suggestions),
-        )
-    except Exception as exc:
-        logger.warning("generate_keyword_suggestions failed: %s", exc)
+    if llm is not None:
+        try:
+            kw_report = generate_keyword_suggestions(
+                llm,
+                report,
+                articles_by_run,
+                summaries_by_run,
+            )
+            report.keyword_suggestions = kw_report.to_dict()
+            logger.info(
+                "Keyword suggestions: %d themes, %d watchlist terms",
+                len(kw_report.theme_suggestions),
+                len(kw_report.watchlist_suggestions),
+            )
+        except Exception as exc:
+            logger.warning("generate_keyword_suggestions failed: %s", exc)
+            report.keyword_suggestions = {"theme_suggestions": {}, "watchlist_suggestions": []}
+    else:
+        # Deterministic-only mode or quota exceeded: suggestions are an
+        # LLM feature, skip cleanly instead of crashing on an unbound client.
         report.keyword_suggestions = {"theme_suggestions": {}, "watchlist_suggestions": []}
 
     # Persist

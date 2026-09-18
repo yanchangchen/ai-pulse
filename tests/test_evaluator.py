@@ -966,6 +966,210 @@ class TestDeterministicJudges:
         assert raw["total"] == 1
 
 
+class TestJudgeFailureSemantics:
+    """LLM judge failures must be EXCLUDED from scoring and counted in
+    raw_metrics — never folded into the mean as zeros (which punished
+    faithfulness during outages and inflated uniqueness)."""
+
+    def _articles(self, n=3, theme="Agentic Systems & DevTools"):
+        return [
+            {"id": f"a{i}", "title": f"Agent framework {i}",
+             "summary": "tools and planning", "theme_name": theme,
+             "run_id": "r1"}
+            for i in range(n)
+        ]
+
+    def test_categoriser_excludes_infra_errors(self):
+        from core.evaluator import categoriser_judge
+        from core.evaluator import LLMClientError  # evaluator-bound: reload-safe
+
+        llm = MagicMock()
+        llm.generate.side_effect = [
+            LLMClientError("boom"),
+            "Agentic Systems & DevTools",
+            "Agentic Systems & DevTools",
+        ]
+        score, per_theme, raw = categoriser_judge(llm, {"r1": self._articles(3)})
+        assert raw["infra_errors"] == 1
+        assert raw["samples_judged"] == 2
+        assert raw["samples_attempted"] == 3
+        # Only the two judged samples count — both correct.
+        assert score == 1.0
+
+    def test_categoriser_excludes_unmatched_responses(self):
+        from core.evaluator import categoriser_judge
+
+        llm = MagicMock()
+        llm.generate.side_effect = [
+            "banana smoothie recipe",  # unparseable as a theme
+            "Agentic Systems & DevTools",
+            "Agentic Systems & DevTools",
+        ]
+        score, per_theme, raw = categoriser_judge(llm, {"r1": self._articles(3)})
+        assert raw["unmatched"] == 1
+        assert raw["samples_judged"] == 2
+        assert score == 1.0
+
+    def test_categoriser_all_failures_marks_skipped(self):
+        from core.evaluator import categoriser_judge
+        from core.evaluator import LLMClientError  # evaluator-bound: reload-safe
+
+        llm = MagicMock()
+        llm.generate.side_effect = LLMClientError("outage")
+        score, per_theme, raw = categoriser_judge(llm, {"r1": self._articles(3)})
+        assert raw["skipped"] is True
+        assert raw["infra_errors"] == 3
+        assert raw["samples_judged"] == 0
+        assert per_theme == {}
+
+    def test_faithfulness_excludes_infra_errors(self):
+        from core.evaluator import faithfulness_judge
+        from core.evaluator import LLMClientError  # evaluator-bound: reload-safe
+
+        llm = MagicMock()
+        llm.generate.side_effect = [
+            LLMClientError("boom"),
+            '{"score": 0.9, "unsupported_claims": []}',
+        ]
+        summaries = {"r1": {"T": {
+            "what_is_happening": "First claimed section text.",
+            "engineering_tradeoffs": "Second claimed section text.",
+            "product_impact": "",  # empty → skipped before any call
+        }}}
+        articles = {"r1": [{"title": "x", "summary": "y", "theme_name": "T"}]}
+        score, raw = faithfulness_judge(llm, summaries, articles)
+        assert raw["infra_errors"] == 1
+        assert raw["samples"] == 1
+        assert raw["attempted"] == 2
+        assert score == pytest.approx(0.9)
+
+    def test_faithfulness_parse_failure_excluded(self):
+        from core.evaluator import faithfulness_judge
+
+        llm = MagicMock()
+        llm.generate.return_value = "total garbage with no numeric value"
+        summaries = {"r1": {"T": {"what_is_happening": "Some claim text."}}}
+        articles = {"r1": [{"title": "x", "summary": "y", "theme_name": "T"}]}
+        score, raw = faithfulness_judge(llm, summaries, articles)
+        assert raw["skipped"] is True
+        assert raw["parse_failures"] == 1
+        assert raw["samples"] == 0
+
+    def test_faithfulness_all_infra_fail_marks_skipped(self):
+        from core.evaluator import faithfulness_judge
+        from core.evaluator import LLMClientError  # evaluator-bound: reload-safe
+
+        llm = MagicMock()
+        llm.generate.side_effect = LLMClientError("outage")
+        summaries = {"r1": {"T": {"what_is_happening": "Some claim text."}}}
+        articles = {"r1": [{"title": "x", "summary": "y", "theme_name": "T"}]}
+        score, raw = faithfulness_judge(llm, summaries, articles)
+        assert raw["skipped"] is True
+        assert raw["infra_errors"] == 1
+
+    def test_uniqueness_excludes_failed_pairs(self):
+        from core.evaluator import uniqueness_judge
+        from core.evaluator import LLMClientError  # evaluator-bound: reload-safe
+
+        llm = MagicMock()
+        llm.generate.side_effect = [
+            LLMClientError("boom"),
+            '{"overlap": 0.8}',
+            '{"overlap": 0.6}',
+        ]
+        summaries = {"r1": {
+            "A": {"what_is_happening": "alpha text", "why_it_matters": ""},
+            "B": {"what_is_happening": "beta text", "why_it_matters": ""},
+            "C": {"what_is_happening": "gamma text", "why_it_matters": ""},
+        }}
+        # Force every pair through the LLM path.
+        with patch("core.evaluator._heuristic_short_circuit", return_value=None):
+            score, raw = uniqueness_judge(llm, summaries)
+        assert raw["failed_pairs"] == 1
+        assert raw["samples"] == 2
+        assert score == pytest.approx(1.0 - 0.7)
+
+    def test_uniqueness_all_fail_marks_skipped(self):
+        from core.evaluator import uniqueness_judge
+        from core.evaluator import LLMClientError  # evaluator-bound: reload-safe
+
+        llm = MagicMock()
+        llm.generate.side_effect = LLMClientError("outage")
+        summaries = {"r1": {
+            "A": {"what_is_happening": "alpha text", "why_it_matters": ""},
+            "B": {"what_is_happening": "beta text", "why_it_matters": ""},
+        }}
+        with patch("core.evaluator._heuristic_short_circuit", return_value=None):
+            score, raw = uniqueness_judge(llm, summaries)
+        assert raw["skipped"] is True
+        assert raw["failed_pairs"] == 1
+
+
+class TestDeterministicJudgeSkips:
+    def test_grounding_skipped_when_no_citations(self):
+        from core.evaluator import grounding_judge
+
+        summaries = {"r1": {"T": {"what_is_happening": "x"}}}  # no further_reading key
+        score, raw = grounding_judge(summaries, {"r1": [{"title": "t"}]})
+        assert raw["skipped"] is True
+        assert raw["total"] == 0
+
+    def test_structural_skips_absent_legacy_sections(self):
+        from core.evaluator import structural_compliance_judge
+
+        # Legacy row shape: only the pre-migration keys exist.  Absent keys
+        # must be skipped, not failed (previously capped the score at 87.5%).
+        sections = {
+            "what_is_happening": "One sentence. Two sentences. Three sentences.",
+            "what_to_watch": "- a\n- b",
+        }
+        score, raw = structural_compliance_judge({"r1": {"T": sections}})
+        assert raw["total"] == 3  # 2 section-presence + 1 sentence-bound
+        assert raw["passed"] == 3
+        assert score == 1.0
+
+    def test_structural_empty_present_section_still_fails(self):
+        from core.evaluator import structural_compliance_judge
+
+        sections = {
+            "what_is_happening": "",  # present but empty → must fail
+            "what_to_watch": "- a",
+        }
+        score, raw = structural_compliance_judge({"r1": {"T": sections}})
+        assert raw["passed"] < raw["total"]
+
+
+class TestLoadSummariesFurtherReading:
+    def test_select_includes_further_reading(self):
+        from core.evaluator import _load_summaries_for_run
+
+        fake = MagicMock()
+        exec_result = MagicMock()
+        exec_result.data = [{"theme_name": "T", "further_reading": "- x"}]
+        table = fake.client.table.return_value
+        table.select.return_value.eq.return_value.execute.return_value = exec_result
+        out = _load_summaries_for_run(fake, "run1")
+        select_arg = table.select.call_args.args[0]
+        assert "further_reading" in select_arg
+        assert out["T"]["further_reading"] == "- x"
+
+    def test_legacy_db_retries_without_further_reading(self):
+        from core.evaluator import _load_summaries_for_run
+
+        fake = MagicMock()
+        table = fake.client.table.return_value
+        good = MagicMock()
+        good.data = [{"theme_name": "T"}]
+        table.select.return_value.eq.return_value.execute.side_effect = [
+            Exception('column "further_reading" does not exist'),
+            good,
+        ]
+        out = _load_summaries_for_run(fake, "run1")
+        assert out == {"T": {"theme_name": "T"}}
+        assert table.select.call_count == 2
+        assert "further_reading" not in table.select.call_args_list[1].args[0]
+
+
 class TestJudgeSelection:
     """Test judge_selection parameter filtering in _execute_judges_and_build_report."""
 

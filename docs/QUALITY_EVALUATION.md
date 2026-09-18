@@ -15,6 +15,15 @@ The evaluation suite (`core/evaluator.py`) runs **7 automated checks** to ensure
   - *Coverage Judge* (source article recall)
   - *Temporal Coherence Judge* (week-over-week summary evolution tracking)
 
+## Judge Failure Semantics
+
+LLM judge calls that error out or return unparseable responses are **excluded** from the
+metric and counted in `raw_metrics` (`infra_errors` / `parse_failures` / `unmatched` /
+`failed_pairs`) — never scored as zeros. An Ollama outage must not masquerade as mass
+hallucination (faithfulness) or as perfectly distinct summaries (uniqueness). A judge that
+could score nothing at all is marked `skipped`; the Score History chart renders skipped
+points as gaps instead of the persisted 1.0 placeholder.
+
 ## Judge Metrics
 
 | Metric | Judge Type | What It Checks | Technical Method | Target |
@@ -22,8 +31,8 @@ The evaluation suite (`core/evaluator.py`) runs **7 automated checks** to ensure
 | **Categoriser Accuracy** | LLM-as-Judge | Are articles being sorted into the right themes? | Re-classifies a stratified sample via LLM, compares against active assignments. | ≥ 80% |
 | **Faithfulness Score** | LLM-as-Judge | Are summaries truthful without hallucination? | Extracts claims from bullet points, fact-checks against source articles. | ≥ 80% |
 | **Uniqueness Score** | Hybrid Heuristic + LLM | Are summaries distinct across themes/runs? | Jaccard/cosine text overlap filtering; LLM pairwise judge for ambiguous bands. | ≥ 80% |
-| **Grounding Score** | Deterministic | Do "Further Reading" links point to real articles? | Cross-references cited titles/links against the input source set. | 100% |
-| **Structural Compliance** | Deterministic | Is the summary properly formatted? | Validates 5 mandatory sections and sentence count bounds (3–7) on prose. | 100% |
+| **Grounding Score** | Deterministic | Do "Further Reading" links point to real articles? | Cross-references cited titles/links against the input source set. Reports *Skipped* (not a vacuous 100%) when a run has no persisted citations — requires `supabase_migration_further_reading.sql`. | 100% |
+| **Structural Compliance** | Deterministic | Is the summary properly formatted? | Validates 5 mandatory sections and sentence count bounds (3–7) on prose. Sections absent from a legacy schema are skipped, not failed. | 100% |
 | **Coverage Score** | Deterministic | Did the summary capture key information from all articles? | Source article title/entity token recall across the generated summary. | ≥ 70% |
 | **Temporal Coherence** | Deterministic | Is the summary updating week-over-week? | Compares active summary against past runs to flag stale text repetition. | ≥ 75% |
 
