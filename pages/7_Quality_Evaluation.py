@@ -212,6 +212,25 @@ judge_map = {
 }
 judge_selection = judge_map[judge_selection_label]
 
+from core.auto_remediation import is_enabled as _auto_rem_enabled, set_enabled as _auto_rem_set
+
+_auto_on = st.toggle(
+    "🤖 Auto-apply remediations after each evaluation",
+    value=_auto_rem_enabled(),
+    help=(
+        "Bounded and reversible. When metrics fall below the threshold: enables Strict "
+        "Anti-Hallucination mode and lowers summariser temperature (Faithfulness), raises "
+        "the token budget in 500-step increments up to 2500 (Coverage), and applies up to "
+        "5 weight-capped keyword suggestions per weak theme (Classifier). Keyword applies "
+        "are automatically rolled back if the theme's score drops in the next evaluation. "
+        "Every action is recorded in the evaluation's raw metrics for audit."
+    ),
+    key="cfg_auto_remediation",
+)
+if _auto_on != _auto_rem_enabled():
+    _auto_rem_set(_auto_on)
+    st.toast("Auto-remediation " + ("enabled" if _auto_on else "disabled"), icon="🤖")
+
 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 run_now = st.button(
     f"🚀 Run Evaluation Now ({judge_selection_label})",
@@ -432,6 +451,39 @@ if run_now:
                 else:
                     st.success(rec)
 
+        # Auto-remediation actions taken during this evaluation (opt-in).
+        rem = (getattr(report, "raw_metrics", {}) or {}).get("auto_remediation") or {}
+        if rem.get("applied") or rem.get("rolled_back"):
+            st.markdown("#### 🤖 Auto-remediation actions")
+            for a in rem.get("rolled_back", []):
+                st.warning(
+                    f"↩️ Rolled back **{len(a.get('terms', []))} keyword(s)** for "
+                    f"**{a.get('theme')}** — score {a.get('current_score', 0):.0%} fell below "
+                    f"baseline {a.get('baseline_score', 0):.0%}: "
+                    f"`{', '.join(a.get('terms', []))}`"
+                )
+            for a in rem.get("applied", []):
+                if a.get("action") == "apply_keywords":
+                    terms = a.get("terms", {})
+                    st.info(
+                        f"⚡ Applied **{len(terms)} keyword(s)** to **{a.get('theme')}** "
+                        f"(baseline {a.get('baseline_score', 0):.0%}, will roll back if the "
+                        f"score drops next evaluation): "
+                        f"`{', '.join(f'{t} (wt {w})' for t, w in terms.items())}`"
+                    )
+                elif a.get("action") == "tune_summariser_faithfulness":
+                    st.info(
+                        f"⚙️ Faithfulness remedy (score {a.get('trigger_score', 0):.0%}): "
+                        f"strict grounding → **{a['new']['strict_faithfulness_mode']}**, "
+                        f"temperature → **{a['new']['temperature']}**"
+                    )
+                elif a.get("action") == "raise_max_tokens":
+                    st.info(
+                        f"⚙️ Coverage remedy (score {a.get('trigger_score', 0):.0%}): "
+                        f"max tokens {a['previous']['max_tokens']} → "
+                        f"**{a['new']['max_tokens']}**"
+                    )
+
         kw = getattr(report, "keyword_suggestions", None)
         if isinstance(kw, dict) and (
             kw.get("theme_suggestions") or kw.get("watchlist_suggestions")
@@ -533,12 +585,20 @@ else:
                     unsafe_allow_html=True,
                 )
 
-    from core.llm_client import LLMClient
-    if LLMClient.is_quota_exceeded() or raw_m_latest.get("categoriser", {}).get("quota_exceeded"):
+    cat_raw_latest = raw_m_latest.get("categoriser", {}) or {}
+    if cat_raw_latest.get("skipped") and (
+        cat_raw_latest.get("quota_exceeded") or cat_raw_latest.get("no_gateway_providers")
+    ):
+        reason = (
+            "The Ollama Cloud weekly rate limit was reached and no gateway provider "
+            "could serve the judges."
+            if cat_raw_latest.get("quota_exceeded")
+            else "The Model Gateway has no providers configured (check GEMINI_API_KEY / "
+                 "OLLAMA_API_KEY in secrets.toml or the environment)."
+        )
         st.warning(
-            "**LLM Evaluation Judges Skipped / Halted (HTTP 429 Rate Limit)**: "
-            "The Ollama Cloud weekly rate limit was reached. LLM judge API calls were skipped, "
-            "and evaluation results were compiled using the **4 Deterministic Rule Checks** only.",
+            f"**LLM Evaluation Judges Skipped**: {reason} "
+            "Evaluation results were compiled using the **4 Deterministic Rule Checks** only.",
             icon="⚠️"
         )
 

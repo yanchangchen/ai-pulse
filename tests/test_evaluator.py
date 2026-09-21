@@ -519,7 +519,10 @@ class TestJudgeFailureFallback:
             {"id": "run1", "run_timestamp": "2026-07-24T00:00:00Z", "run_date": "2026-07-24", "total_articles": 5}
         ]
 
-        with patch("core.evaluator._load_articles_for_run", return_value=[{"id": "art1", "title": "T", "summary": "S", "theme_name": "Agentic Systems & DevTools"}]), \
+        # Pin gateway readiness so the LLM-judge path is taken regardless
+        # of whether the host machine has provider keys configured.
+        with patch("core.evaluator._gateway_has_providers", return_value=True), \
+             patch("core.evaluator._load_articles_for_run", return_value=[{"id": "art1", "title": "T", "summary": "S", "theme_name": "Agentic Systems & DevTools"}]), \
              patch("core.evaluator._load_summaries_for_run", return_value={}), \
              patch("core.evaluator.categoriser_judge", side_effect=RuntimeError("Categoriser judge crashed")), \
              patch("core.evaluator.insert_quality_evaluation", return_value={"id": 1}):
@@ -947,6 +950,49 @@ class TestDeterministicJudges:
         assert raw["covered"] == 1
         assert raw["total"] == 2
 
+    def test_coverage_ignores_generic_stopword_matches(self):
+        """A lone generic token ("model") must not mark an article covered —
+        that laxity pinned the old metric near 100%."""
+        from core.evaluator import coverage_judge
+
+        articles = [{"title": "New Model Release Roundup", "theme_name": "T"}]
+        summaries = {
+            "r1": {"T": {"what_is_happening": "Another model launches this week."}}
+        }
+        score, raw = coverage_judge(summaries, {"r1": articles})
+        # "model" is a stopword; "release"/"roundup" are absent from the summary.
+        assert raw["covered"] == 0
+        assert raw["total"] == 1
+
+    def test_coverage_requires_two_distinctive_tokens(self):
+        from core.evaluator import coverage_judge
+
+        articles = [{"title": "Databricks raises funding", "theme_name": "T"}]
+        summaries = {
+            "r1": {"T": {"what_is_happening": "Databricks announced a funding round."}}
+        }
+        score, raw = coverage_judge(summaries, {"r1": articles})
+        # databricks + funding match → 2 of 3 distinctive tokens ≥ required 2.
+        assert raw["covered"] == 1
+
+    def test_coverage_single_distinctive_token_title(self):
+        from core.evaluator import coverage_judge
+
+        articles = [{"title": "Snowflake", "theme_name": "T"}]
+        summaries = {"r1": {"T": {"what_is_happening": "Snowflake shipped cortex."}}}
+        score, raw = coverage_judge(summaries, {"r1": articles})
+        # One distinctive token → required = min(2, 1) = 1.
+        assert raw["covered"] == 1
+
+    def test_coverage_unmeasurable_titles_excluded(self):
+        from core.evaluator import coverage_judge
+
+        articles = [{"title": "AI OK", "theme_name": "T"}]  # no token > 3 non-stopword
+        summaries = {"r1": {"T": {"what_is_happening": "Something happened."}}}
+        score, raw = coverage_judge(summaries, {"r1": articles})
+        assert raw["unmeasurable"] == 1
+        assert raw["total"] == 0
+
     def test_temporal_coherence_judge_flags_stale_summaries(self):
         from core.evaluator import temporal_coherence_judge
 
@@ -1178,7 +1224,8 @@ class TestJudgeSelection:
     @patch("core.evaluator.categoriser_judge")
     @patch("core.evaluator.faithfulness_judge")
     @patch("core.evaluator.uniqueness_judge")
-    def test_llm_only_mode_skips_deterministic(self, mock_uniq, mock_faith, mock_cat, mock_kw, mock_insert):
+    @patch("core.evaluator._gateway_has_providers", return_value=True)
+    def test_llm_only_mode_skips_deterministic(self, mock_gw, mock_uniq, mock_faith, mock_cat, mock_kw, mock_insert):
         from core.evaluator import _execute_judges_and_build_report
 
         mock_cat.return_value = (0.85, {"Theme A": 0.85}, {})

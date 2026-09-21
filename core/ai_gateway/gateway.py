@@ -73,7 +73,7 @@ class ModelGateway:
                 "gemini-3.5-flash-lite": {
                     "provider": "google",
                     "model": "gemini-3.5-flash-lite",
-                    "tasks": ["categorise", "extract", "summarise"],
+                    "tasks": ["categorise", "extract", "summarise", "evaluate"],
                     "cost_class": "low",
                     "priority": 1,
                     "thinking_level": "minimal",
@@ -81,7 +81,7 @@ class ModelGateway:
                 "gemini-3.5-flash": {
                     "provider": "google",
                     "model": "gemini-3.5-flash",
-                    "tasks": ["categorise", "extract", "summarise", "synthesise"],
+                    "tasks": ["categorise", "extract", "summarise", "synthesise", "evaluate"],
                     "cost_class": "medium",
                     "priority": 2,
                     "thinking_level": "low",
@@ -97,7 +97,7 @@ class ModelGateway:
                 "nemotron-3-super": {
                     "provider": "ollama",
                     "model": "nemotron-3-super:cloud",
-                    "tasks": ["summarise", "synthesise", "project", "extract"],
+                    "tasks": ["summarise", "synthesise", "project", "extract", "evaluate"],
                     "cost_class": "medium",
                     "priority": 2,
                     "context_window": 262144,
@@ -105,7 +105,7 @@ class ModelGateway:
                 "gpt-oss-120b": {
                     "provider": "ollama",
                     "model": "gpt-oss:120b-cloud",
-                    "tasks": ["summarise", "synthesise", "project", "extract"],
+                    "tasks": ["summarise", "synthesise", "project", "extract", "evaluate"],
                     "cost_class": "medium",
                     "priority": 3,
                     "context_window": 131072,
@@ -156,6 +156,21 @@ class ModelGateway:
                         "gemini-3.5-flash",
                     ],
                     "deterministic_fallback": True,
+                },
+                # LLM-as-judge evaluation: Gemini-first (an Ollama quota
+                # outage must not disable the quality judges), Ollama as
+                # fallback, and NO deterministic fallback — a rule-based
+                # substitute for a judge verdict is meaningless, so total
+                # failure surfaces to the evaluator, which excludes the
+                # sample and counts it in raw_metrics.
+                "evaluate": {
+                    "primary": "gemini-3.5-flash-lite",
+                    "fallback": [
+                        "gemini-3.5-flash",
+                        "nemotron-3-super",
+                        "gpt-oss-120b",
+                    ],
+                    "deterministic_fallback": False,
                 },
             },
         }
@@ -302,6 +317,9 @@ Return JSON: {{"category": "theme name"}}""",
             TaskType.PROJECT: f"Project future trends from these signals:\n{request.input}",
             TaskType.SYNTHESISE: f"Synthesise these documents:\n{request.input}",
         }
+        # Tasks without a template (e.g. EVALUATE) pass request.input
+        # through verbatim — LLM-as-judge prompts are fully formed and
+        # must not be re-wrapped.
         return prompts.get(request.task, request.input)
 
     def _get_schema(self, task: TaskType) -> Optional[Dict]:

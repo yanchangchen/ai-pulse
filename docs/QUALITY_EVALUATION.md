@@ -4,7 +4,9 @@ The evaluation suite (`core/evaluator.py`) runs **7 automated checks** to ensure
 
 ## Execution Architecture
 
-- **3 Concurrent LLM Judges**: Run inside a `ThreadPoolExecutor` bounded by `Semaphore(3)` to prevent API rate limiting:
+- **3 Concurrent LLM Judges**: Run inside a `ThreadPoolExecutor` (3 workers), each routed
+  through the **Model Gateway** (`TaskType.EVALUATE` — Gemini-first, Ollama fallback,
+  no deterministic fallback), so an Ollama quota outage no longer disables them:
   - *Categoriser Judge* (fresh theme re-classification sample)
   - *Faithfulness Judge* (fact-checking summary claims against source articles)
   - *Uniqueness Judge* (pairwise summary overlap across themes and runs)
@@ -49,3 +51,28 @@ When scores fall below threshold, users fix issues directly in the UI — no bac
 4. **📌 Watchlist Term Suggestions** — Surfaces high-signal terms for `watch.md` in copy-pasteable blocks.
 
 Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_migration_keywords.sql` once to create it). Set `LLM_DEBUG=1` in `.env` to dump prompts and raw responses for debugging.
+
+Grounding and Structural Compliance read the persisted `further_reading` column — run
+`supabase_migration_further_reading.sql` once on existing deployments.
+
+## Auto-Remediation (opt-in, bounded, reversible)
+
+The **"🤖 Auto-apply remediations"** toggle on the Quality Evaluation page closes the
+evaluate → remediate loop (`core/auto_remediation.py`, persisted in
+`custom_settings.json` as `auto_remediation_enabled`):
+
+| Trigger | Action | Bound |
+|---|---|---|
+| Faithfulness < threshold | Strict anti-hallucination mode ON, temperature → 0.1 | Never raises temperature back |
+| Coverage < threshold | `max_tokens` += 500 | Hard cap 2500 |
+| Per-theme classifier < threshold | Apply evaluation keyword suggestions | ≤ 5 terms/theme/round, weight ≤ 2 (weight-3 stays human-approved), one experiment per theme at a time |
+
+**Rollback**: each keyword apply is recorded in `data/auto_remediation_state.json` with the
+theme's baseline score. On the next evaluation, a theme whose score *dropped* below its
+baseline has the auto-applied terms removed, and that theme is skipped in the same round's
+apply pass (no oscillation). Skipped judges produce no signal, so pending experiments wait.
+
+Every action (applied or rolled back) is recorded in the evaluation's `raw_metrics`
+(`auto_remediation` key) and persists to Supabase for audit. Remediations take effect at
+runtime — keyword and settings writes go through the same hot-reload paths as the manual
+UI controls.

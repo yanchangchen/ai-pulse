@@ -54,7 +54,9 @@ def test_llm_client_fast_abort_when_quota_flag_active():
         mock_post.assert_not_called()
 
 
-def test_evaluator_runs_deterministic_only_on_quota():
+@patch("core.evaluator._gateway_has_providers", return_value=False)
+def test_evaluator_runs_deterministic_only_without_gateway_providers(mock_gw):
+    """No gateway providers → LLM judges skip, deterministic judges run."""
     LLMClient.mark_quota_exceeded("Quota limit test")
 
     runs = [{"id": "run-1", "run_timestamp": "2026-08-07T00:00:00Z", "run_date": "2026-08-07"}]
@@ -75,6 +77,7 @@ def test_evaluator_runs_deterministic_only_on_quota():
     # LLM judges should be marked as skipped
     raw_m = report.raw_metrics
     assert raw_m.get("categoriser", {}).get("skipped") is True
+    assert raw_m.get("categoriser", {}).get("no_gateway_providers") is True
     assert raw_m.get("faithfulness", {}).get("skipped") is True
     assert raw_m.get("uniqueness", {}).get("skipped") is True
 
@@ -83,6 +86,44 @@ def test_evaluator_runs_deterministic_only_on_quota():
     assert report.structural_compliance_score >= 0.0
     assert report.coverage_score >= 0.0
     assert report.temporal_coherence_score >= 0.0
+
+
+@patch("core.evaluator.insert_quality_evaluation", return_value=None)
+@patch("core.evaluator.generate_keyword_suggestions")
+@patch("core.evaluator.uniqueness_judge")
+@patch("core.evaluator.faithfulness_judge")
+@patch("core.evaluator.categoriser_judge")
+@patch("core.evaluator._gateway_has_providers", return_value=True)
+def test_llm_judges_run_despite_ollama_quota_when_gateway_ready(
+    mock_gw, mock_cat, mock_faith, mock_uniq, mock_kw, mock_insert
+):
+    """The judges route through the Model Gateway (Gemini-first EVALUATE
+    policy), so an Ollama quota outage alone must NOT disable them."""
+    LLMClient.mark_quota_exceeded("Quota limit test")
+
+    mock_cat.return_value = (0.9, {}, {"samples_judged": 5})
+    mock_faith.return_value = (0.9, {"samples": 5})
+    mock_uniq.return_value = (0.9, {"samples": 5})
+    mock_kw.return_value.to_dict.return_value = {
+        "theme_suggestions": {}, "watchlist_suggestions": [],
+    }
+
+    runs = [{"id": "run-1", "run_timestamp": "2026-08-07T00:00:00Z", "run_date": "2026-08-07"}]
+    report = _execute_judges_and_build_report(
+        runs=runs,
+        articles_by_run={"run-1": [{"title": "Art 1", "theme_name": "Agentic Systems & DevTools"}]},
+        summaries_by_run={"run-1": {}},
+        prior_summaries_by_run={},
+        threshold=0.8,
+        lookback_days=7,
+        judge_selection="all",
+    )
+
+    mock_cat.assert_called_once()
+    mock_faith.assert_called_once()
+    mock_uniq.assert_called_once()
+    assert report.raw_metrics["categoriser"].get("skipped") is not True
+    assert report.classifier_score == 0.9
 
 
 def test_format_display_timestamp():

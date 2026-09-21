@@ -324,14 +324,89 @@ def _load_summaries_for_run(supabase, run_id: str) -> Dict[str, Dict]:
 # ---------------------------------------------------------------------------
 
 
-_llm: Optional[LLMClient] = None
+class GatewayJudgeLLM:
+    """LLMClient-shaped adapter that routes evaluation judges through the
+    Model Gateway (``TaskType.EVALUATE``).
+
+    Judges call ``.generate(prompt, temperature, max_tokens, event_sink)``
+    and expect raw text back, or ``LLMClientError``.  Routing through the
+    gateway gives the judges per-model health tracking, retries, an
+    ordered Gemini-first fallback chain, and provenance — so an Ollama
+    quota outage no longer disables the LLM judges (previously they were
+    wired to the Ollama-only legacy ``LLMClient``).
+
+    Deterministic fallback is disabled end-to-end: a rule-based substitute
+    for a judge verdict is meaningless, so total failure raises
+    ``LLMClientError`` and the judges exclude the sample (counted in
+    raw_metrics) instead of scoring a fabricated zero.
+    """
+
+    def __init__(self, label: str = "judge"):
+        self.label = label
+
+    def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.1,
+        max_tokens: int = 400,
+        event_sink: Optional[Callable[[int, bool, str], None]] = None,
+        **kwargs,
+    ) -> str:
+        import asyncio
+
+        from core.ai_gateway.contracts import AITaskRequest, TaskType
+        from core.ai_gateway.gateway import get_gateway
+
+        request = AITaskRequest(
+            task=TaskType.EVALUATE,
+            input=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            allow_deterministic_fallback=False,
+            metadata={"caller": f"evaluator:{self.label}"},
+        )
+        t0 = time.monotonic()
+        try:
+            result = asyncio.run(get_gateway().execute(request))
+        except Exception as exc:  # noqa: BLE001 — surfaced as a judge exclusion
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            if event_sink:
+                event_sink(latency_ms, False, str(exc)[:200])
+            raise LLMClientError(f"gateway[{self.label}] execution error: {exc}") from exc
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        prov = result.provenance
+        if not result.is_success() or getattr(prov, "method", "") != "llm":
+            err = getattr(prov, "error", None) or "gateway returned no LLM result"
+            if event_sink:
+                event_sink(latency_ms, False, err[:200])
+            raise LLMClientError(f"gateway[{self.label}]: {err}")
+
+        # EVALUATE has no output schema, so result.result is raw text;
+        # serialize defensively in case a structured path is ever enabled.
+        text = result.result if isinstance(result.result, str) else json.dumps(result.result)
+        if not text.strip():
+            if event_sink:
+                event_sink(latency_ms, False, "empty_response")
+            raise LLMClientError(f"gateway[{self.label}]: empty response")
+        if event_sink:
+            event_sink(latency_ms, True, "")
+        return text
 
 
-def _get_llm() -> LLMClient:
-    global _llm
-    if _llm is None:
-        _llm = LLMClient()
-    return _llm
+def _gateway_has_providers() -> bool:
+    """Cheap readiness check: has the Model Gateway any configured providers?
+
+    Used to degrade an evaluation to deterministic-only judges when no LLM
+    backend is wired up (missing API keys), replacing the old Ollama-quota
+    gate — with Gemini-first EVALUATE routing, an Ollama quota outage no
+    longer means the LLM judges can't run.
+    """
+    try:
+        from core.ai_gateway.gateway import get_gateway
+        return bool(get_gateway().providers)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _safe_mean(values: List[float]) -> float:
@@ -1174,22 +1249,46 @@ def coverage_judge(
     summaries_by_run: Dict[str, Dict[str, Dict]],
     articles_by_run: Dict[str, List[Dict]],
 ) -> Tuple[float, Dict]:
-    """Deterministic recall metric: fraction of source articles mentioned in summary."""
-    covered, total = 0, 0
+    """Deterministic recall metric: fraction of source articles mentioned
+    in the summary.
+
+    Tightened from "any single >4-char title token appears anywhere" —
+    generic tokens like "model" show up in virtually every brief, which
+    pinned the score near 100% and made it useless as a trigger for the
+    "raise the token budget" remedy.  Now title tokens are filtered
+    through the heuristic stopword list and an article counts as covered
+    only when at least two distinctive tokens match (or all of them, for
+    titles that yield fewer than two).
+    """
+    covered, total, unmeasurable = 0, 0, 0
     for run_id, summaries in summaries_by_run.items():
         all_articles = articles_by_run.get(run_id, [])
         for theme, sections in summaries.items():
             theme_articles = [a for a in all_articles if a.get("theme_name") == theme]
             full_summary_text = " ".join(str(v) for v in sections.values()).lower()
             for art in theme_articles:
-                total += 1
                 title = art.get("title", "")
-                words = {w.lower() for w in re.findall(r"[a-zA-Z0-9]+", title) if len(w) > 4}
-                if words and any(w in full_summary_text for w in words):
+                tokens = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", title)]
+                words = {w for w in tokens if len(w) > 4 and w not in _HEURISTIC_STOPWORDS}
+                if not words:
+                    # Terse titles ("GPT-5 arrives"): fall back to shorter
+                    # tokens before declaring the article unmeasurable.
+                    words = {w for w in tokens if len(w) > 3 and w not in _HEURISTIC_STOPWORDS}
+                if not words:
+                    unmeasurable += 1
+                    continue
+                total += 1
+                matched = sum(1 for w in words if w in full_summary_text)
+                required = min(2, len(words))
+                if matched >= required:
                     covered += 1
 
     score = covered / total if total > 0 else 1.0
-    return round(score, 4), {"covered": covered, "total": total}
+    return round(score, 4), {
+        "covered": covered,
+        "total": total,
+        "unmeasurable": unmeasurable,
+    }
 
 
 def temporal_coherence_judge(
@@ -1624,8 +1723,18 @@ def _execute_judges_and_build_report(
     EvaluationReport, and persist results.
     """
     quota_exceeded_before = LLMClient.is_quota_exceeded()
-    if quota_exceeded_before:
-        logger.warning("LLM quota exceeded prior to evaluation. Disabling LLM judges and enforcing deterministic judges.")
+    # LLM judges route through the Model Gateway (Gemini-first EVALUATE
+    # policy), so an Ollama quota outage no longer disables them — only a
+    # gateway with zero configured providers does.
+    gateway_ready = (
+        _gateway_has_providers() if judge_selection in ("all", "llm") else False
+    )
+    if judge_selection in ("all", "llm") and not gateway_ready:
+        logger.warning(
+            "Model Gateway has no providers configured (ollama_quota_exceeded=%s). "
+            "Disabling LLM judges and enforcing deterministic judges.",
+            quota_exceeded_before,
+        )
         judge_selection = "deterministic"
         _record_event(
             judge="system",
@@ -1636,18 +1745,18 @@ def _execute_judges_and_build_report(
             score=0.0,
         )
 
-    llm_enabled = judge_selection in ("all", "llm") and not LLMClient.is_quota_exceeded()
-    deterministic_enabled = (judge_selection in ("all", "deterministic")) or quota_exceeded_before
+    llm_enabled = judge_selection in ("all", "llm")
+    deterministic_enabled = judge_selection in ("all", "deterministic")
 
     results: Dict[str, Tuple] = {}
     # Bound up-front: keyword suggestions below need an LLM client, and in
-    # deterministic-only / quota-exceeded mode there is none.  (Referencing
-    # an unbound local here used to raise UnboundLocalError, which the
-    # suggestion try/except swallowed and mis-reported.)
-    llm: Optional[LLMClient] = None
+    # deterministic-only mode there is none.  (Referencing an unbound local
+    # here used to raise UnboundLocalError, which the suggestion
+    # try/except swallowed and mis-reported.)
+    llm: Optional[GatewayJudgeLLM] = None
 
     if llm_enabled:
-        llm = _get_llm()
+        llm = GatewayJudgeLLM()
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
                 executor.submit(
@@ -1679,9 +1788,14 @@ def _execute_judges_and_build_report(
                         else:
                             results[name] = (0.0, {})
     else:
-        results["categoriser"] = (1.0, {}, {"skipped": True, "quota_exceeded": quota_exceeded_before})
-        results["faithfulness"] = (1.0, {"skipped": True, "quota_exceeded": quota_exceeded_before})
-        results["uniqueness"] = (1.0, {"skipped": True, "quota_exceeded": quota_exceeded_before})
+        skip_raw = {
+            "skipped": True,
+            "quota_exceeded": quota_exceeded_before,
+            "no_gateway_providers": not gateway_ready,
+        }
+        results["categoriser"] = (1.0, {}, dict(skip_raw))
+        results["faithfulness"] = (1.0, dict(skip_raw))
+        results["uniqueness"] = (1.0, dict(skip_raw))
 
     classifier_score, per_theme_classifier, cat_raw = results.get("categoriser", (0.0, {}, {}))
     faithfulness_score, faith_raw = results.get("faithfulness", (0.0, {}))
@@ -1765,9 +1879,21 @@ def _execute_judges_and_build_report(
             logger.warning("generate_keyword_suggestions failed: %s", exc)
             report.keyword_suggestions = {"theme_suggestions": {}, "watchlist_suggestions": []}
     else:
-        # Deterministic-only mode or quota exceeded: suggestions are an
-        # LLM feature, skip cleanly instead of crashing on an unbound client.
+        # Deterministic-only mode: suggestions are an LLM feature, skip
+        # cleanly instead of crashing on an unbound client.
         report.keyword_suggestions = {"theme_suggestions": {}, "watchlist_suggestions": []}
+
+    # Auto-remediation (opt-in via the Quality Evaluation page): roll back
+    # failed keyword experiments, then apply bounded fixes for
+    # sub-threshold metrics.  Recorded in raw_metrics BEFORE persistence so
+    # every action is auditable in the Supabase quality_evaluations row.
+    try:
+        from core.auto_remediation import run_auto_remediation
+        remediation = run_auto_remediation(report)
+        if remediation:
+            report.raw_metrics["auto_remediation"] = remediation
+    except Exception as exc:  # noqa: BLE001 — never break the evaluation
+        logger.warning("auto-remediation hook failed: %s", exc)
 
     # Persist
     payload = {

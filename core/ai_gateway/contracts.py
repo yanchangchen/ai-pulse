@@ -15,6 +15,12 @@ class TaskType(Enum):
     SUMMARISE = "summarise"
     SYNTHESISE = "synthesise"
     PROJECT = "project"
+    # LLM-as-judge evaluation calls (core/evaluator.py).  Routed
+    # Gemini-first with no prompt template and no default output schema:
+    # judges send fully-formed prompts and parse responses themselves,
+    # and a deterministic "judge verdict" would be meaningless, so the
+    # evaluate policy disables the deterministic fallback.
+    EVALUATE = "evaluate"
 
 
 class QualityLevel(Enum):

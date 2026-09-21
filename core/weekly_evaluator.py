@@ -147,7 +147,7 @@ class WeeklyEvaluator:
         """
         # Lazy imports to avoid pulling heavy modules at thread-spawn time.
         from core.supabase_client import get_supabase_manager
-        from core.evaluator import run_weekly_evaluation
+        from core.evaluator import run_weekly_evaluation, _gateway_has_providers
         from core.quality_schema import has_evaluation_this_iso_week
 
         supabase = get_supabase_manager()
@@ -156,9 +156,11 @@ class WeeklyEvaluator:
             cls.update_status("idle")
             return
 
-        from core.llm_client import LLMClient
-        if not LLMClient().is_available():
-            logger.info("Weekly evaluator: LLM unavailable, skipping.")
+        # Judges route through the Model Gateway (Gemini-first EVALUATE
+        # policy) — an Ollama quota outage no longer blocks evaluation, but
+        # a gateway with zero providers does.
+        if not _gateway_has_providers():
+            logger.info("Weekly evaluator: Model Gateway has no providers, skipping.")
             cls.update_status("idle")
             return
 
