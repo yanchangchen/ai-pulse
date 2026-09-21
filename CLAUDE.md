@@ -28,6 +28,7 @@ python -m pytest -m integration tests/       # opt-in: real LLM + Supabase wirin
 
 - Always target `tests/` explicitly — the root-level `test_*.py` files (`test_supabase.py`, `test_backfill.py`, `test_deduplication.py`, `test_llm_optimization.py`) are manual smoke scripts meant to be run directly with `python`, not collected by pytest.
 - `tests/conftest.py` has an autouse fixture that resets `LLMClient` quota flags around every test; keep it in mind when adding fixtures that touch quota state.
+- A second autouse fixture pins the Supabase manager singleton to an offline stub (`is_available() == False`) so tests never touch the production project. This matters on machines with `.streamlit/secrets.toml`: importing `config.settings` makes Streamlit export all secrets (including `SUPABASE_URL`/`SUPABASE_KEY`) into `os.environ`, which `core/supabase_client.py` reads directly. Tests that exercise Supabase-backed behaviour must patch `core.supabase_client.get_supabase_manager` with their own mock (pattern: `test_processed_articles.py::test_supabase_preferred`).
 
 ## Configuration
 
