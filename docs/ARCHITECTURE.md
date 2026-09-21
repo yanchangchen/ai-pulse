@@ -64,7 +64,6 @@ Deterministic: Keywords → TF-IDF → Heuristic
 │  • config/settings.py   (Ollama endpoint, model, lookback, TTL)  │
 │  • config/themes.py     (7 weighted-keyword theme dicts)         │
 │  • config/sources.py    (RSS feeds + web-scrape registry)        │
-│  • config/Appendix_*.md (experts, blogs, papers watchlists)      │
 │  • watch.md             (user's keyword / engineering blog list) │
 └─────────────────────────────────────────────────────────────────┘
 ```
