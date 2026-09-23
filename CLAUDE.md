@@ -56,10 +56,10 @@ python -m pytest -m integration tests/       # opt-in: real LLM + Supabase wirin
 
 1. `gate_1_keyword` — weighted keyword matching (integer weights 1–3 in `config/themes.py`, highest score wins).
 2. `gate_2_tfidf` — TF-IDF cosine similarity against synthetic theme documents (`core/tfidf_classifier.py`, zero-dependency, sub-millisecond).
-3. `gate_3_llm` — LLM classification through the Model Gateway (fallback + provenance).
+3. `gate_3_llm` — LLM classification through the Model Gateway (fallback + provenance). Before querying the gateway, a cross-run classification cache (`core/classification_cache.py`, keyed by content_hash — Supabase `articles` table lookup + `data/classification_cache.json` local mirror) reuses themes assigned in previous runs; cache hits are tallied in `gate_3_cache_hits` and cached themes missing from the current `THEMES` registry fall through to the LLM.
 4. `gate_4_heuristic` — `find_closest_theme()` relaxed soft match.
 
-Gate counts are exposed via `get_latest_gate_stats()` (keys `gate_1_keyword` … `gate_4_heuristic`) and surfaced in the UI.
+Gate counts are exposed via `get_latest_gate_stats()` (keys `gate_1_keyword` … `gate_4_heuristic`, plus `gate_3_cache_hits`) and surfaced in the UI.
 
 ### Summarisation — three engines, all provenance-tagged
 

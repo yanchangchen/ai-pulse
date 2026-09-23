@@ -301,6 +301,44 @@ class SupabaseManager:
         except Exception as e:
             logger.error(f"Failed to mark processed for {theme_name}: {e}")
 
+    def get_classifications(self, content_hashes: List[str]) -> Dict[str, str]:
+        """
+        Return {content_hash: theme_name} for previously saved articles.
+
+        Serves as the cloud side of the cross-run classification cache:
+        every classified article is upserted into the ``articles`` table
+        with (content_hash, theme_name), so no extra table is needed.
+        If a hash was saved under several themes across runs, the first
+        row encountered wins.
+
+        Args:
+            content_hashes: content hashes to look up
+
+        Returns:
+            Dict mapping content_hash to theme_name
+        """
+        if not self.available or not content_hashes:
+            return {}
+        found: Dict[str, str] = {}
+        try:
+            # Chunk the .in_() filter to keep request URLs within limits
+            for i in range(0, len(content_hashes), 200):
+                chunk = [h for h in content_hashes[i:i + 200] if h]
+                if not chunk:
+                    continue
+                response = self.client.table("articles") \
+                    .select("content_hash,theme_name") \
+                    .in_("content_hash", chunk) \
+                    .execute()
+                for row in response.data or []:
+                    h = row.get("content_hash")
+                    t = row.get("theme_name")
+                    if h and t and h not in found:
+                        found[h] = t
+        except Exception as e:
+            logger.error(f"Failed to look up cached classifications: {e}")
+        return found
+
     def get_latest_run(self) -> Optional[Dict]:
         """
         Retrieve the most recent trend run.
