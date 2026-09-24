@@ -17,7 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 
-from config.settings import QUALITY_THRESHOLD
+from config.settings import EVALUATION_JUDGE_MODELS, QUALITY_THRESHOLD
 from config.themes import THEME_ORDER
 from core.supabase_client import get_supabase_manager
 from core.shared_sidebar import render_sidebar_nav
@@ -172,7 +172,7 @@ st.subheader("▶ Run Evaluation & Settings")
 st.caption("Configure evaluation parameters below and trigger on-demand scoring. Results persist automatically to Supabase.")
 
 with st.container():
-    col_cfg1, col_cfg2, col_cfg3 = st.columns([1.2, 1, 1])
+    col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns([1.2, 1, 1, 1.2])
 
     with col_cfg1:
         judge_selection_label = st.selectbox(
@@ -205,12 +205,29 @@ with st.container():
             key="cfg_threshold",
         )
 
+    with col_cfg4:
+        judge_model_label = st.selectbox(
+            "🧠 Judge Model",
+            options=["Auto (gateway routing)"] + list(EVALUATION_JUDGE_MODELS.values()),
+            index=0,
+            help=(
+                "Pin every LLM judge call (categoriser, faithfulness, uniqueness, and "
+                "keyword suggestions) to ONE model so scores stay comparable across "
+                "evaluations — no cross-model fallback mid-run. 'Auto' uses the "
+                "gateway's default Gemini-first routing chain."
+            ),
+            key="cfg_judge_model",
+        )
+
 judge_map = {
     "All 7 Judges": "all",
     "3 LLM Judges Only": "llm",
     "4 Deterministic Judges Only": "deterministic",
 }
 judge_selection = judge_map[judge_selection_label]
+
+_judge_model_by_label = {label: key for key, label in EVALUATION_JUDGE_MODELS.items()}
+judge_model = _judge_model_by_label.get(judge_model_label)
 
 from core.auto_remediation import is_enabled as _auto_rem_enabled, set_enabled as _auto_rem_set
 
@@ -266,6 +283,7 @@ if run_now:
                 lookback_days=lookback_days,
                 threshold=threshold,
                 judge_selection=judge_selection,
+                judge_model=judge_model,
             )
             if report is None:
                 result_queue.put(("error", "run_weekly_evaluation returned None"))
@@ -416,9 +434,15 @@ if run_now:
                     f"coverage {report.coverage_score:.0%}."
                 )
 
+            judge_model_used = raw_m.get("judge_model", "auto")
+            model_note = (
+                f" • judge model: {judge_model_used}"
+                if judge_mode != "deterministic" else ""
+            )
             st.caption(
                 f"Judge events: {len(evs)} • LLM calls: ~{llm_calls} • "
                 f"parse failures: {parse_fail} • mean latency: {mean_lat} ms"
+                f"{model_note}"
             )
 
             # Render Classification Waterfall Gate Breakdown

@@ -78,9 +78,9 @@ class ModelGateway:
                     "priority": 1,
                     "thinking_level": "minimal",
                 },
-                "gemini-3.5-flash": {
+                "gemini-3.8-flash": {
                     "provider": "google",
-                    "model": "gemini-3.5-flash",
+                    "model": "gemini-3.8-flash",
                     "tasks": ["categorise", "extract", "summarise", "synthesise", "evaluate"],
                     "cost_class": "medium",
                     "priority": 2,
@@ -94,9 +94,9 @@ class ModelGateway:
                     "priority": 3,
                     "thinking_level": "medium",
                 },
-                "nemotron-3-super": {
+                "nemotron-3-ultra": {
                     "provider": "ollama",
-                    "model": "nemotron-3-super:cloud",
+                    "model": "nemotron-3-ultra:cloud",
                     "tasks": ["summarise", "synthesise", "project", "extract", "evaluate"],
                     "cost_class": "medium",
                     "priority": 2,
@@ -115,8 +115,8 @@ class ModelGateway:
                 "categorise": {
                     "primary": "gemini-3.5-flash-lite",
                     "fallback": [
-                        "gemini-3.5-flash",
-                        "nemotron-3-super",
+                        "gemini-3.8-flash",
+                        "nemotron-3-ultra",
                         "gpt-oss-120b",
                     ],
                     "deterministic_fallback": True,
@@ -124,36 +124,36 @@ class ModelGateway:
                 "extract": {
                     "primary": "gemini-3.5-flash-lite",
                     "fallback": [
-                        "gemini-3.5-flash",
-                        "nemotron-3-super",
+                        "gemini-3.8-flash",
+                        "nemotron-3-ultra",
                         "gpt-oss-120b",
                     ],
                     "deterministic_fallback": True,
                 },
                 "summarise": {
-                    "primary": "nemotron-3-super",
+                    "primary": "nemotron-3-ultra",
                     "fallback": [
                         "gpt-oss-120b",
                         "gemini-3.6-flash",
-                        "gemini-3.5-flash",
+                        "gemini-3.8-flash",
                     ],
                     "deterministic_fallback": True,
                 },
                 "synthesise": {
-                    "primary": "nemotron-3-super",
+                    "primary": "nemotron-3-ultra",
                     "fallback": [
                         "gpt-oss-120b",
                         "gemini-3.6-flash",
-                        "gemini-3.5-flash",
+                        "gemini-3.8-flash",
                     ],
                     "deterministic_fallback": True,
                 },
                 "project": {
-                    "primary": "nemotron-3-super",
+                    "primary": "nemotron-3-ultra",
                     "fallback": [
                         "gpt-oss-120b",
                         "gemini-3.6-flash",
-                        "gemini-3.5-flash",
+                        "gemini-3.8-flash",
                     ],
                     "deterministic_fallback": True,
                 },
@@ -166,8 +166,8 @@ class ModelGateway:
                 "evaluate": {
                     "primary": "gemini-3.5-flash-lite",
                     "fallback": [
-                        "gemini-3.5-flash",
-                        "nemotron-3-super",
+                        "gemini-3.8-flash",
+                        "nemotron-3-ultra",
                         "gpt-oss-120b",
                     ],
                     "deterministic_fallback": False,
@@ -348,6 +348,27 @@ Return JSON: {{"category": "theme name"}}""",
         policy = self._get_routing_policy(task)
         candidates = self._build_candidate_chain(task)
         input_tokens = request.estimated_input_tokens()
+
+        # Pinned model: the evaluation page lets the user choose ONE judge
+        # model and stick to it, so every call in an evaluation uses exactly
+        # that model (scores stay comparable across runs).  Retries within
+        # the model still apply; cross-model fallback does not.  An unknown
+        # or unconfigured model falls back to the default routing chain with
+        # a loud log rather than failing the whole task.
+        preferred = getattr(request, "preferred_model", None)
+        if preferred:
+            if preferred in self.providers:
+                if candidates != [preferred]:
+                    logger.info(
+                        f"[{task.value}] Pinned to model '{preferred}' "
+                        f"(default chain would have been {candidates})"
+                    )
+                candidates = [preferred]
+            else:
+                logger.warning(
+                    f"[{task.value}] Preferred model '{preferred}' is not "
+                    f"configured; using default routing chain {candidates}"
+                )
 
         start_time = time.time()
         last_error = None

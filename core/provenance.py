@@ -2,7 +2,7 @@
 Render a small provenance chip for a theme summary.
 
 The summary dict carries two fields set by ``core.summariser._with_provenance``:
-    _source         — short token (e.g. "google:gemini-3.6-flash", "ollama:nemotron-3-super:cloud",
+    _source         — short token (e.g. "google:gemini-3.6-flash", "ollama:nemotron-3-ultra:cloud",
                       "deterministic:summarise", "gateway:error")
     _generation_log — dict with model, article_count, generated_at, note, …
     _provenance     — full Provenance object dict (from ModelGateway)

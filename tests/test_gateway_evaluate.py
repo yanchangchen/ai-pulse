@@ -49,9 +49,9 @@ class TestEvaluateRouting:
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.EVALUATE)
         assert policy["primary"] == "gemini-3.5-flash-lite"
-        assert "gemini-3.5-flash" in policy["fallback"]
+        assert "gemini-3.8-flash" in policy["fallback"]
         # Ollama models remain in the chain as fallbacks.
-        assert "nemotron-3-super" in policy["fallback"]
+        assert "nemotron-3-ultra" in policy["fallback"]
 
     def test_evaluate_has_no_deterministic_fallback(self):
         gw = ModelGateway()
@@ -71,7 +71,89 @@ class TestEvaluateRouting:
         gw = ModelGateway()
         registry = gw.routing_config["model_registry"]
         assert "evaluate" in registry["gemini-3.5-flash-lite"]["tasks"]
-        assert "evaluate" in registry["gemini-3.5-flash"]["tasks"]
+        assert "evaluate" in registry["gemini-3.8-flash"]["tasks"]
+
+
+# ---------------------------------------------------------------------------
+# Preferred-model pinning (evaluation "stick to one model" mode)
+# ---------------------------------------------------------------------------
+
+
+class _FakeProvider:
+    """Minimal ProviderAdapter stand-in for routing tests (no network)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def generate(self, prompt, **kwargs):
+        self.calls += 1
+        return {"text": "verdict"}
+
+    def get_capabilities(self):
+        return {"context_window": 262144}
+
+
+class TestPreferredModelPinning:
+    def _gateway_with_fakes(self):
+        from core.ai_gateway.gateway import ModelHealth
+
+        gw = ModelGateway()
+        nemotron, gemini = _FakeProvider(), _FakeProvider()
+        gw.providers = {
+            "nemotron-3-ultra": nemotron,
+            "gemini-3.5-flash-lite": gemini,
+        }
+        gw.health = {
+            "nemotron-3-ultra": ModelHealth(provider="ollama", model="nemotron-3-ultra:cloud"),
+            "gemini-3.5-flash-lite": ModelHealth(provider="google", model="gemini-3.5-flash-lite"),
+        }
+        return gw, nemotron, gemini
+
+    def test_pinned_model_is_used_exclusively(self):
+        import asyncio
+
+        gw, nemotron, gemini = self._gateway_with_fakes()
+        req = AITaskRequest(
+            task=TaskType.EVALUATE,
+            input="JUDGE PROMPT",
+            allow_deterministic_fallback=False,
+            preferred_model="nemotron-3-ultra",
+        )
+        result = asyncio.run(gw.execute(req))
+        assert result.is_success()
+        assert nemotron.calls == 1
+        assert gemini.calls == 0  # no cross-model fallback when pinned
+        assert result.provenance.model == "nemotron-3-ultra:cloud"
+
+    def test_unknown_preferred_model_uses_default_chain(self):
+        import asyncio
+
+        gw, nemotron, gemini = self._gateway_with_fakes()
+        req = AITaskRequest(
+            task=TaskType.EVALUATE,
+            input="JUDGE PROMPT",
+            allow_deterministic_fallback=False,
+            preferred_model="does-not-exist",
+        )
+        result = asyncio.run(gw.execute(req))
+        # Default EVALUATE chain is Gemini-first, so the Gemini fake serves.
+        assert result.is_success()
+        assert gemini.calls >= 1
+        assert result.provenance.provider == "google"
+
+    def test_no_preference_keeps_full_chain(self):
+        import asyncio
+
+        gw, nemotron, gemini = self._gateway_with_fakes()
+        req = AITaskRequest(
+            task=TaskType.EVALUATE,
+            input="JUDGE PROMPT",
+            allow_deterministic_fallback=False,
+        )
+        result = asyncio.run(gw.execute(req))
+        assert result.is_success()
+        assert gemini.calls == 1
+        assert nemotron.calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +191,21 @@ class TestGatewayJudgeLLM:
         assert req.max_tokens == 99
         assert req.input == "prompt"
         assert req.metadata.get("caller") == "evaluator:test"
+
+    def test_model_key_pins_request_to_one_model(self):
+        gw = self._gw_with(result=_result("ok"))
+        with patch("core.ai_gateway.gateway.get_gateway", return_value=gw):
+            from core.evaluator import GatewayJudgeLLM
+            GatewayJudgeLLM(label="test", model_key="gpt-oss-120b").generate("prompt")
+        req = gw.execute.call_args.args[0]
+        assert req.preferred_model == "gpt-oss-120b"
+
+    def test_no_model_key_leaves_request_unpinned(self):
+        gw = self._gw_with(result=_result("ok"))
+        with patch("core.ai_gateway.gateway.get_gateway", return_value=gw):
+            self._adapter().generate("prompt")
+        req = gw.execute.call_args.args[0]
+        assert req.preferred_model is None
 
     def test_dict_result_serialized_to_json_text(self):
         gw = self._gw_with(result=_result({"score": 0.9}))

@@ -86,7 +86,7 @@ def _get_secret(key: str, default: str = "") -> str:
 # Ollama Cloud configuration
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL: str = _get_secret("OLLAMA_BASE_URL", "https://api.ollama.com")
-OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "nemotron-3-super:cloud")
+OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "nemotron-3-ultra:cloud")
 OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
 
 # ---------------------------------------------------------------------------
@@ -95,6 +95,7 @@ OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
 GEMINI_API_KEY: str = _get_secret("GEMINI_API_KEY", "")
 GEMINI_MODEL: str = _get_secret("GEMINI_MODEL", "gemini-3.7-flash")
 GEMINI_AVAILABLE_MODELS: list[str] = [
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
@@ -127,6 +128,16 @@ QUALITY_THRESHOLD: float = 0.80
 EVALUATION_SAMPLE_SIZE: int = 20
 # Cap on the number of historical runs evaluated in a single weekly check.
 EVALUATION_MAX_RUNS: int = 7
+# Judge model selection for LLM-as-judge evaluations.  Keys are Model
+# Gateway registry keys; the Quality Evaluation page lets the user pin
+# every judge call to ONE model so scores stay comparable across runs.
+# "Auto" (no pin) uses the gateway's default Gemini-first routing chain.
+EVALUATION_JUDGE_MODELS: dict[str, str] = {
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
+    "nemotron-3-ultra": "Nemotron 3 Ultra (Ollama)",
+    "gpt-oss-120b": "GPT-OSS 120B (Ollama)",
+}
 # How often the WeeklyEvaluator background thread wakes up to check whether
 # it should run (seconds).  1 hour is plenty — evaluations are weekly.
 EVALUATION_CHECK_INTERVAL_SECONDS: int = 3600

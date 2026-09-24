@@ -32,7 +32,7 @@ Create `.streamlit/secrets.toml`:
 ```toml
 [general]
 OLLAMA_BASE_URL = "https://api.ollama.com"
-OLLAMA_MODEL    = "nemotron-3-super:cloud"
+OLLAMA_MODEL    = "nemotron-3-ultra:cloud"
 OLLAMA_API_KEY  = "your-ollama-api-key"
 GEMINI_API_KEY  = "your-gemini-api-key"
 ```

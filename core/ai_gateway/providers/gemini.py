@@ -29,7 +29,7 @@ class GeminiProvider(ProviderAdapter):
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-3.5-flash",
+        model: str = "gemini-3.8-flash",
         thinking_level: str = "low",
         request_timeout: float = 30.0,
     ):

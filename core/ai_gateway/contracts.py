@@ -50,6 +50,11 @@ class AITaskRequest:
     max_cost: Optional[float] = None
     allow_fallback: bool = True
     allow_deterministic_fallback: bool = True
+    # Optional model-key pin (Model Gateway registry key).  When set and
+    # configured, the gateway routes this request to exactly that model —
+    # no cross-model fallback.  Used by the evaluation judges so a whole
+    # evaluation runs on one user-chosen model.
+    preferred_model: Optional[str] = None
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     metadata: Dict = field(default_factory=dict)
     temperature: float = 0.3

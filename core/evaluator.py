@@ -339,10 +339,16 @@ class GatewayJudgeLLM:
     for a judge verdict is meaningless, so total failure raises
     ``LLMClientError`` and the judges exclude the sample (counted in
     raw_metrics) instead of scoring a fabricated zero.
+
+    ``model_key`` optionally pins the adapter (and everything that shares
+    it, including keyword suggestions) to ONE gateway model for the whole
+    evaluation, so judge scores stay comparable across runs.  ``None``
+    keeps the gateway's default Gemini-first routing chain.
     """
 
-    def __init__(self, label: str = "judge"):
+    def __init__(self, label: str = "judge", model_key: Optional[str] = None):
         self.label = label
+        self.model_key = model_key
 
     def generate(
         self,
@@ -363,6 +369,7 @@ class GatewayJudgeLLM:
             temperature=temperature,
             max_tokens=max_tokens,
             allow_deterministic_fallback=False,
+            preferred_model=self.model_key,
             metadata={"caller": f"evaluator:{self.label}"},
         )
         t0 = time.monotonic()
@@ -1718,9 +1725,14 @@ def _execute_judges_and_build_report(
     lookback_days: int = 7,
     supabase=None,
     judge_selection: str = "all",
+    judge_model: Optional[str] = None,
 ) -> EvaluationReport:
     """Run selected judges (all 7, 3 LLM only, or 4 deterministic only), assemble
     EvaluationReport, and persist results.
+
+    ``judge_model`` optionally pins every LLM judge call to one gateway
+    model (registry key) so scores stay comparable across evaluations;
+    ``None`` uses the gateway's default routing chain.
     """
     quota_exceeded_before = LLMClient.is_quota_exceeded()
     # LLM judges route through the Model Gateway (Gemini-first EVALUATE
@@ -1756,7 +1768,7 @@ def _execute_judges_and_build_report(
     llm: Optional[GatewayJudgeLLM] = None
 
     if llm_enabled:
-        llm = GatewayJudgeLLM()
+        llm = GatewayJudgeLLM(model_key=judge_model)
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
                 executor.submit(
@@ -1840,6 +1852,7 @@ def _execute_judges_and_build_report(
         "classifier_gates": get_latest_gate_stats(),
         "lookback_days": lookback_days,
         "judge_selection": judge_selection,
+        "judge_model": judge_model or "auto",
     }
 
     report = EvaluationReport(
@@ -1953,6 +1966,7 @@ def run_weekly_evaluation(
     lookback_days: int = 7,
     threshold: float = QUALITY_THRESHOLD,
     judge_selection: str = "all",
+    judge_model: Optional[str] = None,
 ) -> EvaluationReport:
     """Run the evaluation for recent runs. Returns an EvaluationReport and persists it to Supabase (if available)."""
     if supabase is None:
@@ -1985,6 +1999,7 @@ def run_weekly_evaluation(
         lookback_days=lookback_days,
         supabase=supabase,
         judge_selection=judge_selection,
+        judge_model=judge_model,
     )
 
 
@@ -1993,10 +2008,11 @@ def run_evaluation_for_runs(
     supabase=None,
     threshold: float = QUALITY_THRESHOLD,
     judge_selection: str = "all",
+    judge_model: Optional[str] = None,
 ) -> EvaluationReport:
     """Run evaluation for a specific set of run_ids (used by tests / page pre-selection)."""
     if not run_ids:
-        return run_weekly_evaluation(supabase=supabase, threshold=threshold, judge_selection=judge_selection)
+        return run_weekly_evaluation(supabase=supabase, threshold=threshold, judge_selection=judge_selection, judge_model=judge_model)
 
     if supabase is None:
         from core.supabase_client import get_supabase_manager
@@ -2030,6 +2046,7 @@ def run_evaluation_for_runs(
         lookback_days=0,
         supabase=supabase,
         judge_selection=judge_selection,
+        judge_model=judge_model,
     )
 
 

@@ -17,19 +17,19 @@ class TestRoutingPolicies:
         """Summarise tasks should default to Ollama (nemotron) as primary."""
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.SUMMARISE)
-        assert policy["primary"] == "nemotron-3-super"
+        assert policy["primary"] == "nemotron-3-ultra"
 
     def test_synthesise_primary_is_ollama(self):
         """Synthesise tasks should default to Ollama as primary."""
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.SYNTHESISE)
-        assert policy["primary"] == "nemotron-3-super"
+        assert policy["primary"] == "nemotron-3-ultra"
 
     def test_project_primary_is_ollama(self):
         """Project tasks should default to Ollama as primary."""
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.PROJECT)
-        assert policy["primary"] == "nemotron-3-super"
+        assert policy["primary"] == "nemotron-3-ultra"
 
     def test_categorise_primary_is_gemini(self):
         """Categorise tasks should keep Gemini flash-lite as primary (lightweight)."""
@@ -48,7 +48,7 @@ class TestRoutingPolicies:
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.SUMMARISE)
         assert "gemini-3.6-flash" in policy["fallback"]
-        assert "gemini-3.5-flash" in policy["fallback"]
+        assert "gemini-3.8-flash" in policy["fallback"]
 
     def test_summarise_ollama_before_gemini(self):
         """Ollama models should come before Gemini in the summarise fallback chain."""
