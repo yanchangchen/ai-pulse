@@ -2042,7 +2042,8 @@ def _execute_judges_and_build_report(
         # Checkpoint the finished report BEFORE attempting the insert —
         # from here on, a database outage is recoverable instead of fatal.
         control.set_final(payload, report.to_dict(), keyword_rows)
-    inserted = insert_quality_evaluation(supabase, payload)
+    _on_db_error = control.set_db_error if control is not None else None
+    inserted = insert_quality_evaluation(supabase, payload, on_error=_on_db_error)
     while inserted is None and control is not None:
         if control.pause_requested:
             control.set_status("paused")
@@ -2054,7 +2055,7 @@ def _execute_judges_and_build_report(
             eval_controller.DB_RETRY_SECONDS,
         )
         time.sleep(eval_controller.DB_RETRY_SECONDS)
-        inserted = insert_quality_evaluation(supabase, payload)
+        inserted = insert_quality_evaluation(supabase, payload, on_error=_on_db_error)
     if inserted:
         report.db_row_id = inserted.get("id")
         logger.info("Persisted quality_evaluations row %s", report.db_row_id)
@@ -2067,6 +2068,7 @@ def _execute_judges_and_build_report(
         except Exception as exc:
             logger.warning("Failed to persist keyword_suggestions: %s", exc)
         if control is not None:
+            control.set_db_error(None)
             control.mark_completed(report.db_row_id)
     elif control is None:
         logger.info("Supabase unavailable; evaluation report not persisted.")
@@ -2113,7 +2115,7 @@ def persist_final_payload(supabase, control: EvalControl) -> Tuple[Dict, Optiona
     payload = control.state.get("final_payload") or {}
     report_dict = control.state.get("final_report") or {}
     keyword_rows = control.state.get("keyword_rows") or []
-    inserted = insert_quality_evaluation(supabase, payload)
+    inserted = insert_quality_evaluation(supabase, payload, on_error=control.set_db_error)
     while inserted is None:
         if control.pause_requested:
             control.set_status("paused")
@@ -2125,7 +2127,7 @@ def persist_final_payload(supabase, control: EvalControl) -> Tuple[Dict, Optiona
             eval_controller.DB_RETRY_SECONDS,
         )
         time.sleep(eval_controller.DB_RETRY_SECONDS)
-        inserted = insert_quality_evaluation(supabase, payload)
+        inserted = insert_quality_evaluation(supabase, payload, on_error=control.set_db_error)
     db_row_id = inserted.get("id")
     logger.info("Persisted quality_evaluations row %s (resumed persist)", db_row_id)
     try:
@@ -2134,6 +2136,7 @@ def persist_final_payload(supabase, control: EvalControl) -> Tuple[Dict, Optiona
             insert_keyword_suggestions(supabase, keyword_rows, evaluation_id=db_row_id)
     except Exception as exc:
         logger.warning("Failed to persist keyword_suggestions: %s", exc)
+    control.set_db_error(None)
     control.mark_completed(db_row_id)
     return report_dict, db_row_id
 

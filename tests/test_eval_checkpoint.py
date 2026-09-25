@@ -338,7 +338,7 @@ class TestPersistRetry:
         control.set_status("running")  # the runner normally does this first
         calls = {"n": 0}
 
-        def _insert(supabase, payload):
+        def _insert(supabase, payload, on_error=None):
             calls["n"] += 1
             # First attempt fails (DB "down"); the pause request lands
             # while the retry loop is waiting for the database.
@@ -384,6 +384,118 @@ class TestPersistRetry:
             report = _execute_judges_and_build_report(**_execute_args())
         assert insert.call_count == 1  # no retry loop without a control
         assert report.db_row_id is None
+
+
+class TestInsertErrorSurfacing:
+    """Fix A: insert failures must carry their actual error message into
+    the awaiting-db state (a schema mismatch previously looked identical
+    to a network blip and retried forever, silently)."""
+
+    def test_on_error_callback_receives_message(self):
+        from core.quality_schema import insert_quality_evaluation
+
+        sb = MagicMock()
+        sb.is_available.return_value = True
+        sb.client.table.side_effect = RuntimeError("PGRST204 column missing")
+        captured = []
+        result = insert_quality_evaluation(sb, {}, on_error=captured.append)
+        assert result is None
+        assert captured == ["PGRST204 column missing"]
+
+    def test_on_error_callback_errors_are_swallowed(self):
+        from core.quality_schema import insert_quality_evaluation
+
+        sb = MagicMock()
+        sb.is_available.return_value = True
+        sb.client.table.side_effect = RuntimeError("boom")
+
+        def bad_cb(msg):
+            raise ValueError("callback itself broke")
+
+        # Must not raise.
+        assert insert_quality_evaluation(sb, {}, on_error=bad_cb) is None
+
+    def test_db_error_recorded_then_cleared(self, _isolated_checkpoint):
+        from core.evaluator import _execute_judges_and_build_report
+
+        control = _control(path=_isolated_checkpoint)
+        control.set_status("running")
+        calls = {"n": 0}
+
+        def _insert(supabase, payload, on_error=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                if on_error:
+                    on_error("PGRST204: no such column")
+                return None
+            return {"id": "row-1"}
+
+        with patch("core.evaluator.insert_quality_evaluation", side_effect=_insert):
+            report = _execute_judges_and_build_report(**_execute_args(), control=control)
+        assert report.db_row_id == "row-1"
+        # Cleared again once the insert succeeds.
+        assert control.state.get("db_error") is None
+
+    def test_db_error_visible_while_awaiting_db(self, _isolated_checkpoint):
+        from core.evaluator import _execute_judges_and_build_report
+
+        control = _control(path=_isolated_checkpoint)
+        control.set_status("running")
+        calls = {"n": 0}
+
+        def _insert(supabase, payload, on_error=None):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                control.request_pause()
+            if on_error:
+                on_error("schema cache miss")
+            return None
+
+        with patch("core.evaluator.insert_quality_evaluation", side_effect=_insert):
+            with pytest.raises(EvaluationPaused):
+                _execute_judges_and_build_report(**_execute_args(), control=control)
+
+        state = load_checkpoint(_isolated_checkpoint)
+        assert state["status"] == "paused"
+        assert state["db_error"] == "schema cache miss"
+
+
+class TestKeywordSuggestionStatus:
+    """Fix C: pending suggestions get applied/dismissed via status updates."""
+
+    def _sb(self, updated=None):
+        sb = MagicMock()
+        sb.is_available.return_value = True
+        sb.client.table.return_value.update.return_value.in_.return_value \
+            .execute.return_value = MagicMock(data=updated or [{"id": "a"}, {"id": "b"}])
+        return sb
+
+    def test_update_returns_row_count(self):
+        from core.quality_schema import update_keyword_suggestion_status
+
+        sb = self._sb(updated=[{"id": "a"}, {"id": "b"}])
+        assert update_keyword_suggestion_status(sb, ["a", "b"], "applied") == 2
+        # The status payload and id filter are passed through.
+        sb.client.table.assert_called_once_with("keyword_suggestions")
+        sb.client.table.return_value.update.assert_called_once_with({"status": "applied"})
+        sb.client.table.return_value.update.return_value.in_.assert_called_once_with("id", ["a", "b"])
+
+    def test_update_unavailable_or_empty(self):
+        from core.quality_schema import update_keyword_suggestion_status
+
+        assert update_keyword_suggestion_status(None, ["a"], "dismissed") == 0
+        sb = self._sb()
+        assert update_keyword_suggestion_status(sb, [], "dismissed") == 0
+        sb.is_available.return_value = False
+        assert update_keyword_suggestion_status(sb, ["a"], "dismissed") == 0
+
+    def test_update_never_raises(self):
+        from core.quality_schema import update_keyword_suggestion_status
+
+        sb = MagicMock()
+        sb.is_available.return_value = True
+        sb.client.table.side_effect = RuntimeError("rls denied")
+        assert update_keyword_suggestion_status(sb, ["a"], "applied") == 0
 
 
 class TestDoubleInsertGuard:

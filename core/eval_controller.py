@@ -226,6 +226,16 @@ class EvalControl:
             self.state["error"] = error
         self.save(force=True)
 
+    def set_db_error(self, msg: Optional[str]) -> None:
+        """Record the last quality_evaluations insert error (surfaced in the
+        awaiting-db banner so a schema mismatch is diagnosable from the UI
+        instead of hiding behind a generic retry loop).  ``None`` clears it.
+        """
+        with self._lock:
+            self.state["db_error"] = msg
+        if msg:
+            self.save(force=True)
+
     def set_final(self, payload: Dict, report_dict: Dict, keyword_rows: List[Dict]) -> None:
         """Persist the finished report BEFORE the Supabase insert is
         attempted — this is what makes "DB down at persist" recoverable."""
@@ -304,6 +314,7 @@ class EvaluationRunner:
                 "counts": control.counts() if control is not None else {},
                 "phase": control.state.get("phase") if control is not None else None,
                 "db_row_id": _EVAL_STATE.get("db_row_id"),
+                "db_error": control.state.get("db_error") if control is not None else None,
                 "report": _EVAL_STATE.get("report"),
             }
 

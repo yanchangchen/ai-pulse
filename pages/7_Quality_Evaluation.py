@@ -158,6 +158,15 @@ def _cached_history(_supabase, limit: int) -> pd.DataFrame:
     from core.evaluator import load_evaluation_history
     return load_evaluation_history(supabase=_supabase, limit=limit)
 
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_pending_suggestions(_supabase, limit: int = 50) -> list:
+    """Pending keyword_suggestions rows (newest first) — the durable copy of
+    what the one-time result panel shows, so suggestions survive restarts."""
+    from core.quality_schema import fetch_recent_keyword_suggestions
+    rows = fetch_recent_keyword_suggestions(_supabase, limit=limit)
+    return [r for r in rows if r.get("status") == "pending"]
+
 with st.spinner("Loading evaluation history…"):
     history_df = _cached_history(supabase, HISTORY_LIMIT)
 
@@ -328,8 +337,10 @@ def _render_evaluation_result(report, events: list) -> None:
             "live progress panel above or the `logs/app.log` file)."
         )
 
-    # Invalidate the history cache so the new row appears immediately.
+    # Invalidate the history cache so the new row appears immediately, and
+    # the pending-suggestions cache (a completed run inserts new rows).
     _cached_history.clear()
+    _cached_pending_suggestions.clear()
 
 # ---------------------------------------------------------------------------
 # Run Evaluation & Settings Control Card
@@ -481,10 +492,14 @@ if runner_status["is_running"]:
     if eff_status == "pausing":
         st.info("⏸ Pausing — the item currently being judged will finish and be saved first…")
     elif eff_status == "awaiting_db":
-        st.warning(
+        db_err = runner_status.get("db_error") or (ckpt or {}).get("db_error")
+        msg = (
             "🗄️ Database unavailable — the finished report is safe on disk and "
             "the final save retries automatically until the database recovers."
         )
+        if db_err:
+            msg += f"\n\nLast insert error: `{db_err}`"
+        st.warning(msg)
     else:
         st.caption(
             "Auto-refreshing every ~2 s while judges run.  Progress is "
@@ -518,6 +533,10 @@ elif runner_status["status"] == "completed":
     ):
         _render_evaluation_result(report, progress_state["events"])
         st.session_state["eval_result_rendered_for"] = report.generated_at
+        # The render cleared the history cache; re-fetch NOW so the
+        # "Latest Scores" section below shows the new row in this same
+        # render instead of one rerun later.
+        history_df = _cached_history(supabase, HISTORY_LIMIT)
 elif ckpt is not None:
     ckpt_status = ckpt.get("status")
     if ckpt_status == "completed":
@@ -569,6 +588,76 @@ elif ckpt is not None:
 
 if runner_status["status"] == "failed" and ckpt is None:
     st.error(f"❌ Evaluation failed: {runner_status.get('error')}")
+
+# ---------------------------------------------------------------------------
+# Pending keyword suggestions (persisted in Supabase — survives restarts)
+# ---------------------------------------------------------------------------
+# The one-time result panel above only lives in the session that ran the
+# evaluation; this standing section re-surfaces every pending suggestion
+# row from the keyword_suggestions table, so nothing is lost across
+# restarts or redeploys.
+_pending_suggestions = _cached_pending_suggestions(supabase)
+if _pending_suggestions:
+    from core.quality_schema import update_keyword_suggestion_status
+
+    st.divider()
+    st.markdown("#### 💡 Pending keyword suggestions")
+    st.caption(
+        "Suggested by past evaluations and classifier runs, stored in "
+        "Supabase so they survive app restarts. Apply adds them to the "
+        "theme's keywords (synced to the custom_keywords table); watchlist "
+        "terms are copy-paste into `watch.md`."
+    )
+    _theme_groups: dict = {}
+    _watch_rows: list = []
+    for _r in _pending_suggestions:
+        if _r.get("kind") == "theme_keyword" and _r.get("theme_name"):
+            _theme_groups.setdefault(_r["theme_name"], []).append(_r)
+        elif _r.get("kind") == "watchlist_term":
+            _watch_rows.append(_r)
+
+    for _theme, _rows in _theme_groups.items():
+        with st.expander(f"📁 {_theme} — {len(_rows)} pending term(s)"):
+            _rows_text = "| term | weight | reason |\n|---|---|---|\n"
+            _kw_payload: dict = {}
+            _ids = [r.get("id") for r in _rows if r.get("id")]
+            for _r in _rows:
+                _term = (_r.get("term") or "").replace("|", "\\|")
+                _weight = int(_r.get("suggested_weight") or 2)
+                _reason = (_r.get("reason") or "").replace("|", "\\|").replace("\n", " ")
+                _rows_text += f"| {_term} | {_weight} | {_reason} |\n"
+                if _r.get("term"):
+                    _kw_payload[_r["term"]] = _weight
+            st.markdown(_rows_text)
+            _bc1, _bc2 = st.columns(2)
+            if _bc1.button(f"⚡ Apply all {len(_rows)} to {_theme}", key=f"btn_pend_apply_{_theme}"):
+                from config.themes import add_keywords_to_theme
+                add_keywords_to_theme(_theme, _kw_payload)
+                update_keyword_suggestion_status(supabase, _ids, "applied")
+                _cached_pending_suggestions.clear()
+                st.toast(f"Applied {len(_kw_payload)} keywords to {_theme}!", icon="⚡")
+                st.rerun()
+            if _bc2.button(f"✖ Dismiss all {len(_rows)}", key=f"btn_pend_dismiss_{_theme}"):
+                update_keyword_suggestion_status(supabase, _ids, "dismissed")
+                _cached_pending_suggestions.clear()
+                st.toast(f"Dismissed {len(_rows)} suggestions for {_theme}.", icon="✖️")
+                st.rerun()
+
+    if _watch_rows:
+        with st.expander(f"📋 {len(_watch_rows)} pending watchlist term(s)"):
+            _rows_text = "| term | reason |\n|---|---|\n"
+            _ids = [r.get("id") for r in _watch_rows if r.get("id")]
+            for _r in _watch_rows:
+                _term = (_r.get("term") or "").replace("|", "\\|")
+                _reason = (_r.get("reason") or "").replace("|", "\\|").replace("\n", " ")
+                _rows_text += f"| {_term} | {_reason} |\n"
+            st.markdown(_rows_text)
+            st.code(_format_watchlist_for_file(_watch_rows), language="text")
+            if st.button(f"✖ Dismiss all {len(_watch_rows)} watchlist terms", key="btn_pend_dismiss_watch"):
+                update_keyword_suggestion_status(supabase, _ids, "dismissed")
+                _cached_pending_suggestions.clear()
+                st.toast(f"Dismissed {len(_watch_rows)} watchlist suggestions.", icon="✖️")
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
