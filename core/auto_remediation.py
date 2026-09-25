@@ -90,7 +90,41 @@ def set_enabled(enabled: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _get_supabase_manager():
+    """Lazy import to avoid circular dependencies."""
+    from core.supabase_client import get_supabase_manager
+    return get_supabase_manager()
+
+
+AUTO_REMEDIATION_STATE_KEY = "auto_remediation_state"
+
+
 def _load_state() -> Dict:
+    """Load the pending-experiment state.
+
+    Supabase app_settings is authoritative when it has a row (that's the
+    copy that survives app restarts and redeploys — the local file alone
+    does not); a remote hit also refreshes the local file so offline runs
+    stay current.  Falls back to the local file when Supabase is
+    unavailable or the app_settings migration hasn't been run.
+    """
+    try:
+        manager = _get_supabase_manager()
+        if manager.is_available():
+            remote = manager.get_app_setting(AUTO_REMEDIATION_STATE_KEY)
+            if isinstance(remote, dict) and remote.get("pending_keyword_applies"):
+                remote.setdefault("pending_keyword_applies", {})
+                try:
+                    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    STATE_FILE.write_text(
+                        json.dumps(remote, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass  # local cache refresh is best-effort
+                return remote
+    except Exception as exc:  # noqa: BLE001 — state loading must never break evaluation
+        logger.warning("Failed to load auto-remediation state from Supabase: %s", exc)
     try:
         if STATE_FILE.exists():
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -103,6 +137,8 @@ def _load_state() -> Dict:
 
 
 def _save_state(state: Dict) -> None:
+    """Write the state to the local file AND Supabase app_settings
+    (write-through — the remote copy is what survives redeploys)."""
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         STATE_FILE.write_text(
@@ -110,6 +146,12 @@ def _save_state(state: Dict) -> None:
         )
     except OSError as exc:
         logger.warning("Could not persist auto-remediation state: %s", exc)
+    try:
+        manager = _get_supabase_manager()
+        if manager.is_available():
+            manager.upsert_app_setting(AUTO_REMEDIATION_STATE_KEY, state)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not sync auto-remediation state to Supabase: %s", exc)
 
 
 # ---------------------------------------------------------------------------
