@@ -7,10 +7,8 @@ LLM judge agents and sub-millisecond deterministic checkers in core/evaluator.py
 
 from __future__ import annotations
 
-import threading
 import time
 from datetime import datetime
-from queue import Empty as QueueEmpty, Queue
 
 import streamlit as st
 import pandas as pd
@@ -22,10 +20,8 @@ from config.themes import THEME_ORDER
 from core.supabase_client import get_supabase_manager
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
-from core.evaluator import (
-    consume_judge_events,
-    reset_judge_events,
-)
+from core.eval_controller import EvaluationRunner, load_checkpoint
+from core.evaluator import consume_judge_events
 
 from core.design_system import apply_design_system
 
@@ -165,6 +161,176 @@ def _cached_history(_supabase, limit: int) -> pd.DataFrame:
 with st.spinner("Loading evaluation history…"):
     history_df = _cached_history(supabase, HISTORY_LIMIT)
 
+
+def _render_evaluation_result(report, events: list) -> None:
+    """Render a completed evaluation: success banner, classification gate
+    waterfall, recommendations, auto-remediation log, keyword suggestions,
+    and the history-cache invalidation.  Works for both a fresh run (report
+    object in memory) and a resumed persist (report rebuilt from the
+    checkpoint — events may then be empty)."""
+    llm_calls = sum(1 for e in events if e["judge"] != "uniqueness" or e.get("latency_ms", 0) > 0)
+    parse_fail = sum(1 for e in events if not e.get("parse_ok"))
+    latencies = [e["latency_ms"] for e in events if e.get("latency_ms", 0) > 0]
+    mean_lat = int(sum(latencies) / len(latencies)) if latencies else 0
+    raw_m = getattr(report, "raw_metrics", {}) or {}
+    judge_mode = raw_m.get("judge_selection", "all")
+
+    if judge_mode == "deterministic":
+        st.success(
+            f"✅ Evaluation complete (4 Deterministic Judges Only) — "
+            f"grounding {report.grounding_score:.0%}, "
+            f"structural compliance {report.structural_compliance_score:.0%}, "
+            f"coverage {report.coverage_score:.0%}, "
+            f"temporal coherence {report.temporal_coherence_score:.0%}."
+        )
+    elif judge_mode == "llm":
+        st.success(
+            f"✅ Evaluation complete (3 LLM Judges Only) — "
+            f"classifier {report.classifier_score:.0%}, "
+            f"faithfulness {report.faithfulness_score:.0%}, "
+            f"uniqueness {report.uniqueness_score:.0%}."
+        )
+    else:
+        st.success(
+            f"✅ Evaluation complete (All 7 Judges) — "
+            f"classifier {report.classifier_score:.0%}, "
+            f"faithfulness {report.faithfulness_score:.0%}, "
+            f"uniqueness {report.uniqueness_score:.0%}, "
+            f"grounding {report.grounding_score:.0%}, "
+            f"coverage {report.coverage_score:.0%}."
+        )
+
+    judge_model_used = raw_m.get("judge_model", "auto")
+    model_note = (
+        f" • judge model: {judge_model_used}"
+        if judge_mode != "deterministic" else ""
+    )
+    st.caption(
+        f"Judge events: {len(events)} • LLM calls: ~{llm_calls} • "
+        f"parse failures: {parse_fail} • mean latency: {mean_lat} ms"
+        f"{model_note}"
+    )
+
+    # Render Classification Waterfall Gate Breakdown
+    gates = raw_m.get("classifier_gates")
+    if not gates:
+        from core.classifier import get_latest_gate_stats
+        gates = get_latest_gate_stats()
+
+    if isinstance(gates, dict) and gates.get("total", 0) > 0:
+        tot = gates["total"]
+        p1 = gates.get("gate_1_keyword", 0)
+        p2 = gates.get("gate_2_tfidf", 0)
+        # NB: the classifier emits "gate_3_llm" (renamed from
+        # gate_3_ollama in e1b7a7d) — reading the old key silently
+        # rendered Pass 3 as 0.
+        p3 = gates.get("gate_3_llm", 0)
+        p4 = gates.get("gate_4_heuristic", 0)
+
+        st.markdown("##### 🚪 Classification Pipeline Gate Breakdown")
+        gc1, gc2, gc3, gc4 = st.columns(4)
+        gc1.metric("Pass 1: Keyword", f"{p1}/{tot}", f"{p1/tot:.0%}" if tot else "0%")
+        gc2.metric("Pass 2: TF-IDF", f"{p2}/{tot}", f"{p2/tot:.0%}" if tot else "0%")
+        gc3.metric("Pass 3: LLM", f"{p3}/{tot}", f"{p3/tot:.0%}" if tot else "0%")
+        gc4.metric("Pass 4: Heuristic", f"{p4}/{tot}", f"{p4/tot:.0%}" if tot else "0%")
+    if report.recommendations:
+        for rec in report.recommendations:
+            if rec.startswith("⚠️"):
+                st.warning(rec)
+            else:
+                st.success(rec)
+
+    # Auto-remediation actions taken during this evaluation (opt-in).
+    rem = (getattr(report, "raw_metrics", {}) or {}).get("auto_remediation") or {}
+    if rem.get("applied") or rem.get("rolled_back"):
+        st.markdown("#### 🤖 Auto-remediation actions")
+        for a in rem.get("rolled_back", []):
+            st.warning(
+                f"↩️ Rolled back **{len(a.get('terms', []))} keyword(s)** for "
+                f"**{a.get('theme')}** — score {a.get('current_score', 0):.0%} fell below "
+                f"baseline {a.get('baseline_score', 0):.0%}: "
+                f"`{', '.join(a.get('terms', []))}`"
+            )
+        for a in rem.get("applied", []):
+            if a.get("action") == "apply_keywords":
+                terms = a.get("terms", {})
+                st.info(
+                    f"⚡ Applied **{len(terms)} keyword(s)** to **{a.get('theme')}** "
+                    f"(baseline {a.get('baseline_score', 0):.0%}, will roll back if the "
+                    f"score drops next evaluation): "
+                    f"`{', '.join(f'{t} (wt {w})' for t, w in terms.items())}`"
+                )
+            elif a.get("action") == "tune_summariser_faithfulness":
+                st.info(
+                    f"⚙️ Faithfulness remedy (score {a.get('trigger_score', 0):.0%}): "
+                    f"strict grounding → **{a['new']['strict_faithfulness_mode']}**, "
+                    f"temperature → **{a['new']['temperature']}**"
+                )
+            elif a.get("action") == "raise_max_tokens":
+                st.info(
+                    f"⚙️ Coverage remedy (score {a.get('trigger_score', 0):.0%}): "
+                    f"max tokens {a['previous']['max_tokens']} → "
+                    f"**{a['new']['max_tokens']}**"
+                )
+
+    kw = getattr(report, "keyword_suggestions", None)
+    if isinstance(kw, dict) and (
+        kw.get("theme_suggestions") or kw.get("watchlist_suggestions")
+    ):
+        st.markdown("#### 🧠 Suggested theme keywords")
+        theme_map = kw.get("theme_suggestions") or {}
+        for theme, items in theme_map.items():
+            if not items:
+                continue
+            with st.expander(f"📁 {theme} — {len(items)} new keyword(s)", expanded=True):
+                rows_text = "| term | weight | reason |\n|---|---|---|\n"
+                kw_payload = {}
+                for it in items:
+                    term = (it.get("term") or "").replace("|", "\\|")
+                    weight = int(it.get("weight") or 2)
+                    reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
+                    rows_text += f"| {term} | {weight} | {reason} |\n"
+                    if it.get("term"):
+                        kw_payload[it["term"]] = weight
+                st.markdown(rows_text)
+
+                if st.button(f"⚡ Apply all {len(items)} suggested keywords to {theme}", key=f"btn_apply_kw_{theme}"):
+                    from config.themes import add_keywords_to_theme
+                    add_keywords_to_theme(theme, kw_payload)
+                    st.toast(f"Applied {len(items)} keywords to {theme}!", icon="⚡")
+                    st.success(f"Successfully added {len(items)} keywords to **{theme}** and persisted to custom keywords!")
+                    st.rerun()
+
+                st.code(
+                    _format_theme_suggestion_for_file(theme, items),
+                    language="text",
+                )
+        st.markdown("#### 📡 Suggested watchlist terms")
+        watch = kw.get("watchlist_suggestions") or []
+        if watch:
+            with st.expander(f"📋 {len(watch)} new watchlist term(s)", expanded=True):
+                rows_text = "| term | reason |\n|---|---|\n"
+                for it in watch:
+                    term = (it.get("term") or "").replace("|", "\\|")
+                    reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
+                    rows_text += f"| {term} | {reason} |\n"
+                st.markdown(rows_text)
+                st.code(
+                    _format_watchlist_for_file(watch),
+                    language="text",
+                )
+        else:
+            st.info("No new watchlist terms were suggested.")
+    elif isinstance(kw, dict):
+        st.caption(
+            "ℹ️ No keyword or watchlist suggestions were produced (the "
+            "LLM judges may have returned empty responses — check the "
+            "live progress panel above or the `logs/app.log` file)."
+        )
+
+    # Invalidate the history cache so the new row appears immediately.
+    _cached_history.clear()
+
 # ---------------------------------------------------------------------------
 # Run Evaluation & Settings Control Card
 # ---------------------------------------------------------------------------
@@ -249,322 +415,161 @@ if _auto_on != _auto_rem_enabled():
     st.toast("Auto-remediation " + ("enabled" if _auto_on else "disabled"), icon="🤖")
 
 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
+# Run / pause / resume controls.  The worker thread lives in
+# core.eval_controller.EvaluationRunner and survives page navigation and
+# reruns — this page just reattaches to its status on every rerun.
+# ---------------------------------------------------------------------------
+runner_status = EvaluationRunner.get_status()
+ckpt = load_checkpoint()
+
+run_label = f"🚀 Run Evaluation Now ({judge_selection_label})"
+if ckpt is not None and ckpt.get("status") != "completed":
+    run_label += " — discards paused run"
 run_now = st.button(
-    f"🚀 Run Evaluation Now ({judge_selection_label})",
+    run_label,
     type="primary",
     width="stretch",
     key="run_quality_eval_btn",
 )
 
 if run_now:
-    # ------------------------------------------------------------------
-    # Live progress panel for the running evaluation
-    # ------------------------------------------------------------------
-    reset_judge_events()
-    progress_state = st.session_state.setdefault("eval_progress", {
-        "running": False,
-        "error": None,
-        "report": None,
-        "events": [],
-    })
-    progress_state.update({"running": True, "error": None, "report": None, "events": []})
-
-    # Thread-safe handoff: worker puts (kind, payload) tuples here;
-    # main thread drains at the end.
-    result_queue: Queue = Queue(maxsize=4)
-    completion_event = threading.Event()
-
-    from core.evaluator import run_weekly_evaluation
-
-    def _run_eval() -> None:
-        try:
-            report = run_weekly_evaluation(
-                supabase=supabase,
-                lookback_days=lookback_days,
-                threshold=threshold,
-                judge_selection=judge_selection,
-                judge_model=judge_model,
-            )
-            if report is None:
-                result_queue.put(("error", "run_weekly_evaluation returned None"))
-            else:
-                result_queue.put(("ok", report))
-        except Exception as exc:  # noqa: BLE001
-            result_queue.put(("error", str(exc)))
-        finally:
-            completion_event.set()
-
-    eval_thread = threading.Thread(target=_run_eval, name="quality-eval-page", daemon=True)
-    eval_thread.start()
-
-    panel = st.container()
-    with panel:
-        st.markdown("#### 🔍 Live Judge Progress")
-        col_cat, col_faith, col_uniq = st.columns(3)
-        cat_box = col_cat.empty()
-        faith_box = col_faith.empty()
-        uniq_box = col_uniq.empty()
-        table_placeholder = st.empty()
-        summary_placeholder = st.empty()
-        st.caption("Auto-refreshing every ~500 ms while judges run.")
-
-    # Poll loop.  Streamlit lets a script run for a few minutes here as
-    # long as it yields via time.sleep.  We cap the loop at 10 minutes
-    # so a hung LLM can't pin the page forever.
-    loop_deadline = time.monotonic() + 600
-    last_render = 0.0
-    while progress_state["running"] and time.monotonic() < loop_deadline:
-        events = consume_judge_events()
-        if events:
-            progress_state["events"].extend(events)
-            # Keep only the most recent 200 in session to bound memory.
-            progress_state["events"] = progress_state["events"][-200:]
-
-        # If the worker has signalled completion we can stop polling
-        # early.  We still keep the running flag as a defensive check
-        # in case the queue/Event race with the dict update.
-        if completion_event.is_set():
-            break
-
-        now = time.monotonic()
-        if now - last_render >= 0.4:
-            last_render = now
-            evs = progress_state["events"]
-            # Per-judge counts
-            cat_events = [e for e in evs if e["judge"] == "categoriser"]
-            faith_events = [e for e in evs if e["judge"] == "faithfulness"]
-            uniq_events = [e for e in evs if e["judge"] == "uniqueness"]
-
-            def _render_judge(box, name: str, items: list, score_attr: str = "score") -> None:
-                done = len(items)
-                ok = sum(1 for i in items if i.get("parse_ok"))
-                scores = [i["score"] for i in items if i.get("score") is not None]
-                mean_s = sum(scores) / len(scores) if scores else 0.0
-                lat = [i["latency_ms"] for i in items if i.get("latency_ms")]
-                mean_lat = sum(lat) / len(lat) if lat else 0
-                with box.container():
-                    st.metric(name, f"{done} done", delta=f"ok {ok}/{done}")
-                    st.progress(min(1.0, done / max(1, 20)))
-                    st.caption(
-                        f"mean score {mean_s:.2f} • mean latency {int(mean_lat)} ms"
-                    )
-
-            _render_judge(cat_box, "Categoriser", cat_events)
-            _render_judge(faith_box, "Faithfulness", faith_events)
-            _render_judge(uniq_box, "Uniqueness", uniq_events)
-
-            recent = evs[-50:]
-            if recent:
-                df = pd.DataFrame(recent)
-                df["ts"] = pd.to_datetime(df["ts"], unit="s").dt.strftime("%H:%M:%S")
-                df = df[["ts", "judge", "run_id", "item_id", "latency_ms", "parse_ok", "score"]]
-                table_placeholder.dataframe(df, hide_index=True, width="stretch")
-        time.sleep(0.25)
-
-    # Final drain of any events that arrived between the last render and
-    # the worker finishing.
-    final_events = consume_judge_events()
-    if final_events:
-        progress_state["events"].extend(final_events)
-        progress_state["events"] = progress_state["events"][-200:]
-
-    # Wait for the worker to actually finish (bounded).  Once
-    # completion_event is set, the result_queue holds the worker's
-    # verdict and the worker's writes are visible to this thread.
-    completion_event.wait(timeout=10.0)
-    eval_thread.join(timeout=2.0)
-
-    # Drain the thread-safe result queue and persist into progress_state
-    # for downstream rendering.  ``progress_state["report"]`` /
-    # ``progress_state["error"]`` are now read-after-write from a single
-    # thread (this one) so the None race is gone.
-    worker_error = None  # type: ignore[var-annotated]
-    worker_report = None
-    try:
-        kind, payload = result_queue.get_nowait()
-    except QueueEmpty:
-        kind, payload = ("error", "Evaluation timed out before the worker could report a result.")
-    if kind == "ok":
-        worker_report = payload
-        progress_state["report"] = payload
-        progress_state["error"] = None
+    if EvaluationRunner.is_running():
+        st.toast("An evaluation is already running.", icon="⏳")
     else:
-        worker_error = payload
-        progress_state["error"] = payload
-        progress_state["report"] = None
-    progress_state["running"] = False
+        started = EvaluationRunner.start(
+            {
+                "run_ids": [],
+                "lookback_days": lookback_days,
+                "threshold": threshold,
+                "judge_selection": judge_selection,
+                "judge_model": judge_model,
+            },
+            supabase=supabase,
+        )
+        if not started:
+            st.error("Could not start the evaluation (see status above).")
+        else:
+            st.session_state["eval_progress"] = {"events": []}
+            st.session_state["eval_result_rendered_for"] = None
+    st.rerun()
 
-    if worker_error:
-        st.error(f"❌ Evaluation failed: {worker_error}")
-    elif worker_report is None:
-        st.error("❌ Evaluation failed: No evaluation report was generated.")
+progress_state = st.session_state.setdefault("eval_progress", {"events": []})
+
+
+def _render_judge(col, name: str, items: list) -> None:
+    done = len(items)
+    ok = sum(1 for i in items if i.get("parse_ok"))
+    scores = [i["score"] for i in items if i.get("score") is not None]
+    mean_s = sum(scores) / len(scores) if scores else 0.0
+    lat = [i["latency_ms"] for i in items if i.get("latency_ms")]
+    mean_lat = sum(lat) / len(lat) if lat else 0
+    with col:
+        st.metric(name, f"{done} done", delta=f"ok {ok}/{done}")
+        st.progress(min(1.0, done / max(1, 20)))
+        st.caption(f"mean score {mean_s:.2f} • mean latency {int(mean_lat)} ms")
+
+
+if runner_status["is_running"]:
+    # --- Live progress panel (reattaches on every rerun) ---
+    events = consume_judge_events()
+    if events:
+        progress_state["events"] = (progress_state["events"] + events)[-200:]
+    evs = progress_state["events"]
+
+    eff_status = runner_status["status"]
+    if eff_status == "pausing":
+        st.info("⏸ Pausing — the item currently being judged will finish and be saved first…")
+    elif eff_status == "awaiting_db":
+        st.warning(
+            "🗄️ Database unavailable — the finished report is safe on disk and "
+            "the final save retries automatically until the database recovers."
+        )
     else:
-        report = worker_report
-        with summary_placeholder.container():
-            evs = progress_state["events"]
-            llm_calls = sum(1 for e in evs if e["judge"] != "uniqueness" or e.get("latency_ms", 0) > 0)
-            parse_fail = sum(1 for e in evs if not e.get("parse_ok"))
-            latencies = [e["latency_ms"] for e in evs if e.get("latency_ms", 0) > 0]
-            mean_lat = int(sum(latencies) / len(latencies)) if latencies else 0
-            raw_m = getattr(report, "raw_metrics", {}) or {}
-            judge_mode = raw_m.get("judge_selection", "all")
+        st.caption(
+            "Auto-refreshing every ~2 s while judges run.  Progress is "
+            "checkpointed — you can leave this page and come back."
+        )
 
-            if judge_mode == "deterministic":
-                st.success(
-                    f"✅ Evaluation complete (4 Deterministic Judges Only) — "
-                    f"grounding {report.grounding_score:.0%}, "
-                    f"structural compliance {report.structural_compliance_score:.0%}, "
-                    f"coverage {report.coverage_score:.0%}, "
-                    f"temporal coherence {report.temporal_coherence_score:.0%}."
-                )
-            elif judge_mode == "llm":
-                st.success(
-                    f"✅ Evaluation complete (3 LLM Judges Only) — "
-                    f"classifier {report.classifier_score:.0%}, "
-                    f"faithfulness {report.faithfulness_score:.0%}, "
-                    f"uniqueness {report.uniqueness_score:.0%}."
-                )
-            else:
-                st.success(
-                    f"✅ Evaluation complete (All 7 Judges) — "
-                    f"classifier {report.classifier_score:.0%}, "
-                    f"faithfulness {report.faithfulness_score:.0%}, "
-                    f"uniqueness {report.uniqueness_score:.0%}, "
-                    f"grounding {report.grounding_score:.0%}, "
-                    f"coverage {report.coverage_score:.0%}."
-                )
+    st.markdown("#### 🔍 Live Judge Progress")
+    col_cat, col_faith, col_uniq = st.columns(3)
+    _render_judge(col_cat, "Categoriser", [e for e in evs if e["judge"] == "categoriser"])
+    _render_judge(col_faith, "Faithfulness", [e for e in evs if e["judge"] == "faithfulness"])
+    _render_judge(col_uniq, "Uniqueness", [e for e in evs if e["judge"] == "uniqueness"])
+    recent = evs[-50:]
+    if recent:
+        df = pd.DataFrame(recent)
+        df["ts"] = pd.to_datetime(df["ts"], unit="s").dt.strftime("%H:%M:%S")
+        df = df[["ts", "judge", "run_id", "item_id", "latency_ms", "parse_ok", "score"]]
+        st.dataframe(df, hide_index=True, width="stretch")
 
-            judge_model_used = raw_m.get("judge_model", "auto")
-            model_note = (
-                f" • judge model: {judge_model_used}"
-                if judge_mode != "deterministic" else ""
-            )
-            st.caption(
-                f"Judge events: {len(evs)} • LLM calls: ~{llm_calls} • "
-                f"parse failures: {parse_fail} • mean latency: {mean_lat} ms"
-                f"{model_note}"
-            )
+    if st.button("⏸ Pause Evaluation", key="btn_pause_eval"):
+        EvaluationRunner.request_pause()
+        st.toast("Pause requested — finishing the current item…", icon="⏸️")
+    # Rerun-based refresh loop: re-renders every ~2 s so the Pause button
+    # stays clickable (a blocking poll loop would freeze all widgets).
+    time.sleep(2)
+    st.rerun()
+elif runner_status["status"] == "completed":
+    report = runner_status.get("report")
+    if (
+        report is not None
+        and st.session_state.get("eval_result_rendered_for") != report.generated_at
+    ):
+        _render_evaluation_result(report, progress_state["events"])
+        st.session_state["eval_result_rendered_for"] = report.generated_at
+elif ckpt is not None:
+    ckpt_status = ckpt.get("status")
+    if ckpt_status == "completed":
+        st.success(
+            f"✅ The last evaluation was saved to Supabase "
+            f"(row {ckpt.get('db_row_id')})."
+        )
+        if st.button("🗑 Clear note", key="btn_clear_completed"):
+            EvaluationRunner.discard()
+            st.rerun()
+    else:
+        # Paused, interrupted (checkpoint "running" with no live thread =
+        # process restart mid-run), or left waiting on the database.
+        done = sum(
+            sum(len(items) for items in runs.values())
+            for runs in (ckpt.get("item_results") or {}).values()
+        )
+        cfg = ckpt.get("config") or {}
+        phase = ckpt.get("phase") or "judges"
+        phase_label = {
+            "judges": "LLM judges", "keywords": "keyword suggestions",
+            "persist": "final save",
+        }.get(phase, phase)
+        if ckpt_status == "running":
+            title = "⚡ Interrupted evaluation found (the app restarted mid-run)."
+        elif ckpt_status == "awaiting_db":
+            title = "🗄️ Paused while waiting for the database to recover."
+        else:
+            title = "⏸ Paused evaluation found."
+        st.warning(
+            f"{title}  **{done} item(s)** already judged ({phase_label} phase). "
+            f"Resuming continues with the original settings — lookback "
+            f"{cfg.get('lookback_days')} day(s), judges "
+            f"“{cfg.get('judge_selection')}”, model "
+            f"{cfg.get('judge_model') or 'auto'} — and re-judges only what "
+            f"isn't already checkpointed."
+        )
+        err = ckpt.get("error")
+        if err:
+            st.error(f"The previous attempt failed: {err}")
+        rc1, rc2 = st.columns(2)
+        if rc1.button("▶ Resume Evaluation", key="btn_resume_eval", type="primary", width="stretch"):
+            if EvaluationRunner.resume(supabase=supabase):
+                st.session_state["eval_progress"] = {"events": []}
+                st.rerun()
+        if rc2.button("🗑 Discard Paused Run", key="btn_discard_eval", width="stretch"):
+            EvaluationRunner.discard()
+            st.rerun()
 
-            # Render Classification Waterfall Gate Breakdown
-            raw_m = getattr(report, "raw_metrics", {}) or {}
-            gates = raw_m.get("classifier_gates")
-            if not gates:
-                from core.classifier import get_latest_gate_stats
-                gates = get_latest_gate_stats()
+if runner_status["status"] == "failed" and ckpt is None:
+    st.error(f"❌ Evaluation failed: {runner_status.get('error')}")
 
-            if isinstance(gates, dict) and gates.get("total", 0) > 0:
-                tot = gates["total"]
-                p1 = gates.get("gate_1_keyword", 0)
-                p2 = gates.get("gate_2_tfidf", 0)
-                # NB: the classifier emits "gate_3_llm" (renamed from
-                # gate_3_ollama in e1b7a7d) — reading the old key silently
-                # rendered Pass 3 as 0.
-                p3 = gates.get("gate_3_llm", 0)
-                p4 = gates.get("gate_4_heuristic", 0)
-
-                st.markdown("##### 🚪 Classification Pipeline Gate Breakdown")
-                gc1, gc2, gc3, gc4 = st.columns(4)
-                gc1.metric("Pass 1: Keyword", f"{p1}/{tot}", f"{p1/tot:.0%}" if tot else "0%")
-                gc2.metric("Pass 2: TF-IDF", f"{p2}/{tot}", f"{p2/tot:.0%}" if tot else "0%")
-                gc3.metric("Pass 3: LLM", f"{p3}/{tot}", f"{p3/tot:.0%}" if tot else "0%")
-                gc4.metric("Pass 4: Heuristic", f"{p4}/{tot}", f"{p4/tot:.0%}" if tot else "0%")
-        if report.recommendations:
-            for rec in report.recommendations:
-                if rec.startswith("⚠️"):
-                    st.warning(rec)
-                else:
-                    st.success(rec)
-
-        # Auto-remediation actions taken during this evaluation (opt-in).
-        rem = (getattr(report, "raw_metrics", {}) or {}).get("auto_remediation") or {}
-        if rem.get("applied") or rem.get("rolled_back"):
-            st.markdown("#### 🤖 Auto-remediation actions")
-            for a in rem.get("rolled_back", []):
-                st.warning(
-                    f"↩️ Rolled back **{len(a.get('terms', []))} keyword(s)** for "
-                    f"**{a.get('theme')}** — score {a.get('current_score', 0):.0%} fell below "
-                    f"baseline {a.get('baseline_score', 0):.0%}: "
-                    f"`{', '.join(a.get('terms', []))}`"
-                )
-            for a in rem.get("applied", []):
-                if a.get("action") == "apply_keywords":
-                    terms = a.get("terms", {})
-                    st.info(
-                        f"⚡ Applied **{len(terms)} keyword(s)** to **{a.get('theme')}** "
-                        f"(baseline {a.get('baseline_score', 0):.0%}, will roll back if the "
-                        f"score drops next evaluation): "
-                        f"`{', '.join(f'{t} (wt {w})' for t, w in terms.items())}`"
-                    )
-                elif a.get("action") == "tune_summariser_faithfulness":
-                    st.info(
-                        f"⚙️ Faithfulness remedy (score {a.get('trigger_score', 0):.0%}): "
-                        f"strict grounding → **{a['new']['strict_faithfulness_mode']}**, "
-                        f"temperature → **{a['new']['temperature']}**"
-                    )
-                elif a.get("action") == "raise_max_tokens":
-                    st.info(
-                        f"⚙️ Coverage remedy (score {a.get('trigger_score', 0):.0%}): "
-                        f"max tokens {a['previous']['max_tokens']} → "
-                        f"**{a['new']['max_tokens']}**"
-                    )
-
-        kw = getattr(report, "keyword_suggestions", None)
-        if isinstance(kw, dict) and (
-            kw.get("theme_suggestions") or kw.get("watchlist_suggestions")
-        ):
-            st.markdown("#### 🧠 Suggested theme keywords")
-            theme_map = kw.get("theme_suggestions") or {}
-            for theme, items in theme_map.items():
-                if not items:
-                    continue
-                with st.expander(f"📁 {theme} — {len(items)} new keyword(s)", expanded=True):
-                    rows_text = "| term | weight | reason |\n|---|---|---|\n"
-                    kw_payload = {}
-                    for it in items:
-                        term = (it.get("term") or "").replace("|", "\\|")
-                        weight = int(it.get("weight") or 2)
-                        reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
-                        rows_text += f"| {term} | {weight} | {reason} |\n"
-                        if it.get("term"):
-                            kw_payload[it["term"]] = weight
-                    st.markdown(rows_text)
-
-                    if st.button(f"⚡ Apply all {len(items)} suggested keywords to {theme}", key=f"btn_apply_kw_{theme}"):
-                        from config.themes import add_keywords_to_theme
-                        add_keywords_to_theme(theme, kw_payload)
-                        st.toast(f"Applied {len(items)} keywords to {theme}!", icon="⚡")
-                        st.success(f"Successfully added {len(items)} keywords to **{theme}** and persisted to custom keywords!")
-                        st.rerun()
-
-                    st.code(
-                        _format_theme_suggestion_for_file(theme, items),
-                        language="text",
-                    )
-            st.markdown("#### 📡 Suggested watchlist terms")
-            watch = kw.get("watchlist_suggestions") or []
-            if watch:
-                with st.expander(f"📋 {len(watch)} new watchlist term(s)", expanded=True):
-                    rows_text = "| term | reason |\n|---|---|\n"
-                    for it in watch:
-                        term = (it.get("term") or "").replace("|", "\\|")
-                        reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
-                        rows_text += f"| {term} | {reason} |\n"
-                    st.markdown(rows_text)
-                    st.code(
-                        _format_watchlist_for_file(watch),
-                        language="text",
-                    )
-            else:
-                st.info("No new watchlist terms were suggested.")
-        elif isinstance(kw, dict):
-            st.caption(
-                "ℹ️ No keyword or watchlist suggestions were produced (the "
-                "LLM judges may have returned empty responses — check the "
-                "live progress panel above or the `logs/app.log` file)."
-            )
-
-        # Invalidate the history cache so the new row appears immediately.
-        _cached_history.clear()
 
 # ---------------------------------------------------------------------------
 # Latest scores

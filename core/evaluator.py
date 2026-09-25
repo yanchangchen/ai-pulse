@@ -53,6 +53,8 @@ from config.settings import (
     EVAL_FAITHFULNESS_SKIP_STRINGS,
 )
 from config.themes import THEMES, THEME_ORDER
+from core import eval_controller
+from core.eval_controller import EvalControl, EvaluationPaused
 from core.llm_client import LLMClient, LLMClientError
 from core.quality_schema import insert_quality_evaluation
 
@@ -221,6 +223,21 @@ class EvaluationReport:
         d["generated_at"] = self.generated_at.isoformat()
         return d
 
+    @classmethod
+    def from_dict(cls, d: Dict) -> "EvaluationReport":
+        """Rebuild a report from ``to_dict()`` output (used to render a
+        resumed evaluation whose report only exists in the checkpoint)."""
+        d = dict(d)
+        generated_at = d.get("generated_at")
+        if isinstance(generated_at, str):
+            try:
+                d["generated_at"] = datetime.fromisoformat(generated_at)
+            except ValueError:
+                d["generated_at"] = datetime.now(timezone.utc)
+        elif not isinstance(generated_at, datetime):
+            d["generated_at"] = datetime.now(timezone.utc)
+        return cls(**d)
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -271,13 +288,19 @@ def _load_recent_runs(supabase, lookback_days: int) -> List[Dict]:
 
 
 def _load_articles_for_run(supabase, run_id: str) -> List[Dict]:
-    """Return articles for a single run, with theme_name / title / summary."""
+    """Return articles for a single run, with theme_name / title / summary.
+
+    Sorted by id: the query has no ORDER BY, so PostgREST order is
+    unspecified — and the categoriser's stratified sample depends on list
+    order.  Sorting makes the sample deterministic across the reloads that
+    a paused/resumed evaluation performs.
+    """
     try:
         resp = supabase.client.table("articles") \
             .select("id, theme_name, title, summary") \
             .eq("run_id", run_id) \
             .execute()
-        return resp.data or []
+        return sorted(resp.data or [], key=lambda a: str(a.get("id", "")))
     except Exception as exc:
         logger.warning("Failed to load articles for run %s: %s", run_id, exc)
         return []
@@ -703,6 +726,8 @@ def _judge_single_classification(
 def categoriser_judge(
     llm: LLMClient,
     articles_by_run: Dict[str, List[Dict]],
+    *,
+    control: Optional[EvalControl] = None,
 ) -> Tuple[float, Dict[str, float], Dict]:
     """Score classifier accuracy across all sampled articles.  Returns
     (overall_score, per_theme_scores, raw_metrics).
@@ -712,6 +737,11 @@ def categoriser_judge(
     ``raw["infra_errors"]`` / ``raw["unmatched"]``.  If NO sample could
     be judged, the judge is marked ``skipped`` so the placeholder score
     is never mistaken for a real result.
+
+    With a ``control`` (Quality Evaluation pause/resume): items already
+    in the checkpoint replay from cache with no LLM call; a pause request
+    raises ``EvaluationPaused`` at the next item boundary; only successful
+    judgments are checkpointed (failures retry on resume).
     """
     all_correct: List[bool] = []
     infra_errors = 0
@@ -726,14 +756,30 @@ def categoriser_judge(
         run_correct = 0
         run_judged = 0
         for art in sample:
+            if control is not None and control.pause_requested:
+                raise EvaluationPaused("categoriser")
             attempted += 1
-            correct, predicted, failure = _judge_single_classification(llm, art)
-            if correct is None:
-                if failure == "infra_error":
-                    infra_errors += 1
-                else:
-                    unmatched += 1
-                continue
+            article_id = str(art.get("id", ""))
+            cached = control.get("categoriser", run_id, article_id) if control else None
+            if cached is not None:
+                correct, predicted = bool(cached["correct"]), cached.get("predicted", "")
+                _record_event(
+                    judge="categoriser", run_id=run_id, item_id=article_id,
+                    latency_ms=0, parse_ok=True, score=1.0 if correct else 0.0,
+                )
+            else:
+                correct, predicted, failure = _judge_single_classification(llm, art)
+                if correct is None:
+                    # Not checkpointed — a failed item is retried on resume
+                    # rather than permanently excluded.
+                    if failure == "infra_error":
+                        infra_errors += 1
+                    else:
+                        unmatched += 1
+                    continue
+                if control is not None:
+                    control.record("categoriser", run_id, article_id,
+                                   {"correct": correct, "predicted": predicted})
             all_correct.append(correct)
             run_judged += 1
             theme = art.get("theme_name", "_unknown")
@@ -902,6 +948,8 @@ def faithfulness_judge(
     llm: LLMClient,
     summaries_by_run: Dict[str, Dict[str, Dict]],
     articles_by_run: Dict[str, List[Dict]],
+    *,
+    control: Optional[EvalControl] = None,
 ) -> Tuple[float, Dict]:
     """Score summary faithfulness across all runs.  Returns (overall, raw).
 
@@ -912,6 +960,9 @@ def faithfulness_judge(
     excluded and counted in ``raw["infra_errors"]`` /
     ``raw["parse_failures"]``; if nothing at all could be judged the
     result is marked ``skipped``.
+
+    With a ``control`` (pause/resume): ``item_id`` is ``{theme}|{section}``
+    which collides across runs, so the checkpoint keys by (run_id, item_id).
     """
     sections_to_judge = [
         "what_is_happening",
@@ -936,18 +987,34 @@ def faithfulness_judge(
                 # Skip empty or known-fallback sections
                 if not text or not text.strip() or text.strip() in EVAL_FAITHFULNESS_SKIP_STRINGS:
                     continue
+                if control is not None and control.pause_requested:
+                    raise EvaluationPaused("faithfulness")
                 attempted += 1
-                score, failure = _judge_faithfulness_one(
-                    llm, text, theme_articles,
-                    run_id=run_id, item_id=f"{theme}|{section}",
-                )
-                if failure == "infra_error":
-                    infra_errors += 1
-                elif failure == "parse_failure":
-                    parse_failures += 1
-                elif score is not None:
-                    scores.append(score)
-                    run_scores.append(score)
+                item_id = f"{theme}|{section}"
+                cached = control.get("faithfulness", run_id, item_id) if control else None
+                if cached is not None:
+                    score = float(cached["score"])
+                    _record_event(
+                        judge="faithfulness", run_id=run_id, item_id=item_id,
+                        latency_ms=0, parse_ok=True, score=score,
+                    )
+                else:
+                    score, failure = _judge_faithfulness_one(
+                        llm, text, theme_articles,
+                        run_id=run_id, item_id=item_id,
+                    )
+                    if failure == "infra_error":
+                        infra_errors += 1
+                        continue
+                    elif failure == "parse_failure":
+                        parse_failures += 1
+                        continue
+                    if score is None:
+                        continue
+                    if control is not None:
+                        control.record("faithfulness", run_id, item_id, {"score": score})
+                scores.append(score)
+                run_scores.append(score)
         raw_per_run[run_id] = {"scores": run_scores}
 
     if attempted > 0 and not scores:
@@ -1101,6 +1168,8 @@ def uniqueness_judge(
     llm: LLMClient,
     summaries_by_run: Dict[str, Dict[str, Dict]],
     prior_summaries_by_run: Optional[Dict[str, Dict[str, Dict]]] = None,
+    *,
+    control: Optional[EvalControl] = None,
 ) -> Tuple[float, Dict]:
     """Score uniqueness across (a) within-run theme pairs and
     (b) cross-run same-theme pairs if `prior_summaries_by_run` is provided.
@@ -1110,29 +1179,40 @@ def uniqueness_judge(
     ``raw["failed_pairs"]``) rather than scored as zero overlap, which
     would inflate uniqueness during an outage.  If no pair could be
     judged at all, the result is marked ``skipped``.
+
+    With a ``control`` (pause/resume): the pair cache is seeded from the
+    checkpoint — every uniqueness ``item_id`` IS a cache key, so cached
+    pairs skip the LLM call on resume — and successful overlaps are
+    recorded back into the checkpoint.
     """
     overlaps: List[float] = []
     failed_pairs = 0
     attempted = 0
-    pair_cache: Dict[str, float] = {}
+    # On resume, previously judged pairs replay from the checkpoint.
+    pair_cache: Dict[str, float] = control.seed_pair_cache() if control else {}
 
-    def _collect(val: Optional[float]) -> None:
+    def _collect(val: Optional[float], run_id: str = "", item_id: str = "") -> None:
         nonlocal failed_pairs, attempted
         attempted += 1
         if val is None:
             failed_pairs += 1
         else:
             overlaps.append(val)
+            if control is not None and item_id:
+                control.record("uniqueness", run_id, item_id, {"overlap": val})
 
     # (a) Within-run pairwise overlap
     for run_id, summaries in summaries_by_run.items():
         themes = list(summaries.keys())
         for i in range(len(themes)):
             for j in range(i + 1, len(themes)):
+                if control is not None and control.pause_requested:
+                    raise EvaluationPaused("uniqueness")
                 a = _summaries_to_text(summaries, themes[i])
                 b = _summaries_to_text(summaries, themes[j])
                 item_id = f"within|{run_id}|{themes[i]}|{themes[j]}"
-                _collect(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache))
+                _collect(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache),
+                         run_id=run_id, item_id=item_id)
 
     # (b) Cross-run same-theme overlap
     if prior_summaries_by_run:
@@ -1143,10 +1223,13 @@ def uniqueness_judge(
             for theme in summaries.keys():
                 if theme not in prior:
                     continue
+                if control is not None and control.pause_requested:
+                    raise EvaluationPaused("uniqueness")
                 a = _summaries_to_text(summaries, theme)
                 b = _summaries_to_text(prior, theme)
                 item_id = f"cross|{run_id}|{theme}"
-                _collect(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache))
+                _collect(_judge_overlap(llm, a, b, run_id=run_id, item_id=item_id, pair_cache=pair_cache),
+                         run_id=run_id, item_id=item_id)
 
     if attempted > 0 and not overlaps:
         return 1.0, {
@@ -1638,6 +1721,7 @@ def generate_keyword_suggestions(
     *,
     include_all_themes: bool = False,
     theme_max_articles: int = EVAL_KEYWORD_MAX_ARTICLES,
+    control: Optional[EvalControl] = None,
 ) -> KeywordSuggestionReport:
     """Ask the LLM which theme keywords and watchlist terms are missing.
 
@@ -1674,6 +1758,10 @@ def generate_keyword_suggestions(
 
     theme_suggestions: Dict[str, List[KeywordSuggestion]] = {}
     for theme in weak_themes:
+        # Keyword suggestions are cheap (one LLM call per theme) and not
+        # checkpointed — on resume the whole phase simply re-runs.
+        if control is not None and control.pause_requested:
+            raise EvaluationPaused("keywords")
         # Pool articles across all evaluated runs for this theme.
         pool: List[Dict] = []
         for articles in articles_by_run.values():
@@ -1726,6 +1814,7 @@ def _execute_judges_and_build_report(
     supabase=None,
     judge_selection: str = "all",
     judge_model: Optional[str] = None,
+    control: Optional[EvalControl] = None,
 ) -> EvaluationReport:
     """Run selected judges (all 7, 3 LLM only, or 4 deterministic only), assemble
     EvaluationReport, and persist results.
@@ -1733,6 +1822,11 @@ def _execute_judges_and_build_report(
     ``judge_model`` optionally pins every LLM judge call to one gateway
     model (registry key) so scores stay comparable across evaluations;
     ``None`` uses the gateway's default routing chain.
+
+    ``control`` (Quality Evaluation pause/resume) threads checkpointing
+    through the LLM judges and makes the final insert wait for the
+    database instead of silently dropping the report.  ``None`` keeps
+    today's behaviour exactly.
     """
     quota_exceeded_before = LLMClient.is_quota_exceeded()
     # LLM judges route through the Model Gateway (Gemini-first EVALUATE
@@ -1769,22 +1863,30 @@ def _execute_judges_and_build_report(
 
     if llm_enabled:
         llm = GatewayJudgeLLM(model_key=judge_model)
+        paused = False
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
                 executor.submit(
-                    categoriser_judge, llm, articles_by_run
+                    categoriser_judge, llm, articles_by_run, control=control
                 ): "categoriser",
                 executor.submit(
-                    faithfulness_judge, llm, summaries_by_run, articles_by_run
+                    faithfulness_judge, llm, summaries_by_run, articles_by_run, control=control
                 ): "faithfulness",
                 executor.submit(
-                    uniqueness_judge, llm, summaries_by_run, prior_summaries_by_run
+                    uniqueness_judge, llm, summaries_by_run, prior_summaries_by_run,
+                    control=control,
                 ): "uniqueness",
             }
             for fut in as_completed(futures):
                 name = futures[fut]
                 try:
                     results[name] = fut.result()
+                except EvaluationPaused:
+                    # Pause requested mid-judge: remember it, don't
+                    # fabricate fallback scores.  The executor's context
+                    # exit waits for the other judges, which each notice
+                    # the pause at their next item boundary.
+                    paused = True
                 except Exception as exc:
                     logger.error("Judge %s failed: %s", name, exc)
                     if LLMClient.is_quota_exceeded() or "429" in str(exc) or "quota" in str(exc).lower():
@@ -1799,6 +1901,8 @@ def _execute_judges_and_build_report(
                             results[name] = (0.0, {}, {})
                         else:
                             results[name] = (0.0, {})
+        if paused:
+            raise EvaluationPaused("judges")
     else:
         skip_raw = {
             "skipped": True,
@@ -1875,12 +1979,17 @@ def _execute_judges_and_build_report(
     report.recommendations = generate_recommendations(report)
 
     if llm is not None:
+        if control is not None:
+            control.set_phase("keywords")
+            if control.pause_requested:
+                raise EvaluationPaused("keywords")
         try:
             kw_report = generate_keyword_suggestions(
                 llm,
                 report,
                 articles_by_run,
                 summaries_by_run,
+                control=control,
             )
             report.keyword_suggestions = kw_report.to_dict()
             logger.info(
@@ -1888,6 +1997,8 @@ def _execute_judges_and_build_report(
                 len(kw_report.theme_suggestions),
                 len(kw_report.watchlist_suggestions),
             )
+        except EvaluationPaused:
+            raise
         except Exception as exc:
             logger.warning("generate_keyword_suggestions failed: %s", exc)
             report.keyword_suggestions = {"theme_suggestions": {}, "watchlist_suggestions": []}
@@ -1900,6 +2011,8 @@ def _execute_judges_and_build_report(
     # failed keyword experiments, then apply bounded fixes for
     # sub-threshold metrics.  Recorded in raw_metrics BEFORE persistence so
     # every action is auditable in the Supabase quality_evaluations row.
+    if control is not None and control.pause_requested:
+        raise EvaluationPaused("pre-persist")
     try:
         from core.auto_remediation import run_auto_remediation
         remediation = run_auto_remediation(report)
@@ -1924,41 +2037,105 @@ def _execute_judges_and_build_report(
         "recommendations": report.recommendations,
         "raw_metrics": report.raw_metrics,
     }
+    keyword_rows = _keyword_rows_from_report(report)
+    if control is not None:
+        # Checkpoint the finished report BEFORE attempting the insert —
+        # from here on, a database outage is recoverable instead of fatal.
+        control.set_final(payload, report.to_dict(), keyword_rows)
     inserted = insert_quality_evaluation(supabase, payload)
+    while inserted is None and control is not None:
+        if control.pause_requested:
+            control.set_status("paused")
+            raise EvaluationPaused("persist")
+        control.set_status("awaiting_db")
+        logger.warning(
+            "Supabase insert failed; retrying in %.0fs (report is safe in "
+            "the evaluation checkpoint).",
+            eval_controller.DB_RETRY_SECONDS,
+        )
+        time.sleep(eval_controller.DB_RETRY_SECONDS)
+        inserted = insert_quality_evaluation(supabase, payload)
     if inserted:
         report.db_row_id = inserted.get("id")
         logger.info("Persisted quality_evaluations row %s", report.db_row_id)
         try:
             from core.quality_schema import insert_keyword_suggestions
-            if report.keyword_suggestions:
-                rows: List[Dict] = []
-                for theme, items in report.keyword_suggestions.get("theme_suggestions", {}).items():
-                    for it in items:
-                        rows.append({
-                            "kind": "theme_keyword",
-                            "theme_name": theme,
-                            "term": it.get("term", ""),
-                            "suggested_weight": it.get("weight"),
-                            "reason": it.get("reason"),
-                        })
-                for it in report.keyword_suggestions.get("watchlist_suggestions", []):
-                    rows.append({
-                        "kind": "watchlist_term",
-                        "theme_name": None,
-                        "term": it.get("term", ""),
-                        "suggested_weight": None,
-                        "reason": it.get("reason"),
-                    })
-                if rows:
-                    insert_keyword_suggestions(
-                        supabase, rows, evaluation_id=report.db_row_id,
-                    )
+            if keyword_rows:
+                insert_keyword_suggestions(
+                    supabase, keyword_rows, evaluation_id=report.db_row_id,
+                )
         except Exception as exc:
             logger.warning("Failed to persist keyword_suggestions: %s", exc)
-    else:
+        if control is not None:
+            control.mark_completed(report.db_row_id)
+    elif control is None:
         logger.info("Supabase unavailable; evaluation report not persisted.")
 
     return report
+
+
+def _keyword_rows_from_report(report: EvaluationReport) -> List[Dict]:
+    """Build keyword_suggestions rows (theme keywords + watchlist terms)
+    from a report's ``keyword_suggestions`` dict.  Pure extraction —
+    shared by the normal persist path and the resumed-persist path."""
+    rows: List[Dict] = []
+    if not report.keyword_suggestions:
+        return rows
+    for theme, items in report.keyword_suggestions.get("theme_suggestions", {}).items():
+        for it in items:
+            rows.append({
+                "kind": "theme_keyword",
+                "theme_name": theme,
+                "term": it.get("term", ""),
+                "suggested_weight": it.get("weight"),
+                "reason": it.get("reason"),
+            })
+    for it in report.keyword_suggestions.get("watchlist_suggestions", []):
+        rows.append({
+            "kind": "watchlist_term",
+            "theme_name": None,
+            "term": it.get("term", ""),
+            "suggested_weight": None,
+            "reason": it.get("reason"),
+        })
+    return rows
+
+
+def persist_final_payload(supabase, control: EvalControl) -> Tuple[Dict, Optional[str]]:
+    """Resume path for an evaluation whose report is already built and
+    checkpointed but not yet inserted (status ``awaiting_db``/``paused``
+    with ``phase == "persist"``).
+
+    Runs the same insert-retry loop as the normal persist phase, inserts
+    the keyword rows, marks the checkpoint completed, and returns
+    ``(final_report_dict, db_row_id)``.
+    """
+    payload = control.state.get("final_payload") or {}
+    report_dict = control.state.get("final_report") or {}
+    keyword_rows = control.state.get("keyword_rows") or []
+    inserted = insert_quality_evaluation(supabase, payload)
+    while inserted is None:
+        if control.pause_requested:
+            control.set_status("paused")
+            raise EvaluationPaused("persist")
+        control.set_status("awaiting_db")
+        logger.warning(
+            "Supabase insert failed; retrying in %.0fs (report is safe in "
+            "the evaluation checkpoint).",
+            eval_controller.DB_RETRY_SECONDS,
+        )
+        time.sleep(eval_controller.DB_RETRY_SECONDS)
+        inserted = insert_quality_evaluation(supabase, payload)
+    db_row_id = inserted.get("id")
+    logger.info("Persisted quality_evaluations row %s (resumed persist)", db_row_id)
+    try:
+        from core.quality_schema import insert_keyword_suggestions
+        if keyword_rows:
+            insert_keyword_suggestions(supabase, keyword_rows, evaluation_id=db_row_id)
+    except Exception as exc:
+        logger.warning("Failed to persist keyword_suggestions: %s", exc)
+    control.mark_completed(db_row_id)
+    return report_dict, db_row_id
 
 
 def run_weekly_evaluation(
@@ -1967,13 +2144,22 @@ def run_weekly_evaluation(
     threshold: float = QUALITY_THRESHOLD,
     judge_selection: str = "all",
     judge_model: Optional[str] = None,
+    control: Optional[EvalControl] = None,
 ) -> EvaluationReport:
-    """Run the evaluation for recent runs. Returns an EvaluationReport and persists it to Supabase (if available)."""
+    """Run the evaluation for recent runs. Returns an EvaluationReport and persists it to Supabase (if available).
+
+    With a ``control``, the run set is pinned into the checkpoint before
+    any judging starts, so a paused/resumed evaluation always continues
+    on exactly the runs it began with (a later resume uses
+    ``run_evaluation_for_runs`` with the pinned IDs).
+    """
     if supabase is None:
         from core.supabase_client import get_supabase_manager
         supabase = get_supabase_manager()
 
     runs = _load_recent_runs(supabase, lookback_days)
+    if control is not None:
+        control.set_run_ids([r["id"] for r in runs])
 
     articles_by_run: Dict[str, List[Dict]] = {}
     summaries_by_run: Dict[str, Dict[str, Dict]] = {}
@@ -2000,6 +2186,7 @@ def run_weekly_evaluation(
         supabase=supabase,
         judge_selection=judge_selection,
         judge_model=judge_model,
+        control=control,
     )
 
 
@@ -2007,12 +2194,19 @@ def run_evaluation_for_runs(
     run_ids: List[str],
     supabase=None,
     threshold: float = QUALITY_THRESHOLD,
+    lookback_days: int = 0,
     judge_selection: str = "all",
     judge_model: Optional[str] = None,
+    control: Optional[EvalControl] = None,
 ) -> EvaluationReport:
-    """Run evaluation for a specific set of run_ids (used by tests / page pre-selection)."""
+    """Run evaluation for a specific set of run_ids (used by tests / page
+    pre-selection, and by resumed evaluations with a pinned run set).
+
+    ``lookback_days`` is recorded on the persisted row (a resumed run
+    passes the original window so the record reflects what the user
+    asked for, not the resume mechanism)."""
     if not run_ids:
-        return run_weekly_evaluation(supabase=supabase, threshold=threshold, judge_selection=judge_selection, judge_model=judge_model)
+        return run_weekly_evaluation(supabase=supabase, threshold=threshold, judge_selection=judge_selection, judge_model=judge_model, control=control)
 
     if supabase is None:
         from core.supabase_client import get_supabase_manager
@@ -2043,10 +2237,11 @@ def run_evaluation_for_runs(
         summaries_by_run=summaries_by_run,
         prior_summaries_by_run=prior_summaries_by_run,
         threshold=threshold,
-        lookback_days=0,
+        lookback_days=lookback_days,
         supabase=supabase,
         judge_selection=judge_selection,
         judge_model=judge_model,
+        control=control,
     )
 
 

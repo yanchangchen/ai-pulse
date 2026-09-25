@@ -141,6 +141,13 @@ EVALUATION_JUDGE_MODELS: dict[str, str] = {
 # How often the WeeklyEvaluator background thread wakes up to check whether
 # it should run (seconds).  1 hour is plenty — evaluations are weekly.
 EVALUATION_CHECK_INTERVAL_SECONDS: int = 3600
+# Retry cadence (seconds) when the final quality_evaluations insert fails
+# because Supabase is unavailable — the finished report waits in the
+# on-disk checkpoint until the database recovers.
+EVAL_DB_RETRY_SECONDS: int = 20
+# Minimum interval (seconds) between checkpoint disk writes during a run;
+# successful judge items are otherwise saved after every item.
+EVAL_CHECKPOINT_MIN_SAVE_INTERVAL: float = 1.0
 
 # ---------------------------------------------------------------------------
 # Evaluation judge budgets
