@@ -176,7 +176,7 @@ No product impact analyzed.
         fake_prov = MagicMock()
         fake_prov.method = "llm"
         fake_prov.provider = "ollama"
-        fake_prov.model = "nemotron-3-super"
+        fake_prov.model = "nemotron-3-ultra"
         fake_prov.task = "summarise"
         fake_prov.latency_ms = 123
         fake_prov.attempts = 1
@@ -220,7 +220,7 @@ Enterprise adoption is accelerating.
         fake_prov = MagicMock()
         fake_prov.method = "llm"
         fake_prov.provider = "ollama"
-        fake_prov.model = "nemotron-3-super"
+        fake_prov.model = "nemotron-3-ultra"
         fake_prov.task = "summarise"
         fake_prov.latency_ms = 123
         fake_prov.attempts = 1

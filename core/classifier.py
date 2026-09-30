@@ -34,6 +34,7 @@ _last_gate_stats: Dict[str, int] = {
     "gate_1_keyword": 0,
     "gate_2_tfidf": 0,
     "gate_3_llm": 0,
+    "gate_3_cache_hits": 0,
     "gate_4_heuristic": 0,
     "total": 0,
 }
@@ -199,6 +200,7 @@ def classify_articles(articles: List[Dict], skip_llm: Optional[bool] = None) -> 
         "gate_1_keyword": 0,
         "gate_2_tfidf": 0,
         "gate_3_llm": 0,
+        "gate_3_cache_hits": 0,
         "gate_4_heuristic": 0,
         "total": len(articles),
     }
@@ -250,6 +252,39 @@ def classify_articles(articles: List[Dict], skip_llm: Optional[bool] = None) -> 
         )
         unmatched_after_pass3 = unmatched_after_pass2
     elif unmatched_after_pass2:
+        # Cross-run cache: reuse themes assigned to these articles in
+        # previous runs so the gateway is only queried for genuinely new
+        # articles.  Themes not in the current THEMES registry (e.g. from
+        # an older theme set) are ignored and fall through to the LLM.
+        from core import classification_cache
+
+        cached = classification_cache.lookup_themes(
+            a.get("content_hash") for a in unmatched_after_pass2
+        )
+        llm_candidates: List[Dict] = []
+        cache_hits = 0
+        for article in unmatched_after_pass2:
+            theme = cached.get(article.get("content_hash"))
+            if theme and theme in THEMES:
+                article["theme"] = theme
+                article["gate"] = 3
+                article["gate_provenance"] = {
+                    "provider": "classification-cache",
+                    "note": "theme reused from a previous run",
+                }
+                gate_counts["gate_3_llm"] += 1
+                cache_hits += 1
+                classified_list.append(article)
+            else:
+                llm_candidates.append(article)
+
+        if cache_hits:
+            gate_counts["gate_3_cache_hits"] = cache_hits
+            logger.info(
+                "Gate 3 cache: reused %d previous classifications, %d go to the LLM",
+                cache_hits, len(llm_candidates),
+            )
+
         batch_size = 20
 
         async def _classify_batch(batch: List[Dict]) -> int:
@@ -310,13 +345,26 @@ def classify_articles(articles: List[Dict], skip_llm: Optional[bool] = None) -> 
             return 0
 
         # Run all batches
-        for i in range(0, len(unmatched_after_pass2), batch_size):
-            batch = unmatched_after_pass2[i:i + batch_size]
+        for i in range(0, len(llm_candidates), batch_size):
+            batch = llm_candidates[i:i + batch_size]
             classified_count = asyncio.run(_classify_batch(batch))
             gate_counts["gate_3_llm"] += classified_count
 
+        # Persist fresh Gate 3 results for future runs (local mirror; the
+        # Supabase articles table is populated at run persistence time).
+        try:
+            fresh = {
+                a["content_hash"]: a["theme"]
+                for a in llm_candidates
+                if a.get("gate") == 3 and a.get("content_hash")
+            }
+            if fresh:
+                classification_cache.mark_classified(fresh)
+        except Exception as exc:
+            logger.warning("Failed to persist classification cache: %s", exc)
+
         # Collect any items still unassigned after Pass 3
-        for article in unmatched_after_pass2:
+        for article in llm_candidates:
             if 'theme' not in article:
                 unmatched_after_pass3.append(article)
 

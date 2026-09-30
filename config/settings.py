@@ -7,8 +7,11 @@ Resolution order: st.secrets → os.environ → defaults (fail gracefully).
 
 from __future__ import annotations
 
+import json
 import os
 import logging
+import time
+from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -86,7 +89,7 @@ def _get_secret(key: str, default: str = "") -> str:
 # Ollama Cloud configuration
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL: str = _get_secret("OLLAMA_BASE_URL", "https://api.ollama.com")
-OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "nemotron-3-super:cloud")
+OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "nemotron-3-ultra:cloud")
 OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
 
 # ---------------------------------------------------------------------------
@@ -95,6 +98,7 @@ OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
 GEMINI_API_KEY: str = _get_secret("GEMINI_API_KEY", "")
 GEMINI_MODEL: str = _get_secret("GEMINI_MODEL", "gemini-3.7-flash")
 GEMINI_AVAILABLE_MODELS: list[str] = [
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
@@ -127,9 +131,26 @@ QUALITY_THRESHOLD: float = 0.80
 EVALUATION_SAMPLE_SIZE: int = 20
 # Cap on the number of historical runs evaluated in a single weekly check.
 EVALUATION_MAX_RUNS: int = 7
+# Judge model selection for LLM-as-judge evaluations.  Keys are Model
+# Gateway registry keys; the Quality Evaluation page lets the user pin
+# every judge call to ONE model so scores stay comparable across runs.
+# "Auto" (no pin) uses the gateway's default Gemini-first routing chain.
+EVALUATION_JUDGE_MODELS: dict[str, str] = {
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
+    "nemotron-3-ultra": "Nemotron 3 Ultra (Ollama)",
+    "gpt-oss-120b": "GPT-OSS 120B (Ollama)",
+}
 # How often the WeeklyEvaluator background thread wakes up to check whether
 # it should run (seconds).  1 hour is plenty — evaluations are weekly.
 EVALUATION_CHECK_INTERVAL_SECONDS: int = 3600
+# Retry cadence (seconds) when the final quality_evaluations insert fails
+# because Supabase is unavailable — the finished report waits in the
+# on-disk checkpoint until the database recovers.
+EVAL_DB_RETRY_SECONDS: int = 20
+# Minimum interval (seconds) between checkpoint disk writes during a run;
+# successful judge items are otherwise saved after every item.
+EVAL_CHECKPOINT_MIN_SAVE_INTERVAL: float = 1.0
 
 # ---------------------------------------------------------------------------
 # Evaluation judge budgets
@@ -210,14 +231,80 @@ DUPLICATE_RUN_WINDOW_MINUTES: int = 30
 # ---------------------------------------------------------------------------
 # Dynamic Summariser & Faithfulness Tuning (In-App Editing Support)
 # ---------------------------------------------------------------------------
-from pathlib import Path
-import json
-
+# The overlay is Supabase-backed: see the persistence block below.
 CUSTOM_SETTINGS_FILE = Path(__file__).parent / "custom_settings.json"
+# Key used in the Supabase app_settings table (see
+# supabase_migration_app_settings.sql).
+CUSTOM_SETTINGS_KEY = "custom_settings"
+
+# ---------------------------------------------------------------------------
+# Supabase-backed persistence for the custom settings overlay
+# ---------------------------------------------------------------------------
+# The overlay holds evaluation-driven config (summariser tuner, classification
+# mode, auto-remediation flag).  The local file alone does not survive app
+# redeploys (Streamlit Cloud starts with a clean filesystem on every git
+# push), so the overlay is loaded remote-first and written through to the
+# app_settings table on every save.  The remote *fetch* result is cached for
+# a short TTL so page reruns (every ~2s while an evaluation runs) don't query
+# the database each time; local-file reads are never cached, which keeps
+# read-after-write semantics for tests that swap CUSTOM_SETTINGS_FILE.
+
+_REMOTE_NOT_FETCHED = object()
+_CUSTOM_SETTINGS_REMOTE_CACHE_TTL = 30.0
+_custom_settings_remote: Dict = {"result": _REMOTE_NOT_FETCHED, "fetched_at": 0.0}
+
+
+def _get_supabase_manager():
+    """Lazy import — supabase_client reads env vars this module may export
+    via st.secrets, so importing it at module level would be circular."""
+    from core.supabase_client import get_supabase_manager
+    return get_supabase_manager()
+
+
+def _load_custom_settings_from_supabase() -> Optional[dict]:
+    """Fetch the custom_settings row from Supabase (TTL-cached), or None on
+    miss / unavailable / table-missing.  Never raises."""
+    now = time.monotonic()
+    if (
+        _custom_settings_remote["result"] is not _REMOTE_NOT_FETCHED
+        and (now - _custom_settings_remote["fetched_at"]) < _CUSTOM_SETTINGS_REMOTE_CACHE_TTL
+    ):
+        return _custom_settings_remote["result"]
+    result: Optional[dict] = None
+    try:
+        manager = _get_supabase_manager()
+        if manager.is_available():
+            result = manager.get_app_setting(CUSTOM_SETTINGS_KEY)
+    except Exception as exc:
+        logger.warning("Failed to load custom settings from Supabase: %s", exc)
+    _custom_settings_remote["result"] = result
+    _custom_settings_remote["fetched_at"] = now
+    return result
+
+
+def _reset_custom_settings_remote_cache() -> None:
+    """Drop the remote-fetch cache (test hook; also used after saves)."""
+    _custom_settings_remote["result"] = _REMOTE_NOT_FETCHED
+    _custom_settings_remote["fetched_at"] = 0.0
 
 
 def load_custom_settings() -> dict:
-    """Load custom settings overlay from JSON if it exists."""
+    """Load the custom settings overlay.
+
+    Supabase app_settings is authoritative when it has a row (that's the
+    copy that survives restarts and redeploys); a remote hit also refreshes
+    the local JSON file so offline runs stay current.  Falls back to the
+    local file when Supabase is unavailable or has no row yet.
+    """
+    remote = _load_custom_settings_from_supabase()
+    if isinstance(remote, dict) and remote:
+        try:
+            CUSTOM_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(CUSTOM_SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(remote, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass  # local cache refresh is best-effort
+        return dict(remote)
     if CUSTOM_SETTINGS_FILE.exists():
         try:
             with open(CUSTOM_SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -228,9 +315,22 @@ def load_custom_settings() -> dict:
 
 
 def save_custom_settings(data: dict) -> None:
-    """Save custom settings overlay to JSON."""
+    """Persist the overlay to the local JSON file AND Supabase app_settings
+    (write-through — the remote copy is what survives redeploys).  A failed
+    remote sync only warns; the local file remains the offline fallback.
+    """
     with open(CUSTOM_SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    try:
+        manager = _get_supabase_manager()
+        if manager.is_available():
+            manager.upsert_app_setting(CUSTOM_SETTINGS_KEY, data)
+    except Exception as exc:
+        logger.warning("Failed to sync custom settings to Supabase: %s", exc)
+    # Drop the remote-fetch cache (do NOT populate it with the saved data:
+    # a module-level cache holding local writes leaks across test files,
+    # and the next load re-fetching is correct anyway).
+    _reset_custom_settings_remote_cache()
 
 
 def get_summariser_settings() -> dict:

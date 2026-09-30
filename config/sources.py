@@ -74,9 +74,11 @@ SOURCES = [
         "type": "web",
         "category": "blog"
     },
+    # Google Research Blog (replaces Meta Research — that feed was abandoned
+    # in May 2023 and ai.meta.com publishes no RSS successor)
     {
-        "name": "Meta Research",
-        "url": "https://research.facebook.com/feed/",
+        "name": "Google Research Blog",
+        "url": "https://research.google/blog/rss/",
         "type": "rss",
         "category": "blog"
     },
@@ -161,12 +163,13 @@ SOURCES = [
         "type": "rss",
         "category": "blog"
     },
-    # Simon Willison (A3 — independent, high signal on LLM tooling & security)
+    # Interconnects, Nathan Lambert (replaces Simon Willison — independent,
+    # high signal on frontier models, open weights, and AI policy)
     {
-        "name": "Simon Willison",
-        "url": "https://simonwillison.net/atom/everything/",
+        "name": "Interconnects (Nathan Lambert)",
+        "url": "https://www.interconnects.ai/feed",
         "type": "rss",
-        "category": "blog"
+        "category": "newsletter"
     },
     # Newsletters & independent voices (high-signal, weekly cadence)
     {

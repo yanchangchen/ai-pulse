@@ -228,5 +228,31 @@ CREATE POLICY "processed_articles_read" ON processed_articles
 
 GRANT SELECT, INSERT, UPDATE ON processed_articles TO anon;
 
+-- Table 7: App Settings
+-- Key-value store for evaluation-driven configuration (summariser tuner,
+-- classification settings, auto-remediation state) so it survives app
+-- restarts and redeploys. See supabase_migration_app_settings.sql for
+-- existing projects.
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,            -- 'custom_settings' | 'auto_remediation_state'
+    value JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_settings_updated_at
+    ON app_settings (updated_at DESC);
+
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public read access for app_settings"
+    ON app_settings FOR SELECT
+    USING (true);
+
+CREATE POLICY "Public write access for app_settings"
+    ON app_settings FOR ALL
+    USING (true)
+    WITH CHECK (true);
+
 -- End of schema setup
 -- You can now use the ai-pulse app with Supabase persistence!

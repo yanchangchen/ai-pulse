@@ -301,6 +301,44 @@ class SupabaseManager:
         except Exception as e:
             logger.error(f"Failed to mark processed for {theme_name}: {e}")
 
+    def get_classifications(self, content_hashes: List[str]) -> Dict[str, str]:
+        """
+        Return {content_hash: theme_name} for previously saved articles.
+
+        Serves as the cloud side of the cross-run classification cache:
+        every classified article is upserted into the ``articles`` table
+        with (content_hash, theme_name), so no extra table is needed.
+        If a hash was saved under several themes across runs, the first
+        row encountered wins.
+
+        Args:
+            content_hashes: content hashes to look up
+
+        Returns:
+            Dict mapping content_hash to theme_name
+        """
+        if not self.available or not content_hashes:
+            return {}
+        found: Dict[str, str] = {}
+        try:
+            # Chunk the .in_() filter to keep request URLs within limits
+            for i in range(0, len(content_hashes), 200):
+                chunk = [h for h in content_hashes[i:i + 200] if h]
+                if not chunk:
+                    continue
+                response = self.client.table("articles") \
+                    .select("content_hash,theme_name") \
+                    .in_("content_hash", chunk) \
+                    .execute()
+                for row in response.data or []:
+                    h = row.get("content_hash")
+                    t = row.get("theme_name")
+                    if h and t and h not in found:
+                        found[h] = t
+        except Exception as e:
+            logger.error(f"Failed to look up cached classifications: {e}")
+        return found
+
     def get_latest_run(self) -> Optional[Dict]:
         """
         Retrieve the most recent trend run.
@@ -606,28 +644,86 @@ class SupabaseManager:
     def get_sync_metadata(self, key: str) -> Optional[str]:
         """
         Retrieve sync metadata value.
-        
+
         Args:
             key: Metadata key to retrieve
-        
+
         Returns:
             Metadata value, or None if not found or failed
         """
         if not self.available:
             return None
-        
+
         try:
             response = self.client.table("sync_metadata")\
                 .select("value")\
                 .eq("key", key)\
                 .execute()
-            
+
             if response.data:
                 return response.data[0]["value"]
             return None
         except Exception as e:
             logger.error(f"Failed to get sync metadata {key}: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # App settings (evaluation-driven config persistence)
+    # ------------------------------------------------------------------
+
+    def get_app_setting(self, key: str) -> Optional[Dict]:
+        """
+        Fetch one row from the app_settings key-value table.
+
+        Args:
+            key: Setting key (e.g. "custom_settings", "auto_remediation_state")
+
+        Returns:
+            The stored JSONB value as a dict, or None if the row does not
+            exist / Supabase is unavailable / the table is missing (the
+            app_settings migration has not been run). Never raises.
+        """
+        if not self.available:
+            return None
+
+        try:
+            response = self.client.table("app_settings")\
+                .select("value")\
+                .eq("key", key)\
+                .limit(1)\
+                .execute()
+
+            if response.data:
+                return response.data[0].get("value")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to read app_settings '{key}' (run supabase_migration_app_settings.sql if not yet): {e}")
+            return None
+
+    def upsert_app_setting(self, key: str, value: Dict) -> bool:
+        """
+        Write one row to the app_settings key-value table (last-write-wins).
+
+        Returns True on success; False (never raises) if Supabase is
+        unavailable, the table is missing, or the write fails — callers
+        treat the local file as the fallback.
+        """
+        if not self.available:
+            return False
+
+        try:
+            from datetime import datetime, timezone
+            self.client.table("app_settings")\
+                .upsert(
+                    {"key": key, "value": value,
+                     "updated_at": datetime.now(timezone.utc).isoformat()},
+                    on_conflict="key",
+                )\
+                .execute()
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to upsert app_settings '{key}' (run supabase_migration_app_settings.sql if not yet): {e}")
+            return False
 
     # ------------------------------------------------------------------
     # New query helpers for analytics, trends, and wiki pages

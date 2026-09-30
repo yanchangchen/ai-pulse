@@ -28,6 +28,23 @@ from config.sources import SOURCES, WEB_SCRAPE_SOURCES
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Headers shared by the fetch path and the diagnostic probe so
+# diagnose_source() sees exactly what fetch_rss_feed() sees.  Several
+# sources UA-filter: ai.meta.com returns 400 to a browser UA, and
+# Stratechery / CSET Georgetown return 403 — probing with a browser UA
+# made the Sources diagnostics panel report failures the app never hits.
+RSS_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; AIPulse/1.0; "
+        "+https://github.com/yanchangchen/ai-pulse)"
+    ),
+    "Accept": "application/rss+xml, application/atom+xml, "
+              "application/xml;q=0.9, */*;q=0.8",
+}
+WEB_SCRAPE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
+
 
 def parse_date(date_str: str) -> Optional[datetime]:
     """Parse various date formats into a timezone-aware datetime object."""
@@ -120,14 +137,7 @@ def fetch_rss_feed(source: Dict) -> List[Dict]:
             # outright.  Use requests for the transport (so redirects
             # actually follow and we send a real UA), then hand the
             # response body to feedparser for XML/Atom parsing.
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (compatible; AIPulse/1.0; "
-                    "+https://github.com/yanchangchen/ai-pulse)"
-                ),
-                "Accept": "application/rss+xml, application/atom+xml, "
-                          "application/xml;q=0.9, */*;q=0.8",
-            }
+            headers = RSS_FETCH_HEADERS
             resp = requests.get(
                 url,
                 headers=headers,
@@ -241,9 +251,7 @@ def scrape_web_source(source: Dict) -> List[Dict]:
     try:
         logger.debug("Scraping web source: %s", source_name)
 
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        headers = WEB_SCRAPE_HEADERS
 
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
@@ -445,13 +453,14 @@ def diagnose_source(source: Dict) -> Dict:
         "recommendation": ""
     }
     
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/rss+xml, application/atom+xml, text/html, application/xhtml+xml, */*;q=0.8"
-    }
+    # Probe with the same headers the fetch path sends so the diagnostic
+    # reflects what the app actually experiences.  (A browser-style UA is
+    # blocked outright by several sources: ai.meta.com returns 400 and
+    # Stratechery / CSET Georgetown return 403 to it.)
+    if source_type == "web":
+        headers = WEB_SCRAPE_HEADERS
+    else:
+        headers = RSS_FETCH_HEADERS
 
     try:
         resp = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
@@ -482,13 +491,34 @@ def diagnose_source(source: Dict) -> Dict:
         if source_type == "rss":
             feed = feedparser.parse(resp.content)
             entries_count = len(feed.entries)
-            result["items_found"] = entries_count
 
-            if entries_count > 0:
+            # Mirror the fetcher's lookback filter: entries without a
+            # parseable date are kept (treated as fresh); dated entries
+            # must fall inside DAYS_LOOKBACK to count.
+            recent_count = 0
+            for e in feed.entries:
+                dt = extract_date_from_entry(e)
+                if dt is None or is_within_range(dt):
+                    recent_count += 1
+            result["items_found"] = recent_count
+
+            if recent_count > 0:
                 result["healthy"] = True
                 result["error_summary"] = "None (Healthy)"
-                result["explanation"] = f"Successfully parsed {entries_count} RSS/Atom feed entries."
+                result["explanation"] = (
+                    f"Successfully parsed {entries_count} feed entries, "
+                    f"{recent_count} within the {DAYS_LOOKBACK}-day lookback window."
+                )
                 result["recommendation"] = "No action needed."
+            elif entries_count > 0:
+                result["healthy"] = False
+                result["error_summary"] = "Stale Feed"
+                result["explanation"] = (
+                    f"The feed responds and parses ({entries_count} entries), but none "
+                    f"were published within the last {DAYS_LOOKBACK} days — the publisher "
+                    "has likely abandoned or moved this feed URL, so the app harvests 0 articles from it."
+                )
+                result["recommendation"] = "Check the publisher's site for a new feed location, or replace/remove the source in config/sources.py."
             else:
                 result["healthy"] = False
                 if feed.bozo:

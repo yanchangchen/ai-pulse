@@ -10,7 +10,7 @@ def test_ollama_provider_has_request_timeout():
     provider = OllamaCloudProvider(
         base_url="https://api.ollama.com",
         api_key="test-key",
-        model="nemotron-3-super:cloud",
+        model="nemotron-3-ultra:cloud",
         request_timeout=45.0,
     )
     assert provider.request_timeout == 45.0
@@ -21,7 +21,7 @@ def test_ollama_provider_default_timeout():
     provider = OllamaCloudProvider(
         base_url="https://api.ollama.com",
         api_key="test-key",
-        model="nemotron-3-super:cloud",
+        model="nemotron-3-ultra:cloud",
     )
     assert provider.request_timeout == 180.0
 
@@ -32,7 +32,7 @@ def test_ollama_generate_raises_timeout():
     provider = OllamaCloudProvider(
         base_url="https://api.ollama.com",
         api_key="test-key",
-        model="nemotron-3-super:cloud",
+        model="nemotron-3-ultra:cloud",
         request_timeout=0.01,
     )
     # Simulate a slow response

@@ -7,7 +7,10 @@ page can show it to users for copy-paste, and a small helper to fetch the
 evaluation history once the table exists.
 """
 
-from typing import List, Dict, Optional
+import logging
+from typing import Callable, List, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 QUALITY_EVALUATIONS_DDL = """
 CREATE TABLE IF NOT EXISTS quality_evaluations (
@@ -87,9 +90,17 @@ def fetch_quality_evaluations(supabase, limit: int = 12) -> List[Dict]:
         return []
 
 
-def insert_quality_evaluation(supabase, payload: Dict) -> Optional[Dict]:
+def insert_quality_evaluation(
+    supabase, payload: Dict, on_error: Optional[Callable[[str], None]] = None
+) -> Optional[Dict]:
     """Insert a new quality_evaluations row.  Returns the inserted record or
     None on failure (including the case where the table doesn't exist yet).
+
+    Failures are logged at WARNING with the actual error (a bare ``None``
+    return used to make a schema mismatch look identical to a network
+    blip — that hid a missing-migration failure for weeks).  ``on_error``,
+    if given, receives the error message so callers (the evaluation
+    checkpoint's awaiting-db state) can surface it in the UI.
     """
     if supabase is None or not supabase.is_available():
         return None
@@ -100,7 +111,13 @@ def insert_quality_evaluation(supabase, payload: Dict) -> Optional[Dict]:
         if response.data:
             return response.data[0]
         return None
-    except Exception:
+    except Exception as exc:
+        logger.warning("quality_evaluations insert failed: %s", exc)
+        if on_error is not None:
+            try:
+                on_error(str(exc))
+            except Exception:  # noqa: BLE001 — never break the insert path
+                pass
         return None
 
 
@@ -175,8 +192,29 @@ def insert_keyword_suggestions(
             .insert(rows) \
             .execute()
         return response.data if response.data else []
-    except Exception:
+    except Exception as exc:
+        logger.warning("keyword_suggestions insert failed: %s", exc)
         return []
+
+
+def update_keyword_suggestion_status(
+    supabase, ids: List[str], status: str
+) -> int:
+    """Update the status ('applied' / 'dismissed' / 'pending') of the given
+    keyword_suggestion rows.  Returns the number of rows updated; 0 on
+    failure (never raises).
+    """
+    if not ids or supabase is None or not supabase.is_available():
+        return 0
+    try:
+        response = supabase.client.table("keyword_suggestions") \
+            .update({"status": status}) \
+            .in_("id", ids) \
+            .execute()
+        return len(response.data or [])
+    except Exception as exc:
+        logger.warning("keyword_suggestions status update failed: %s", exc)
+        return 0
 
 
 def fetch_recent_keyword_suggestions(supabase, limit: int = 50) -> List[Dict]:

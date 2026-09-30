@@ -116,11 +116,11 @@ The gateway routes each task type to a primary model with an ordered fallback ch
 
 | Task | Primary | Fallback 1 | Fallback 2 | Fallback 3 | Deterministic |
 |---|---|---|---|---|---|
-| categorise | gemini-3.5-flash-lite | gemini-3.5-flash | nemotron-3-super | gpt-oss-120b | Yes |
-| extract | gemini-3.5-flash-lite | gemini-3.5-flash | nemotron-3-super | gpt-oss-120b | Yes |
-| summarise | nemotron-3-super | gpt-oss-120b | gemini-3.6-flash | gemini-3.5-flash | Yes |
-| synthesise | nemotron-3-super | gpt-oss-120b | gemini-3.6-flash | gemini-3.5-flash | Yes |
-| project | nemotron-3-super | gpt-oss-120b | gemini-3.6-flash | gemini-3.5-flash | Yes |
+| categorise | gemini-3.5-flash-lite | gemini-3.8-flash | nemotron-3-ultra | gpt-oss-120b | Yes |
+| extract | gemini-3.5-flash-lite | gemini-3.8-flash | nemotron-3-ultra | gpt-oss-120b | Yes |
+| summarise | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
+| synthesise | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
+| project | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
 
 All providers have per-request timeouts:
 - **Gemini:** 30s default (configurable via `GEMINI_REQUEST_TIMEOUT`)
