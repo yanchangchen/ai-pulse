@@ -464,9 +464,14 @@ class SupabaseManager:
         date_to: Optional[str] = None,
         source_filter: Optional[str] = None,
         limit: int = 200,
+        prefer_recent: bool = True,
     ) -> Optional[List[Dict]]:
         """Retrieve theme summaries across historical runs within an optional date range
         and theme/source filter.
+
+        When `prefer_recent` is True (default), it prioritizes the newest runs in the
+        window up to `limit`, and returns them sorted chronologically ascending for
+        the LLM's forward narrative.
 
         Returns:
             List of summary dicts (with run_timestamp/run_date), or None on failure.
@@ -476,13 +481,15 @@ class SupabaseManager:
 
         try:
             # Step 1 – fetch runs in the requested date window
+            # Order newest first if prefer_recent to ensure recent dates are never cut off
             runs_q = self.client.table("trend_runs") \
-                .select("id, run_timestamp, run_date") \
-                .order("run_timestamp", desc=False)
+                .select("id, run_timestamp, run_date")
             if date_from:
                 runs_q = runs_q.gte("run_timestamp", date_from)
             if date_to:
                 runs_q = runs_q.lte("run_timestamp", date_to)
+
+            runs_q = runs_q.order("run_timestamp", desc=prefer_recent)
 
             runs_resp = runs_q.execute()
             if not runs_resp.data:
@@ -518,7 +525,7 @@ class SupabaseManager:
                 if sum_resp.data:
                     all_summaries.extend(sum_resp.data)
 
-            # Step 3 – augment with run metadata and sort chronologically
+            # Step 3 – augment with run metadata and sort chronologically (ascending)
             results: List[Dict] = []
             for s in all_summaries:
                 run_meta = run_lookup.get(s["run_id"])
@@ -529,8 +536,12 @@ class SupabaseManager:
                         "run_date": run_meta["run_date"],
                     })
 
+            # Always return chronologically ascending for Sage narrative
             results.sort(key=lambda r: r["run_timestamp"])
-            return results[:limit]
+            if limit and len(results) > limit:
+                # If prefer_recent, keep the newest 'limit' items (which are at the tail of the sorted list)
+                results = results[-limit:] if prefer_recent else results[:limit]
+            return results
         except Exception as e:
             logger.error(f"Failed to get summaries across runs: {e}")
             return None

@@ -142,10 +142,19 @@ def main() -> None:
 # Sage chat tab
 # ---------------------------------------------------------------------------
 
-def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=None):
-    """Render the Ask Sage conversational chat interface."""
+def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None, default_date_to=None, default_source_filter=None):
+    """Render the Ask Sage conversational chat interface with in-depth scope control and persistent history."""
+    from datetime import date, datetime, timedelta
     from core.sage_agent import SAGE_INTRO, build_wiki_context, chat_with_sage
     from core.llm_client import LLMClient
+    from core.sage_conversations import (
+        list_saved_conversations,
+        get_conversation,
+        save_conversation,
+        delete_conversation,
+        export_conversation_markdown,
+    )
+    from config.themes import THEME_ORDER
 
     # Sage intro banner
     st.markdown(f"""
@@ -155,25 +164,226 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
     </div>
     """, unsafe_allow_html=True)
 
-    # Initialise chat state
+    # Initialise session state keys
     if "sage_messages" not in st.session_state:
         st.session_state.sage_messages = []
+    if "sage_current_conv_id" not in st.session_state:
+        st.session_state.sage_current_conv_id = None
+    if "sage_conv_title" not in st.session_state:
+        st.session_state.sage_conv_title = ""
+    if "sage_period_preset" not in st.session_state:
+        st.session_state.sage_period_preset = "📅 Last 30 Days"
+    if "sage_selected_theme" not in st.session_state:
+        st.session_state.sage_selected_theme = "All Themes" if not default_theme_filter else default_theme_filter
 
-    # New conversation button
-    col_new, col_info = st.columns([1, 3])
+    today = date.today()
+
+    # -------------------------------------------------------------------------
+    # 1. Conversation Management Bar
+    # -------------------------------------------------------------------------
+    saved_convs = list_saved_conversations()
+
+    conv_options = {"__active__": f"💬 Current Session ({len(st.session_state.sage_messages)} msgs)"}
+    for c in saved_convs:
+        title_snippet = c["title"][:38] + ("…" if len(c["title"]) > 38 else "")
+        time_snippet = c["updated_at"][:10] if c.get("updated_at") else ""
+        conv_options[c["id"]] = f"📁 {title_snippet} ({c['message_count']} msgs · {time_snippet})"
+
+    active_id = st.session_state.sage_current_conv_id or "__active__"
+    if active_id not in conv_options:
+        active_id = "__active__"
+
+    col_conv_select, col_new, col_save, col_export, col_del = st.columns([4, 1.3, 1.4, 1.4, 1.1])
+
+    with col_conv_select:
+        selected_conv_key = st.selectbox(
+            "Conversation History",
+            options=list(conv_options.keys()),
+            format_func=lambda k: conv_options.get(k, k),
+            index=list(conv_options.keys()).index(active_id),
+            label_visibility="collapsed",
+            key="sage_thread_selector",
+        )
+        if selected_conv_key != active_id and selected_conv_key != "__active__":
+            loaded = get_conversation(selected_conv_key)
+            if loaded:
+                st.session_state.sage_messages = loaded.get("messages", [])
+                st.session_state.sage_current_conv_id = loaded.get("id")
+                st.session_state.sage_conv_title = loaded.get("title", "")
+                if loaded.get("theme_filter"):
+                    st.session_state.sage_selected_theme = loaded["theme_filter"]
+                if loaded.get("period_label"):
+                    st.session_state.sage_period_preset = loaded["period_label"]
+                st.rerun()
+
     with col_new:
-        if st.button("🔄 New conversation", key="sage_new_convo"):
+        if st.button("➕ New", key="sage_btn_new", help="Start a new blank conversation"):
             st.session_state.sage_messages = []
+            st.session_state.sage_current_conv_id = None
+            st.session_state.sage_conv_title = ""
             st.rerun()
-    with col_info:
-        theme_label = theme_filter if theme_filter else "All Themes"
-        source_label = source_filter if source_filter else "All Sources"
-        st.caption(f"📌 Context: **Theme: {theme_label} | Source: {source_label}** | {date_from} → {date_to}")
 
-    st.divider()
+    with col_save:
+        can_save = len(st.session_state.sage_messages) > 0
+        save_label = "💾 Update" if st.session_state.sage_current_conv_id else "💾 Save"
+        if st.button(save_label, key="sage_btn_save", disabled=not can_save, help="Save conversation to persistent history"):
+            saved_id = save_conversation(
+                messages=st.session_state.sage_messages,
+                conv_id=st.session_state.sage_current_conv_id,
+                title=st.session_state.sage_conv_title or None,
+                theme_filter=st.session_state.sage_selected_theme,
+                period_label=st.session_state.sage_period_preset,
+            )
+            st.session_state.sage_current_conv_id = saved_id
+            st.toast("✅ Conversation saved!", icon="💾")
+            st.rerun()
+
+    with col_export:
+        can_export = len(st.session_state.sage_messages) > 0
+        if can_export:
+            export_title = st.session_state.sage_conv_title or "Sage_Analysis"
+            md_text = export_conversation_markdown(
+                title=export_title,
+                messages=st.session_state.sage_messages,
+                theme_filter=st.session_state.sage_selected_theme,
+                period_label=st.session_state.sage_period_preset,
+            )
+            st.download_button(
+                label="📥 Export",
+                data=md_text,
+                file_name=f"sage_report_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                mime="text/markdown",
+                help="Download conversation as Markdown report",
+                key="sage_btn_export",
+            )
+        else:
+            st.button("📥 Export", disabled=True, key="sage_btn_export_disabled")
+
+    with col_del:
+        is_saved = bool(st.session_state.sage_current_conv_id)
+        if st.button("🗑️", key="sage_btn_delete", disabled=not is_saved, help="Delete active saved conversation"):
+            delete_conversation(st.session_state.sage_current_conv_id)
+            st.session_state.sage_messages = []
+            st.session_state.sage_current_conv_id = None
+            st.session_state.sage_conv_title = ""
+            st.toast("Conversation deleted.", icon="🗑️")
+            st.rerun()
+
+    # -------------------------------------------------------------------------
+    # 2. Scope & Research Filters (Period, Theme, Source)
+    # -------------------------------------------------------------------------
+    with st.expander("🔭 **Research Scope & Historical Filters**", expanded=False):
+        c_period, c_theme, c_src = st.columns(3)
+
+        with c_period:
+            period_options = [
+                "📅 Last 30 Days",
+                "⚡ Last 7 Days",
+                f"🍂 Current Month ({today.strftime('%B %Y')})",
+                "♾️ Full Archive (All Available Dates)",
+                "🗓️ Custom Date Range",
+            ]
+            current_preset_idx = period_options.index(st.session_state.sage_period_preset) if st.session_state.sage_period_preset in period_options else 0
+            selected_preset = st.selectbox(
+                "Time Period",
+                period_options,
+                index=current_preset_idx,
+                key="sage_period_select_input",
+            )
+            st.session_state.sage_period_preset = selected_preset
+
+        with c_theme:
+            all_themes_opt = ["All Themes"] + THEME_ORDER
+            theme_choice = st.selectbox(
+                "Focus Theme",
+                all_themes_opt,
+                index=all_themes_opt.index(st.session_state.sage_selected_theme) if st.session_state.sage_selected_theme in all_themes_opt else 0,
+                key="sage_theme_select_input",
+            )
+            st.session_state.sage_selected_theme = theme_choice
+
+        with c_src:
+            sources = ["All Sources"]
+            if supabase and supabase.is_available():
+                unique_sources = supabase.get_unique_sources()
+                if unique_sources:
+                    sources.extend(unique_sources)
+            selected_source = st.selectbox("Source Filter", sources, key="sage_source_select_input")
+
+        # Resolve date boundaries based on preset
+        custom_c1, custom_c2 = st.columns(2)
+        if selected_preset == "⚡ Last 7 Days":
+            resolved_date_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+            resolved_date_to = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif selected_preset == "📅 Last 30 Days":
+            resolved_date_from = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+            resolved_date_to = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif selected_preset.startswith("🍂 Current Month"):
+            resolved_date_from = today.replace(day=1).strftime("%Y-%m-%d")
+            resolved_date_to = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif selected_preset == "♾️ Full Archive (All Available Dates)":
+            resolved_date_from = None
+            resolved_date_to = None
+        else:  # Custom Range
+            with custom_c1:
+                start_d = st.date_input("From Date", value=today - timedelta(days=60), key="sage_custom_start")
+            with custom_c2:
+                end_d = st.date_input("To Date", value=today, key="sage_custom_end")
+            resolved_date_from = start_d.strftime("%Y-%m-%d")
+            resolved_date_to = (end_d + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # If expander was not rendered/evaluated, fall back to resolved dates
+    if "resolved_date_from" not in locals():
+        if st.session_state.sage_period_preset == "⚡ Last 7 Days":
+            resolved_date_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+            resolved_date_to = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif st.session_state.sage_period_preset == "📅 Last 30 Days":
+            resolved_date_from = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+            resolved_date_to = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif st.session_state.sage_period_preset.startswith("🍂 Current Month"):
+            resolved_date_from = today.replace(day=1).strftime("%Y-%m-%d")
+            resolved_date_to = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif st.session_state.sage_period_preset == "♾️ Full Archive (All Available Dates)":
+            resolved_date_from = None
+            resolved_date_to = None
+        else:
+            resolved_date_from = (today - timedelta(days=60)).strftime("%Y-%m-%d")
+            resolved_date_to = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    active_theme_filter = None if st.session_state.sage_selected_theme == "All Themes" else st.session_state.sage_selected_theme
+    active_source_filter = None if (not 'selected_source' in locals() or selected_source == "All Sources") else selected_source
+
+    # Render Active Scope Badge
+    theme_badge = active_theme_filter or "All Themes"
+    date_display = f"{resolved_date_from} → {resolved_date_to}" if resolved_date_from else "Full Archive (Chronological)"
+    st.markdown(
+        f'<div style="font-size:13px; color:#9aa0a6; padding: 6px 12px; border-radius: 6px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); margin-bottom: 12px;">'
+        f'🔭 <b>Active Scope:</b> <code>{st.session_state.sage_period_preset}</code> ({date_display}) &nbsp;|&nbsp; '
+        f'<b>Theme:</b> <code>{theme_badge}</code> &nbsp;|&nbsp; '
+        f'<b>Source:</b> <code>{active_source_filter or "All"}</code>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     if LLMClient.is_quota_exceeded():
         st.info("⚡ **Live Gemini Fallback Active**: Primary Ollama quota is paused. Sage conversations are powered by Google Gemini.", icon="⚡")
+
+    # If empty conversation, show starter prompts
+    if not st.session_state.sage_messages:
+        st.markdown(
+            """
+            <div style="background: rgba(255,255,255,0.02); border: 1px dashed #3c4043; border-radius: 8px; padding: 14px 18px; margin: 12px 0 16px 0;">
+                <span style="font-size: 13px; color: #8ab4f8; font-weight: 600;">💡 SUGGESTED QUESTIONS:</span>
+                <ul style="font-size: 13px; color: #bdc1c6; margin: 8px 0 0 16px; padding: 0;">
+                    <li><i>"What were the most important developments across September 2026?"</i></li>
+                    <li><i>"How did reasoning models and latent reasoning evolve recently?"</i></li>
+                    <li><i>"When did we first see autonomous coding agent benchmarks like Terminal-Bench?"</i></li>
+                    <li><i>"What are the major engineering tradeoffs reported in recent model deployments?"</i></li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # Render conversation history
     for msg in st.session_state.sage_messages:
@@ -192,18 +402,16 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
 
         # Build context and get Sage's response
         with st.chat_message("assistant", avatar="🔮"):
-            with st.spinner("Sage is analysing the archive..."):
-                # Build grounded wiki context — returns a dict with context + stats
+            with st.spinner("Sage is analyzing the archive..."):
                 wiki_ctx = build_wiki_context(
                     supabase=supabase,
                     question=user_input,
-                    theme_filter=theme_filter,
-                    date_from=date_from,
-                    date_to=date_to,
-                    source_filter=source_filter,
+                    theme_filter=active_theme_filter,
+                    date_from=resolved_date_from,
+                    date_to=resolved_date_to,
+                    source_filter=active_source_filter,
                 )
 
-                # Call LLM
                 llm = LLMClient()
                 sage_response = chat_with_sage(
                     llm_client=llm,
@@ -213,15 +421,27 @@ def _render_sage_tab(supabase, theme_filter, date_from, date_to, source_filter=N
 
             st.markdown(sage_response)
 
-            # Grounding caption — surface how far Sage actually reached
             stats = wiki_ctx if isinstance(wiki_ctx, dict) else {}
             if stats.get("date_count"):
                 st.caption(
-                    f"📚 Grounded in **{stats['run_count']}** runs across "
+                    f"📚 Grounded in **{stats['run_count']}** summaries across "
                     f"**{stats['date_count']}** dates ({stats['date_range']})"
                 )
+            elif stats.get("run_count") == 0:
+                st.caption("ℹ️ *Notice: No wiki records matched the selected period/theme filters.*")
 
         st.session_state.sage_messages.append({"role": "assistant", "content": sage_response})
+
+        # Auto-update saved conversation thread if one is active
+        if st.session_state.sage_current_conv_id:
+            save_conversation(
+                messages=st.session_state.sage_messages,
+                conv_id=st.session_state.sage_current_conv_id,
+                title=st.session_state.sage_conv_title or None,
+                theme_filter=st.session_state.sage_selected_theme,
+                period_label=st.session_state.sage_period_preset,
+            )
+
         st.rerun()
 
 

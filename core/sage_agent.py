@@ -207,6 +207,7 @@ def build_wiki_context(
     source_filter: Optional[str] = None,
     history: Optional[Dict] = None,
     max_chars: int = 40_000,
+    limit: int = 300,
 ) -> Dict[str, Any]:
     """Assemble a per-date-budgeted, time-decayed context string from wiki data.
 
@@ -234,7 +235,8 @@ def build_wiki_context(
             date_from=date_from,
             date_to=date_to,
             source_filter=source_filter,
-            limit=200,
+            limit=limit,
+            prefer_recent=True,
         )
         if raw:
             summaries = raw
@@ -247,6 +249,10 @@ def build_wiki_context(
             for ts in sorted(history.keys()):
                 entry = history[ts]
                 run_date = entry.get("date", ts[:10])
+                if date_from and run_date < date_from[:10]:
+                    continue
+                if date_to and run_date > date_to[:10]:
+                    continue
                 for theme_name, summary in entry.get("summaries", {}).items():
                     if theme_filter and theme_name != theme_filter:
                         continue
