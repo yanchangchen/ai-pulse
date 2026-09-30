@@ -28,6 +28,25 @@ def _get_supabase():
             key = os.getenv("SUPABASE_KEY")
             
             if not url or not key:
+                try:
+                    import streamlit as st
+                    if hasattr(st, "secrets"):
+                        url = url or st.secrets.get("SUPABASE_URL")
+                        key = key or st.secrets.get("SUPABASE_KEY")
+                except Exception:
+                    pass
+
+            if not url or not key:
+                # Try loading from .env if python-dotenv available
+                try:
+                    from dotenv import load_dotenv
+                    load_dotenv()
+                    url = url or os.getenv("SUPABASE_URL")
+                    key = key or os.getenv("SUPABASE_KEY")
+                except Exception:
+                    pass
+
+            if not url or not key:
                 logger.warning("SUPABASE_URL or SUPABASE_KEY not set. Supabase persistence disabled.")
                 return None
             
@@ -1137,6 +1156,193 @@ class SupabaseManager:
                 logger.error(f"Failed to delete feedback in Supabase: {e}")
 
         return _delete_local_feedback(feedback_id)
+
+    # ------------------------------------------------------------------
+    # Sage Conversations (Persistent Cloud Threads)
+    # ------------------------------------------------------------------
+
+    def save_sage_conversation(
+        self,
+        messages: List[Dict],
+        conv_id: Optional[str] = None,
+        title: Optional[str] = None,
+        theme_filter: Optional[str] = None,
+        period_label: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Save or update a Sage conversation in Supabase.
+
+        Attempts table `sage_conversations`. If the table does not exist yet,
+        it automatically persists to `sync_metadata` under key 'sage_conversations_store'.
+        """
+        import uuid
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conv_id = conv_id or str(uuid.uuid4())
+
+        if not title:
+            first_user_msg = next((m.get("content", "") for m in messages if m.get("role") == "user"), "Conversation")
+            cleaned = " ".join(first_user_msg.split())
+            title = cleaned[:50] + ("…" if len(cleaned) > 50 else "")
+
+        payload = {
+            "id": conv_id,
+            "title": title,
+            "theme_filter": theme_filter,
+            "period_label": period_label,
+            "messages": messages,
+            "updated_at": now_iso,
+        }
+
+        if not self.available:
+            return None
+
+        # 1. Try native sage_conversations table
+        try:
+            existing = self.client.table("sage_conversations").select("id").eq("id", conv_id).execute()
+            if existing.data:
+                res = self.client.table("sage_conversations").update(payload).eq("id", conv_id).execute()
+            else:
+                payload["created_at"] = now_iso
+                res = self.client.table("sage_conversations").insert(payload).execute()
+            if res.data:
+                logger.info(f"Saved Sage conversation to Supabase table: {conv_id}")
+                return res.data[0]
+        except Exception as e:
+            logger.debug(f"Direct sage_conversations table save failed (falling back to sync_metadata): {e}")
+
+        # 2. Resilient fallback to sync_metadata store
+        try:
+            store = self._get_conversations_from_sync_metadata()
+            store[conv_id] = {
+                **payload,
+                "created_at": store.get(conv_id, {}).get("created_at", now_iso),
+            }
+            if self._save_conversations_to_sync_metadata(store):
+                logger.info(f"Saved Sage conversation to Supabase sync_metadata: {conv_id}")
+                return store[conv_id]
+        except Exception as e:
+            logger.error(f"Failed to persist conversation to Supabase: {e}")
+
+        return None
+
+    def get_sage_conversations(self, limit: int = 50) -> List[Dict]:
+        """Retrieve all saved Sage conversations from Supabase."""
+        if not self.available:
+            return []
+
+        # 1. Try native sage_conversations table
+        try:
+            res = self.client.table("sage_conversations") \
+                .select("id, title, theme_filter, period_label, created_at, updated_at, messages") \
+                .order("updated_at", desc=True) \
+                .limit(limit) \
+                .execute()
+            if res.data is not None and len(res.data) > 0:
+                results = []
+                for row in res.data:
+                    results.append({
+                        "id": str(row["id"]),
+                        "title": row.get("title", "Untitled"),
+                        "theme_filter": row.get("theme_filter"),
+                        "period_label": row.get("period_label"),
+                        "created_at": str(row.get("created_at", "")),
+                        "updated_at": str(row.get("updated_at", "")),
+                        "message_count": len(row.get("messages", [])),
+                    })
+                return results
+        except Exception as e:
+            logger.debug(f"Direct sage_conversations table select failed: {e}")
+
+        # 2. Fallback to sync_metadata store
+        try:
+            store = self._get_conversations_from_sync_metadata()
+            results = []
+            for cid, c in store.items():
+                results.append({
+                    "id": cid,
+                    "title": c.get("title", "Untitled"),
+                    "theme_filter": c.get("theme_filter"),
+                    "period_label": c.get("period_label"),
+                    "created_at": str(c.get("created_at", "")),
+                    "updated_at": str(c.get("updated_at", "")),
+                    "message_count": len(c.get("messages", [])),
+                })
+            results.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+            return results[:limit]
+        except Exception as e:
+            logger.error(f"Failed to fetch conversations from Supabase: {e}")
+            return []
+
+    def get_sage_conversation_by_id(self, conv_id: str) -> Optional[Dict]:
+        """Retrieve a specific Sage conversation by ID from Supabase."""
+        if not self.available or not conv_id:
+            return None
+
+        # 1. Try native sage_conversations table
+        try:
+            res = self.client.table("sage_conversations").select("*").eq("id", conv_id).execute()
+            if res.data and len(res.data) > 0:
+                return res.data[0]
+        except Exception as e:
+            logger.debug(f"Direct sage_conversations table get failed: {e}")
+
+        # 2. Fallback to sync_metadata store
+        try:
+            store = self._get_conversations_from_sync_metadata()
+            return store.get(conv_id)
+        except Exception as e:
+            logger.error(f"Failed to fetch conversation {conv_id} from Supabase: {e}")
+            return None
+
+    def delete_sage_conversation(self, conv_id: str) -> bool:
+        """Delete a saved Sage conversation by ID from Supabase."""
+        if not self.available or not conv_id:
+            return False
+
+        deleted = False
+        # 1. Try native sage_conversations table
+        try:
+            res = self.client.table("sage_conversations").delete().eq("id", conv_id).execute()
+            if res.data:
+                deleted = True
+        except Exception as e:
+            logger.debug(f"Direct sage_conversations table delete failed: {e}")
+
+        # 2. Also clean from sync_metadata fallback store if present
+        try:
+            store = self._get_conversations_from_sync_metadata()
+            if conv_id in store:
+                del store[conv_id]
+                self._save_conversations_to_sync_metadata(store)
+                deleted = True
+        except Exception as e:
+            logger.error(f"Failed to delete conversation from sync_metadata: {e}")
+
+        return deleted
+
+    def _get_conversations_from_sync_metadata(self) -> Dict[str, Dict]:
+        """Read fallback conversations store from sync_metadata."""
+        try:
+            res = self.client.table("sync_metadata").select("value").eq("key", "sage_conversations_store").execute()
+            if res.data and res.data[0].get("value"):
+                val = json.loads(res.data[0]["value"])
+                return val if isinstance(val, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    def _save_conversations_to_sync_metadata(self, store: Dict[str, Dict]) -> bool:
+        """Write fallback conversations store to sync_metadata."""
+        try:
+            payload = {
+                "key": "sage_conversations_store",
+                "value": json.dumps(store, ensure_ascii=False),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.client.table("sync_metadata").upsert(payload, on_conflict="key").execute()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save conversations to sync_metadata: {e}")
+            return False
 
 
 # ------------------------------------------------------------------

@@ -4,6 +4,27 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-09-17 to 2026-09-30 — Sage grows a real memory
+
+**Problem**: Sage, the AI analyst persona, was confidently answering questions about "the latest runs" — but was silently reading the *oldest* data in the window. A user asking about September activity got July answers, with no indication anything was wrong. On top of that, long conversations had no persistence: closing the tab meant losing the thread entirely.
+
+**What happened**:
+
+1. **The oldest-first pagination bug.** `get_summaries_across_runs` in `core/supabase_client.py` was returning pages in ascending timestamp order — oldest first — and then truncating to the context-window limit. The result: Sage always read the *earliest* slice of whatever date window was selected, not the most recent. Fixed by adding `prefer_recent=True` and enforcing `ORDER BY run_date DESC` before the limit is applied. *Lesson: "give me the last N rows" and "give me the first N rows, sorted ascending" are the same query unless you're deliberate about it.*
+
+2. **No scope controls in the chat UI.** Users had to know SQL or restart the app to change what period Sage was looking at. Added a "Research Scope & Historical Filters" expander directly inside the chat interface (`pages/5_History.py`) with one-click presets (Last 7 days, Last 30 days, Current Month) and a custom date-range picker. Theme isolation is also exposed here, letting users pin Sage to a single topic (e.g. "LLM Infrastructure") for focused Q&A. *Lesson: scope controls belong next to the thing being scoped, not buried in settings.*
+
+3. **Conversation persistence via Supabase.** Chat threads were living entirely in `st.session_state` — ephemeral, tab-scoped, gone on refresh. Added four methods to `SupabaseManager` (`save_sage_conversation`, `get_sage_conversations`, `get_sage_conversation_by_id`, `delete_sage_conversation`) backed by a dedicated `sage_conversations` table (see `supabase_migration_sage_conversations.sql`). The integration follows the same resilient-fallback pattern used elsewhere: if the table migration is pending, the system falls back to `sync_metadata` with key `sage_conversations_store` and logs a warning — zero downtime, zero data loss. *Lesson: make the happy path use Supabase and the fallback path obvious; never silently drop data.*
+
+**Also shipped**:
+
+- `AGENTS.md` — a standalone directive for AI coding harnesses codifying the "Fast Inner Loop / Full Regression" testing policy: targeted tests (`< 0.5s`) during active development; full `pytest tests/` only as a final sanity check before PRs.
+- `CLAUDE.md` updated with the same targeted-testing table so both human and AI contributors know which test file maps to which component.
+
+**Result**: Sage now reads the *right* data, users can slice by period and theme without leaving the chat, conversations survive page refreshes, and AI harnesses working on this repo no longer burn 90 seconds on a 444-test suite for every small edit.
+
+---
+
 ## 2026-09-11 to 2026-09-16 — Silent fallbacks and the cost of failing quietly
 
 **Problem**: Three production issues in one week, all sharing the same root pattern — the system was failing *quietly*. Fallbacks did their job so well that nobody knew the primary path was gone.

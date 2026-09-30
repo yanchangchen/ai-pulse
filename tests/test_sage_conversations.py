@@ -99,3 +99,38 @@ def test_export_conversation_markdown(temp_conv_file):
     assert "👤 User" in md
     assert "🔮 Sage" in md
     assert "AI Models" in md
+
+
+def test_supabase_preferred_when_available(temp_conv_file):
+    mock_mgr = MagicMock()
+    mock_mgr.is_available.return_value = True
+    mock_mgr.save_sage_conversation.return_value = {"id": "sb-123", "title": "Cloud Saved"}
+    mock_mgr.get_sage_conversations.return_value = [
+        {"id": "sb-123", "title": "Cloud Saved", "updated_at": "2026-09-30", "message_count": 2}
+    ]
+    mock_mgr.get_sage_conversation_by_id.return_value = {
+        "id": "sb-123",
+        "title": "Cloud Saved",
+        "messages": [{"role": "user", "content": "test"}],
+    }
+    mock_mgr.delete_sage_conversation.return_value = True
+
+    with patch("core.supabase_client.get_supabase_manager", return_value=mock_mgr):
+        cid = save_conversation(
+            messages=[{"role": "user", "content": "test"}],
+            title="Cloud Saved",
+        )
+        assert cid == "sb-123"
+        mock_mgr.save_sage_conversation.assert_called_once()
+
+        convs = list_saved_conversations()
+        assert len(convs) == 1
+        assert convs[0]["id"] == "sb-123"
+
+        single = get_conversation("sb-123")
+        assert single["title"] == "Cloud Saved"
+
+        del_ok = delete_conversation("sb-123")
+        assert del_ok is True
+        mock_mgr.delete_sage_conversation.assert_called_once_with("sb-123")
+

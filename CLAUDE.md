@@ -20,12 +20,20 @@ First load triggers a `BackgroundRefresher` thread; the UI stays responsive (ing
 ## Testing
 
 ```bash
-python -m pytest tests/                      # main suite (~215 tests)
-python -m pytest tests/test_classifier.py    # single file
-python -m pytest tests/test_summariser.py::test_name   # single test
-python -m pytest -m integration tests/       # opt-in: real LLM + Supabase wiring
+# FAST INNER LOOP (< 0.5s) — ALWAYS prefer targeted tests during iteration:
+python -m pytest tests/test_sage_agent.py tests/test_sage_conversations.py   # Sage & conversations
+python -m pytest tests/test_supabase_client.py                              # Supabase operations
+python -m pytest tests/test_classifier.py                                   # Classifier
+python -m pytest tests/test_summariser.py                                   # Summariser
+python -m pytest tests/test_summariser.py::test_name                        # Single test function
+python -m pytest tests/ -k "sage"                                           # Filter by keyword pattern
+
+# FULL REGRESSION SUITE (444+ tests, ~90s) — ONLY run once as final pre-commit check:
+python -m pytest tests/
+python -m pytest -m integration tests/                                      # opt-in: real LLM + Supabase wiring
 ```
 
+- **⚠️ HARNESS DIRECTIVE: NEVER run the full suite (`pytest tests/`) after routine code edits.** The suite has grown to 444+ tests and takes ~90 seconds. Future harnesses MUST run only the 1–2 test files relevant to the modified code during iteration (sub-second feedback), reserving the full regression run strictly for the final verification step before completing the task.
 - Always target `tests/` explicitly — the root-level `test_*.py` files (`test_supabase.py`, `test_backfill.py`, `test_deduplication.py`, `test_llm_optimization.py`) are manual smoke scripts meant to be run directly with `python`, not collected by pytest.
 - `tests/conftest.py` has an autouse fixture that resets `LLMClient` quota flags around every test; keep it in mind when adding fixtures that touch quota state.
 - A second autouse fixture pins the Supabase manager singleton to an offline stub (`is_available() == False`) so tests never touch the production project. This matters on machines with `.streamlit/secrets.toml`: importing `config.settings` makes Streamlit export all secrets (including `SUPABASE_URL`/`SUPABASE_KEY`) into `os.environ`, which `core/supabase_client.py` reads directly. Tests that exercise Supabase-backed behaviour must patch `core.supabase_client.get_supabase_manager` with their own mock (pattern: `test_processed_articles.py::test_supabase_preferred`).
