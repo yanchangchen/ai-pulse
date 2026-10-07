@@ -34,7 +34,8 @@ Three tabs:
 - **🔮 Ask Sage** — conversational agent grounded in wiki data (`core/sage_agent.py`),
   routed through the Model Gateway (`sage_chat` policy: Ollama primary, Gemini
   fallbacks, per-model health tracking). Each reply is captioned with the engine
-  provenance (provider/model, latency, fallback flag).
+  provenance (provider/model, latency, fallback flag) and the grounding stats
+  (summaries/dates plus article-evidence count).
 - **📖 Memory Timeline**
 - **⚖️ Compare Runs**
 
@@ -45,8 +46,19 @@ Three tabs:
   routes the fully-formed prompt (persona + wiki context + conversation) through
   the Model Gateway — no deterministic fallback, so total engine failure surfaces
   as a friendly notice string (quota exhaustion gets a dedicated 429 notice).
+- **Tier-1 article evidence (Phase 2.1):** alongside the summary narrative, a
+  bounded newest-first candidate window of articles
+  (`SupabaseManager.get_articles_for_context()`, local fallback:
+  `themed_articles` from history.json) is fetched and scored client-side
+  against the question's keywords (`score_article_relevance`, titles ×2); the
+  top matches render as an `=== ARTICLE EVIDENCE ===` section capped at
+  ~30% of the char budget, with unused budget flowing back to the summaries.
+  With no keyword matches the selection degrades to newest-first, so Sage
+  always has some article-level grounding. Links are carried but not
+  rendered yet — that's Phase 2.2.
 - Response structure: (1) a chronological account with `[Theme · Run YYYY-MM-DD]`
-  citations, then (2) a "My read on this" assessment.
+  citations (articles cite `[Theme · Source · Date]`), then (2) a
+  "My read on this" assessment.
 - Multi-turn state lives in `st.session_state.sage_messages`.
 - Persistent conversation threads are stored in Supabase and locally
   (`core/sage_conversations.py`).

@@ -33,9 +33,17 @@ Run in the SQL Editor, roughly in order:
 Append-only Model Gateway call log (see `core/ai_gateway/call_log.py`): every completed
 gateway execution — LLM success, deterministic fallback, and total failure — writes one
 row with task type, provider, model, provider-reported tokens in/out, latency, cost
-class, correlation id, and error text. Writes are fire-and-forget daemon threads gated
-on `is_available()`, so the log never blocks or breaks an LLM task. `trace_id` is
-reserved for the OTel/Langfuse observability integration (Phase 0.3 in `Future.md`).
+class, correlation id, trace id, and error text. Writes are fire-and-forget daemon
+threads gated on `is_available()`, so the log never blocks or breaks an LLM task.
+`trace_id` (32-char OTel hex) links each row back to its Langfuse trace when gateway
+tracing is enabled (`core/ai_gateway/tracing.py`, Phase 0.3).
+
+## Sage article retrieval
+
+`SupabaseManager.get_articles_for_context()` (`core/supabase_client.py`) is Sage's
+Tier-1 evidence query (Phase 2.1): a bounded newest-first window on `articles` with
+period/theme/source filters — keyword matching is intentionally NOT done in SQL
+(FTS arrives in Phase 2.3); `core/sage_agent.py` scores and selects client-side.
 
 ## RLS
 

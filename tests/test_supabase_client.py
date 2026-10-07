@@ -44,7 +44,67 @@ def test_get_summaries_by_run_empty():
     """Test get_summaries_by_run returns empty dict when no summaries exist."""
     manager = SupabaseManager()
     manager.available = True
-    
+
     with patch.object(manager, "get_summaries_for_run", return_value=None):
         result = manager.get_summaries_by_run("run-123")
         assert result == {}
+
+
+def _query_chain(rows):
+    """A self-returning postgrest query-builder mock ending in ``rows``."""
+    q = MagicMock()
+    q.select.return_value = q
+    q.eq.return_value = q
+    q.gte.return_value = q
+    q.lte.return_value = q
+    q.order.return_value = q
+    q.limit.return_value = q
+    q.execute.return_value = MagicMock(data=rows)
+    return q
+
+
+def test_get_articles_for_context_applies_filters():
+    """Sage's Tier-1 retrieval: newest-first bounded window with the
+    period/theme/source filters applied on the articles table."""
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [{"id": "a1", "title": "Claude released", "published_at": "2025-07-01"}]
+    q = _query_chain(rows)
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    result = manager.get_articles_for_context(
+        theme_filter="Frontier Models & Benchmarks",
+        date_from="2025-06-15",
+        date_to="2025-07-15",
+        source_filter="OpenAI Blog",
+        limit=123,
+    )
+
+    assert result == rows
+    manager.client.table.assert_called_with("articles")
+    q.select.assert_called_once()
+    q.eq.assert_any_call("theme_name", "Frontier Models & Benchmarks")
+    q.eq.assert_any_call("source_name", "OpenAI Blog")
+    q.gte.assert_called_with("published_at", "2025-06-15")
+    q.lte.assert_called_with("published_at", "2025-07-15")
+    q.order.assert_called_with("published_at", desc=True)
+    q.limit.assert_called_with(123)
+
+
+def test_get_articles_for_context_empty():
+    """No rows → empty list (not None), so the caller can treat it as no data."""
+    manager = SupabaseManager()
+    manager.available = True
+    manager.client = MagicMock()
+    manager.client.table.return_value = _query_chain([])
+
+    assert manager.get_articles_for_context() == []
+
+
+def test_get_articles_for_context_unavailable():
+    """Unavailable manager → None (the caller's 'no Supabase' signal)."""
+    manager = SupabaseManager()
+    manager.available = False
+
+    assert manager.get_articles_for_context() is None

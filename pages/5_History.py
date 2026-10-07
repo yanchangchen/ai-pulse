@@ -427,9 +427,21 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
 
             stats = wiki_ctx if isinstance(wiki_ctx, dict) else {}
             if stats.get("date_count"):
+                article_note = (
+                    f" · **{stats['article_count']}** article evidence"
+                    if stats.get("article_count")
+                    else ""
+                )
                 st.caption(
                     f"📚 Grounded in **{stats['run_count']}** summaries across "
                     f"**{stats['date_count']}** dates ({stats['date_range']})"
+                    f"{article_note}"
+                )
+            elif stats.get("article_count"):
+                # No theme summaries matched, but article evidence did.
+                st.caption(
+                    f"📰 Grounded in **{stats['article_count']}** article evidence "
+                    f"(no theme summaries matched the selected filters)"
                 )
             elif stats.get("run_count") == 0:
                 st.caption("ℹ️ *Notice: No wiki records matched the selected period/theme filters.*")

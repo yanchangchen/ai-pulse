@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from core.ai_gateway.contracts import AITaskRequest, AITaskResult, TaskType
 from core.ai_gateway.gateway import get_gateway
@@ -48,6 +48,9 @@ Your response format (follow this strictly):
 
 Grounding rules:
 - You MUST only reference information present in the WIKI CONTEXT below.
+- The context may also contain an ARTICLE EVIDENCE section of individual \
+  article briefs.  When a claim rests on a specific article, cite it as \
+  "[Theme · Source · Date]".
 - If the context does not contain enough data to answer, say so explicitly — \
   never fabricate or guess.
 - When the user asks "when did you first see" something, scan the context \
@@ -76,6 +79,17 @@ CONDENSED_CHAR_LIMIT = 300
 # Share of the total char budget reserved for the recent tier. The older tier
 # gets the remainder.
 RECENT_BUDGET_SHARE = 0.5
+
+# --- Tier-1 article evidence (Phase 2.1) ---
+# Sage also grounds answers in individual articles: a bounded, newest-first
+# candidate window is fetched (SQL filters only), scored client-side against
+# the question's keywords, and the top matches rendered as compact briefs
+# after the wiki section.  Links are carried but not rendered until 2.2.
+ARTICLE_CANDIDATE_LIMIT = 300  # max rows fetched before client-side scoring
+ARTICLE_TOP_K = 15             # max article briefs in the context
+ARTICLE_BUDGET_SHARE = 0.3     # fraction of max_chars for the article section
+ARTICLE_SNIPPET_CHARS = 300    # per-article summary snippet ceiling
+ARTICLE_MIN_BLOCK = 200        # skip the section if the budget is below this
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +188,25 @@ def score_summary_relevance(summary_block: Dict, question_keywords: List[str]) -
     return score
 
 
+def score_article_relevance(article: Dict, question_keywords: List[str]) -> float:
+    """Score an article by keyword overlap with the user's question.
+
+    Title tokens count double (titles are dense signal); summary tokens
+    count once.  Returns a float >= 0.  Higher = more relevant.
+    """
+    if not question_keywords:
+        return 0.0
+
+    title_tokens = Counter(_tokenise(article.get("title", "")))
+    summary_tokens = Counter(_tokenise(article.get("summary", "")))
+
+    score = 0.0
+    for kw in question_keywords:
+        score += 2 * title_tokens.get(kw, 0)
+        score += summary_tokens.get(kw, 0)
+    return score
+
+
 # ---------------------------------------------------------------------------
 # First-appearance annotation
 # ---------------------------------------------------------------------------
@@ -197,6 +230,129 @@ def annotate_first_appearances(ordered_summaries: List[Dict]) -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
+# Tier-1 article retrieval (Phase 2.1)
+# ---------------------------------------------------------------------------
+
+def _normalise_article(row: Dict, run_date: str = "") -> Dict:
+    """Normalise a Supabase row or history.json article into one shape.
+
+    ``_date`` is the best available YYYY-MM-DD (published_at, then
+    published_date, then the run date).  ``link`` is carried through for the
+    Phase 2.2 citation work — it is not rendered in the context yet.
+    """
+    published = row.get("published_at") or row.get("published_date") or ""
+    date = published[:10] if published else (run_date or "")
+    return {
+        "theme_name": row.get("theme_name", ""),
+        "title": row.get("title", ""),
+        "summary": row.get("summary", "") or "",
+        "source_name": row.get("source_name", ""),
+        "link": row.get("link"),
+        "_date": date,
+    }
+
+
+def _fetch_article_candidates(
+    supabase,
+    history: Optional[Dict],
+    theme_filter: Optional[str],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    source_filter: Optional[str],
+) -> List[Dict]:
+    """Fetch a bounded, newest-first candidate window of articles.
+
+    Supabase path first; local fallback flattens ``themed_articles`` from
+    history.json runs inside the date window (mirroring the summary
+    fallback's string-compare date filtering).  Keyword matching is NOT done
+    here — SQL only bounds the candidate set; scoring/selection is
+    client-side in ``_select_articles`` (proper FTS arrives in Phase 2.3).
+    """
+    candidates: List[Dict] = []
+
+    if supabase and supabase.is_available():
+        raw = supabase.get_articles_for_context(
+            theme_filter=theme_filter,
+            date_from=date_from,
+            date_to=date_to,
+            source_filter=source_filter,
+            limit=ARTICLE_CANDIDATE_LIMIT,
+        )
+        # isinstance guard: a non-list (e.g. a bare Mock or an error sentinel)
+        # means "no Supabase articles", never a crash.
+        if isinstance(raw, list) and raw:
+            return [_normalise_article(a) for a in raw]
+
+    # Local fallback
+    if history is None:
+        history = load_full_history()
+    if not history:
+        return []
+    for ts in sorted(history.keys()):
+        entry = history[ts]
+        run_date = entry.get("date", ts[:10])
+        if date_from and run_date < date_from[:10]:
+            continue
+        if date_to and run_date > date_to[:10]:
+            continue
+        for theme_name, articles in entry.get("themed_articles", {}).items():
+            if theme_filter and theme_name != theme_filter:
+                continue
+            for a in articles:
+                if source_filter and a.get("source_name") != source_filter:
+                    continue
+                # themed_articles rows carry the theme as the dict key,
+                # not as a field — inject it.
+                candidates.append(_normalise_article({**a, "theme_name": theme_name}, run_date))
+    return candidates
+
+
+def _select_articles(candidates: List[Dict], question_kws: List[str]) -> List[Dict]:
+    """Score candidates against the question and keep the top matches.
+
+    Sorted by (score desc, date desc) then capped at ``ARTICLE_TOP_K``.  When
+    nothing matches any keyword (all scores 0) the same sort degrades to
+    newest-first, so Sage always gets some Tier-1 recency evidence.
+    """
+    if not candidates:
+        return []
+    for a in candidates:
+        a["_score"] = score_article_relevance(a, question_kws)
+    ranked = sorted(candidates, key=lambda a: (a["_score"], a["_date"]), reverse=True)
+    return ranked[:ARTICLE_TOP_K]
+
+
+def _render_article_section(articles: List[Dict], budget: int) -> Tuple[str, int]:
+    """Render the selected article briefs within ``budget`` chars.
+
+    Returns ``(section_text, rendered_count)`` — ``("", 0)`` when there is
+    nothing to render or the budget is below ``ARTICLE_MIN_BLOCK``.
+    """
+    if not articles or budget < ARTICLE_MIN_BLOCK:
+        return "", 0
+
+    header = "=== ARTICLE EVIDENCE (top keyword matches, newest first) ===\n\n"
+    footer = "\n=== END ARTICLE EVIDENCE ==="
+    used = len(header) + len(footer)
+    blocks: List[str] = []
+    for a in articles:
+        snippet = _condense_text(a.get("summary", ""), ARTICLE_SNIPPET_CHARS)
+        block = f"- [{a.get('theme_name', '')} · {a.get('source_name', '')} · {a.get('_date', '')}] {a.get('title', '')}"
+        if snippet:
+            block += f" — {snippet}"
+        block += "\n"
+        if used + len(block) > budget and blocks:
+            # Budget spent; keep the higher-ranked briefs already collected.
+            break
+        blocks.append(block)
+        used += len(block)
+
+    if not blocks:
+        return "", 0
+    return header + "".join(blocks) + footer, len(blocks)
+
+
+# ---------------------------------------------------------------------------
 # Context builder
 # ---------------------------------------------------------------------------
 
@@ -213,20 +369,39 @@ def build_wiki_context(
 ) -> Dict[str, Any]:
     """Assemble a per-date-budgeted, time-decayed context string from wiki data.
 
-    The total ``max_chars`` budget is split across two tiers:
-      - Recent tier (last ``RECENT_DETAIL_COUNT`` dates): full 3-field blocks.
-      - Older tier (all earlier dates): condensed blocks (only ``what_is_happening``,
-        truncated to ``CONDENSED_CHAR_LIMIT`` chars at sentence boundary).
-
-    This guarantees every date in the window is represented rather than the
-    latest run's themes greedily consuming the whole budget.
+    Two grounding layers are packed into the ``max_chars`` budget:
+      - Tier-2 wiki summaries, split across two tiers:
+        * Recent tier (last ``RECENT_DETAIL_COUNT`` dates): full 3-field blocks.
+        * Older tier (all earlier dates): condensed blocks (only
+          ``what_is_happening``, truncated to ``CONDENSED_CHAR_LIMIT`` chars
+          at sentence boundary).  This guarantees every date in the window
+          is represented rather than the latest run's themes greedily
+          consuming the whole budget.
+      - Tier-1 article evidence (Phase 2.1): a bounded, newest-first
+        candidate window is fetched and the top keyword matches against the
+        question are rendered as compact briefs, within an
+        ``ARTICLE_BUDGET_SHARE`` slice of the budget.  Whatever the article
+        section doesn't use flows back to the wiki section.
 
     Returns:
-        A dict ``{"context": str, "run_count": int, "date_count": int, "date_range": str}``
-        so the caller can surface how far Sage actually reached.
+        A dict ``{"context": str, "run_count": int, "date_count": int,
+        "date_range": str, "article_count": int}`` so the caller can surface
+        how far Sage actually reached.
     """
     from collections import defaultdict
     question_kws = _tokenise(question)
+
+    # ------- Fetch Tier-1 article candidates & render within budget -------
+    article_candidates = _fetch_article_candidates(
+        supabase, history, theme_filter, date_from, date_to, source_filter
+    )
+    selected_articles = _select_articles(article_candidates, question_kws)
+    article_section, article_count = _render_article_section(
+        selected_articles, int(max_chars * ARTICLE_BUDGET_SHARE)
+    )
+    # Wiki gets whatever budget the article section didn't consume; with no
+    # articles found it keeps the full budget (existing behaviour).
+    wiki_max = max_chars - len(article_section)
 
     # ------- Fetch summaries -------
     summaries: List[Dict] = []
@@ -268,12 +443,22 @@ def build_wiki_context(
                         "article_count": entry.get("counts", {}).get(theme_name, 0),
                     })
 
-    if not summaries:
+    if not summaries and not article_section:
         return {
             "context": "[No wiki data available for the selected filters.]",
             "run_count": 0,
             "date_count": 0,
             "date_range": "",
+            "article_count": 0,
+        }
+    if not summaries:
+        # Summaries empty but article evidence exists — render it alone.
+        return {
+            "context": article_section,
+            "run_count": 0,
+            "date_count": 0,
+            "date_range": "",
+            "article_count": article_count,
         }
 
     from core.design_system import sanitize_summary_html
@@ -292,11 +477,20 @@ def build_wiki_context(
 
     dates = sorted(by_date.keys())
     if not dates:
+        if article_section:
+            return {
+                "context": article_section,
+                "run_count": 0,
+                "date_count": 0,
+                "date_range": "",
+                "article_count": article_count,
+            }
         return {
             "context": "[No wiki data available for the selected filters.]",
             "run_count": 0,
             "date_count": 0,
             "date_range": "",
+            "article_count": 0,
         }
 
     # ------- Split budget between recent & older tiers -------
@@ -304,8 +498,8 @@ def build_wiki_context(
     recent_dates_list = [d for d in dates if d in recent_dates]
     older_dates_list = [d for d in dates if d not in recent_dates]
 
-    recent_budget = int(max_chars * RECENT_BUDGET_SHARE)
-    older_budget = max_chars - recent_budget
+    recent_budget = int(wiki_max * RECENT_BUDGET_SHARE)
+    older_budget = wiki_max - recent_budget
 
     per_recent_date = recent_budget // max(len(recent_dates_list), 1)
     per_older_date = older_budget // max(len(older_dates_list), 1)
@@ -344,9 +538,9 @@ def build_wiki_context(
             selected.append({**b, "_formatted": block_text})
             date_char_used += block_len
             char_count += block_len
-            if char_count >= max_chars:
+            if char_count >= wiki_max:
                 break
-        if char_count >= max_chars:
+        if char_count >= wiki_max:
             break
 
     # ------- Annotate first appearances across selected blocks -------
@@ -381,6 +575,11 @@ def build_wiki_context(
         lines.append(s["_formatted"])
     lines.append("=== END WIKI CONTEXT ===")
 
+    # Tier-1 evidence rides after the Tier-2 narrative.
+    if article_section:
+        lines.append("\n\n")
+        lines.append(article_section)
+
     context_str = "".join(lines)
 
     return {
@@ -388,6 +587,7 @@ def build_wiki_context(
         "run_count": run_count,
         "date_count": date_count,
         "date_range": date_range_str,
+        "article_count": article_count,
     }
 
 

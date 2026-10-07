@@ -931,6 +931,60 @@ class SupabaseManager:
             logger.error(f"Failed to search articles: {e}")
             return None
 
+    def get_articles_for_context(
+        self,
+        theme_filter: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        source_filter: Optional[str] = None,
+        limit: int = 300,
+    ) -> Optional[List[Dict]]:
+        """
+        Retrieve recent articles for Sage's Tier-1 evidence context (Phase 2.1).
+
+        Unlike search_articles (single ilike on title), this intentionally does
+        no keyword matching in SQL — it returns a bounded, newest-first
+        candidate window within the period/theme/source filters, and the
+        caller (core/sage_agent.py) scores and selects against the question
+        client-side. Proper FTS (tsvector + GIN) arrives in Phase 2.3.
+
+        Args:
+            theme_filter: Optional theme name to filter by.
+            date_from: ISO date string lower bound on published_at.
+            date_to: ISO date string upper bound on published_at.
+            source_filter: Optional source name to filter by.
+            limit: Max candidate articles to return.
+
+        Returns:
+            List of article dicts (newest first), or None on failure.
+        """
+        if not self.available:
+            return None
+
+        try:
+            q = self.client.table("articles") \
+                .select("id, run_id, theme_name, title, summary, source_name, link, published_at") \
+                .order("published_at", desc=True) \
+                .limit(limit)
+
+            if theme_filter:
+                q = q.eq("theme_name", theme_filter)
+            if date_from:
+                q = q.gte("published_at", date_from)
+            if date_to:
+                q = q.lte("published_at", date_to)
+            if source_filter:
+                # NB: filter source_name on the real articles table — the
+                # themed_articles reference in get_summaries_across_runs is a
+                # latent bug against a table that does not exist.
+                q = q.eq("source_name", source_filter)
+
+            response = q.execute()
+            return response.data if response.data else []
+        except Exception as e:
+            logger.error(f"Failed to fetch articles for context: {e}")
+            return None
+
     def get_keyword_velocity(self, keywords: List[str], limit: int = 30) -> Optional[List[Dict]]:
         """
         Count keyword mentions per run across article titles and summaries.

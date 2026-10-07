@@ -251,11 +251,14 @@ class TestBuildWikiContext:
         result = build_wiki_context(supabase=mock_supabase, question="anything")
 
         assert isinstance(result, dict)
-        assert set(result.keys()) == {"context", "run_count", "date_count", "date_range"}
+        assert set(result.keys()) == {
+            "context", "run_count", "date_count", "date_range", "article_count",
+        }
         assert isinstance(result["context"], str)
         assert isinstance(result["run_count"], int)
         assert isinstance(result["date_count"], int)
         assert isinstance(result["date_range"], str)
+        assert isinstance(result["article_count"], int)
 
     def test_all_dates_in_window_are_represented(self):
         """With many dates and large blocks, every date must still appear in
@@ -341,6 +344,244 @@ class TestBuildWikiContext:
 
         short = "Hello world."
         assert _condense_text(short, limit=100) == short
+
+
+# ---------------------------------------------------------------------------
+# Tier-1 article evidence (Phase 2.1)
+# ---------------------------------------------------------------------------
+
+def _article_row(
+    title="Article title",
+    summary="Some article summary.",
+    theme="Frontier Models & Benchmarks",
+    source="OpenAI Blog",
+    published="2025-07-01T10:00:00",
+    link="https://example.com/a",
+):
+    """A row shaped like Supabase articles / history themed_articles entries."""
+    return {
+        "run_id": "r1",
+        "theme_name": theme,
+        "title": title,
+        "summary": summary,
+        "source_name": source,
+        "link": link,
+        "published_at": published,
+    }
+
+
+def _summary_row(date="2025-07-01", theme="AI Models"):
+    return {
+        "run_id": "r1",
+        "run_timestamp": f"{date} 10:00:00",
+        "run_date": date,
+        "theme_name": theme,
+        "what_is_happening": "Models keep improving.",
+        "why_it_matters": "Capability jumps matter.",
+        "what_to_watch": "Benchmarks.",
+        "article_count": 4,
+    }
+
+
+def _mock_supabase(articles=None, summaries=None):
+    """Supabase stand-in returning explicit lists (or None when unset)."""
+    mock = MagicMock()
+    mock.is_available.return_value = True
+    mock.get_summaries_across_runs.return_value = summaries
+    mock.get_articles_for_context.return_value = articles
+    return mock
+
+
+class TestArticleContext:
+    def test_article_section_rendered_after_wiki(self):
+        articles = [_article_row(
+            title="Claude 4.5 Opus released",
+            summary="Anthropic ships Claude 4.5 Opus with major gains.",
+        )]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        result = build_wiki_context(
+            supabase=supabase, question="What happened with Claude releases?"
+        )
+
+        context = result["context"]
+        assert "WIKI CONTEXT" in context
+        assert "=== ARTICLE EVIDENCE" in context
+        assert "Claude 4.5 Opus released" in context
+        assert "[Frontier Models & Benchmarks · OpenAI Blog · 2025-07-01]" in context
+        assert "Anthropic ships Claude" in context
+        # Wiki narrative first, Tier-1 evidence after.
+        assert context.index("=== END WIKI CONTEXT ===") < context.index("=== ARTICLE EVIDENCE")
+        assert result["article_count"] == 1
+
+    def test_keyword_match_ranks_above_non_match(self):
+        articles = [
+            _article_row(title="Unrelated storage story", summary="Disks got cheaper."),
+            _article_row(title="Claude 4.5 Opus released", summary="Anthropic ships Claude."),
+        ]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        result = build_wiki_context(
+            supabase=supabase, question="What happened with Claude releases?"
+        )
+
+        context = result["context"]
+        assert context.index("Claude 4.5 Opus released") < context.index("Unrelated storage story")
+
+    def test_top_k_cap(self):
+        articles = [
+            _article_row(title=f"Article {i}", summary=f"Summary {i} claude release.", published=f"2025-07-{i+1:02d}T09:00:00")
+            for i in range(30)
+        ]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        result = build_wiki_context(supabase=supabase, question="claude release")
+
+        from core.sage_agent import ARTICLE_TOP_K
+        assert result["article_count"] == ARTICLE_TOP_K
+
+    def test_no_keyword_match_falls_back_to_newest(self):
+        # Question tokens match nothing → selection degrades to newest-first.
+        articles = [
+            _article_row(title=f"Story {i}", summary="filler text.", published=f"2025-07-{i+1:02d}T09:00:00")
+            for i in range(5)
+        ]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        result = build_wiki_context(supabase=supabase, question="zzz qqq")
+
+        context = result["context"]
+        assert result["article_count"] == 5
+        # Within the article section, newest (2025-07-05) renders before the
+        # oldest (2025-07-01).  (Compare inside the section: the wiki part
+        # above also mentions dates.)
+        section = context.split("=== ARTICLE EVIDENCE", 1)[1]
+        assert section.index("2025-07-05") < section.index("2025-07-01")
+
+    def test_article_budget_is_capped(self):
+        from core.sage_agent import _render_article_section, ARTICLE_BUDGET_SHARE
+
+        articles = [
+            _article_row(title=f"Article {i}", summary="word " * 500, published=f"2025-07-{i+1:02d}T09:00:00")
+            for i in range(20)
+        ]
+        section, rendered = _render_article_section(articles, int(10_000 * ARTICLE_BUDGET_SHARE))
+
+        assert len(section) <= int(10_000 * ARTICLE_BUDGET_SHARE)
+        assert rendered < 20  # budget stopped the render before all 20
+
+    def test_total_budget_respected_with_articles(self):
+        articles = [
+            _article_row(title=f"Article {i}", summary="word " * 300, published=f"2025-07-{i+1:02d}T09:00:00")
+            for i in range(20)
+        ]
+        summaries = [_summary_row(date=f"2025-06-{i+1:02d}") for i in range(20)]
+        supabase = _mock_supabase(articles=articles, summaries=summaries)
+
+        result = build_wiki_context(supabase=supabase, question="claude", max_chars=2000)
+        # Allow the same metadata slack as test_max_chars_respected.
+        assert len(result["context"]) <= 3000
+
+    def test_non_list_supabase_return_is_ignored(self):
+        # A bare MagicMock (default return) must never crash the builder or
+        # leak an article section — this is what keeps every pre-2.1 test
+        # green once real keys/rows exist.
+        mock = MagicMock()
+        mock.is_available.return_value = True
+        mock.get_summaries_across_runs.return_value = [_summary_row()]
+        mock.get_articles_for_context.return_value = MagicMock()  # not a list
+
+        # history={} also pins the local article fallback off, so the real
+        # history.json on this machine cannot leak in.
+        result = build_wiki_context(supabase=mock, question="anything", history={})
+
+        assert "ARTICLE EVIDENCE" not in result["context"]
+        assert result["article_count"] == 0
+
+    def test_local_fallback_uses_themed_articles(self):
+        mock_supabase = MagicMock()
+        mock_supabase.is_available.return_value = False
+
+        history = {
+            "2025-07-01 10:00:00": {
+                "date": "2025-07-01",
+                "summaries": {
+                    "AI Models": {
+                        "what_is_happening": "GPT-5 announced.",
+                        "why_it_matters": "Major capability jump.",
+                        "what_to_watch": "Benchmark results.",
+                    }
+                },
+                "counts": {"AI Models": 5},
+                "themed_articles": {
+                    "AI Models": [
+                        {
+                            "title": "GPT-5 launch coverage",
+                            "summary": "OpenAI launched GPT-5 today.",
+                            "source_name": "OpenAI Blog",
+                            "link": "https://example.com/gpt5",
+                            # No published date → falls back to the run date.
+                        }
+                    ]
+                },
+            }
+        }
+
+        result = build_wiki_context(
+            supabase=mock_supabase, question="What happened with GPT-5?", history=history
+        )
+
+        context = result["context"]
+        assert "=== ARTICLE EVIDENCE" in context
+        assert "GPT-5 launch coverage" in context
+        assert "[AI Models · OpenAI Blog · 2025-07-01]" in context
+        assert result["article_count"] == 1
+
+    def test_summaries_empty_articles_present(self):
+        # history={} pins the local fallback off so the real history.json on
+        # this machine can never leak into the test.
+        supabase = _mock_supabase(articles=[_article_row()], summaries=None)
+
+        result = build_wiki_context(
+            supabase=supabase, question="claude release", history={}
+        )
+
+        context = result["context"]
+        assert "ARTICLE EVIDENCE" in context
+        assert "WIKI CONTEXT" not in context
+        assert result["run_count"] == 0
+        assert result["article_count"] == 1
+
+    def test_local_fallback_respects_date_window(self):
+        mock_supabase = MagicMock()
+        mock_supabase.is_available.return_value = False
+
+        history = {
+            "2025-06-01 10:00:00": {
+                "date": "2025-06-01",
+                "summaries": {},
+                "counts": {},
+                "themed_articles": {"AI Models": [_article_row(title="Old June article", published="")],
+                },
+            },
+            "2025-07-01 10:00:00": {
+                "date": "2025-07-01",
+                "summaries": {},
+                "counts": {},
+                "themed_articles": {"AI Models": [_article_row(title="July article", published="")]},
+            },
+        }
+
+        result = build_wiki_context(
+            supabase=mock_supabase,
+            question="anything",
+            history=history,
+            date_from="2025-06-15",
+            date_to="2025-07-15",
+        )
+
+        assert "July article" in result["context"]
+        assert "Old June article" not in result["context"]
 
 
 # ---------------------------------------------------------------------------
