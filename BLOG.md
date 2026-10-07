@@ -4,6 +4,31 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-10-01 to 2026-10-07 — RAG foundations: Sage joins the gateway, gets traced, and reads articles
+
+**Problem**: `Future.md` lays out the path from prompt-stuffed Sage to a time-aware hierarchical RAG system, but three foundations were missing. Sage still called the LLM client directly, bypassing the gateway's fallback chain, health tracking, and provenance. Nothing anywhere recorded token usage — provider responses carried it and we threw it away. And Sage's only grounding was theme summaries, so a question like "what did that Mistral release actually say" had no article-level evidence to draw on.
+
+**What happened**:
+
+1. **Sage joined the Model Gateway (Phases 0.1–0.2).** A new `SAGE_CHAT` task type with an Ollama-primary policy (matching Sage's old engine) and Gemini fallbacks — but *no* deterministic fallback, because a rule-based stand-in for Sage's analyst voice would fabricate an "analysis". `chat_with_sage` now returns `{"response", "provenance"}` and the chat UI shows the engine chip. `Provenance` gained `tokens_in/out` (parsed from provider usage that was previously discarded), and every completed gateway execution — success, deterministic fallback, or total failure — lands as a row in a new fire-and-forget `llm_calls` table. The project went from zero cost accounting to durable per-call records in one step.
+
+2. **OTel tracing to Langfuse (Phase 0.3).** One span per gateway execution, exported OTLP/HTTP to Langfuse Cloud, env-gated to a silent no-op when keys are absent — the same "observability must never reduce availability" contract as the call log. Three war stories worth recording:
+   - **The live gate check caught what the unit test couldn't.** `trace_id` was stamped onto provenance *after* the fire-and-forget row insert had already snapshotted it — rows went out NULL. The test passed because it compared the same mutated object after the fact. Fix: stamp the trace id on the request the moment the span opens, before routing starts; the regression test now snapshots the value *at call time*. *Lesson: a test that inspects an object after the fact can pass while the value was wrong at the moment that mattered.*
+   - **401 from Langfuse meant "wrong region", not "bad keys".** The project lives in the US region; the SDK default host is EU. Probing both endpoints with the same keys (EU → 401, US → 200) settled it in seconds. *Lesson: rotate keys last, probe endpoints first.*
+   - **Free-tier discipline.** Traced input/output capped at ~2000 chars (Hobby meters units), `BatchSpanProcessor` so export never blocks a task, and an autouse conftest pin so real keys in `secrets.toml` can never make a test export spans — mirroring the existing Supabase offline pin.
+
+3. **Article-level grounding (Phase 2.1).** `build_wiki_context` now packs a second layer into its char budget: a bounded newest-first window of articles (`get_articles_for_context`, filters in SQL but *no keyword matching there* — proper FTS is Phase 2.3), scored client-side against the question's keywords (title tokens ×2), with the top 15 rendered as an `=== ARTICLE EVIDENCE ===` section within a 30% budget slice. Unused budget flows back to the summaries. When nothing matches any keyword, selection degrades to newest-first — Sage always has *some* Tier-1 evidence. Local fallback flattens `themed_articles` from `history.json` (data that existed all along and Sage never read). *Lesson: SQL should bound the candidate set; judgement about relevance belongs client-side where it's testable and provider-agnostic.*
+
+**Also shipped**:
+
+- Roadmap re-phased (`Future.md`, 2026-10 revision) into small independently-verifiable increments with explicit gates per phase.
+- A sequencing decision recorded honestly: the Sage faithfulness judge (the Phase 2 gate) is deferred as its own task, so there is *no pre-2.1 baseline* — judge scores will start from post-2.1. Trading a clean before/after comparison for shipping speed, knowing the old commit is still there if we ever want the comparison.
+- 485 tests, all offline — including one that exists specifically to pin the Mock-vs-real-data boundary (a non-list Supabase return must be ignored, not crash the builder).
+
+**Result**: One Sage chat now produces a Langfuse trace rendered as a generation (model, tokens, latency), a durable `llm_calls` row linked by `trace_id`, and an answer grounded in 15 keyword-relevant article briefs alongside 300 cross-run summaries. Honest caveat: live replies still cite run-level summaries more often than individual articles — the Phase 2.2 citation work (links in the prompt, evidence popovers in the UI) is where article grounding gets pushed harder.
+
+---
+
 ## 2026-09-17 to 2026-09-30 — Sage grows a real memory
 
 **Problem**: Sage, the AI analyst persona, was confidently answering questions about "the latest runs" — but was silently reading the *oldest* data in the window. A user asking about September activity got July answers, with no indication anything was wrong. On top of that, long conversations had no persistence: closing the tab meant losing the thread entirely.
