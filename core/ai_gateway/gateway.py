@@ -81,7 +81,7 @@ class ModelGateway:
                 "gemini-3.8-flash": {
                     "provider": "google",
                     "model": "gemini-3.8-flash",
-                    "tasks": ["categorise", "extract", "summarise", "synthesise", "evaluate"],
+                    "tasks": ["categorise", "extract", "summarise", "synthesise", "evaluate", "sage_chat"],
                     "cost_class": "medium",
                     "priority": 2,
                     "thinking_level": "low",
@@ -89,7 +89,7 @@ class ModelGateway:
                 "gemini-3.6-flash": {
                     "provider": "google",
                     "model": "gemini-3.6-flash",
-                    "tasks": ["summarise", "synthesise", "project"],
+                    "tasks": ["summarise", "synthesise", "project", "sage_chat"],
                     "cost_class": "medium",
                     "priority": 3,
                     "thinking_level": "medium",
@@ -97,7 +97,7 @@ class ModelGateway:
                 "nemotron-3-ultra": {
                     "provider": "ollama",
                     "model": "nemotron-3-ultra:cloud",
-                    "tasks": ["summarise", "synthesise", "project", "extract", "evaluate"],
+                    "tasks": ["summarise", "synthesise", "project", "extract", "evaluate", "sage_chat"],
                     "cost_class": "medium",
                     "priority": 2,
                     "context_window": 262144,
@@ -105,7 +105,7 @@ class ModelGateway:
                 "gpt-oss-120b": {
                     "provider": "ollama",
                     "model": "gpt-oss:120b-cloud",
-                    "tasks": ["summarise", "synthesise", "project", "extract", "evaluate"],
+                    "tasks": ["summarise", "synthesise", "project", "extract", "evaluate", "sage_chat"],
                     "cost_class": "medium",
                     "priority": 3,
                     "context_window": 131072,
@@ -169,6 +169,21 @@ class ModelGateway:
                         "gemini-3.8-flash",
                         "nemotron-3-ultra",
                         "gpt-oss-120b",
+                    ],
+                    "deterministic_fallback": False,
+                },
+                # Sage conversational chat: Ollama-primary (matches the old
+                # direct-LLMClient behaviour — nemotron was Sage's engine),
+                # Gemini as the safety net, and NO deterministic fallback —
+                # a rule-based stand-in for Sage's persona would fabricate
+                # an "analysis", so total failure surfaces as a friendly
+                # notice string instead.
+                "sage_chat": {
+                    "primary": "nemotron-3-ultra",
+                    "fallback": [
+                        "gpt-oss-120b",
+                        "gemini-3.6-flash",
+                        "gemini-3.8-flash",
                     ],
                     "deterministic_fallback": False,
                 },
@@ -296,6 +311,26 @@ class ModelGateway:
             h.consecutive_failures = 0
             h.status = "healthy"
 
+    def _log_call(
+        self, provenance: Provenance, success: bool, model_key: Optional[str]
+    ) -> None:
+        """Mirror a completed call to the Supabase ``llm_calls`` table.
+
+        Best-effort by design: observability must never reduce
+        availability, so any failure here (Supabase down, table missing,
+        import error) is swallowed at DEBUG level and the task result is
+        returned untouched. ``model_key`` (registry key) resolves the
+        ``cost_class`` label; failures have no model to attribute.
+        """
+        try:
+            from core.ai_gateway.call_log import record_call
+
+            registry = self.routing_config.get("model_registry", {})
+            cost_class = registry.get(model_key or "", {}).get("cost_class")
+            record_call(provenance, success=success, cost_class=cost_class)
+        except Exception as e:
+            logger.debug(f"llm_calls logging skipped: {e}")
+
     def _build_prompt(self, request: AITaskRequest) -> str:
         """Build task-specific prompt."""
         prompts = {
@@ -317,9 +352,9 @@ Return JSON: {{"category": "theme name"}}""",
             TaskType.PROJECT: f"Project future trends from these signals:\n{request.input}",
             TaskType.SYNTHESISE: f"Synthesise these documents:\n{request.input}",
         }
-        # Tasks without a template (e.g. EVALUATE) pass request.input
-        # through verbatim — LLM-as-judge prompts are fully formed and
-        # must not be re-wrapped.
+        # Tasks without a template (e.g. EVALUATE, SAGE_CHAT) pass
+        # request.input through verbatim — those prompts are fully formed
+        # and must not be re-wrapped.
         return prompts.get(request.task, request.input)
 
     def _get_schema(self, task: TaskType) -> Optional[Dict]:
@@ -409,7 +444,7 @@ Return JSON: {{"category": "theme name"}}""",
             for attempt in range(max_attempts):
                 attempts += 1
                 try:
-                    result = await self._execute_with_validation(
+                    result, usage = await self._execute_with_validation(
                         provider, request, model_key
                     )
 
@@ -427,7 +462,10 @@ Return JSON: {{"category": "theme name"}}""",
                         fallback_from=fallback_from,
                         validation=ValidationResult(status="valid"),
                         correlation_id=request.correlation_id,
+                        tokens_in=(usage or {}).get("input_tokens"),
+                        tokens_out=(usage or {}).get("output_tokens"),
                     )
+                    self._log_call(provenance, success=True, model_key=model_key)
                     return AITaskResult.success(result, provenance)
 
                 except Exception as e:
@@ -474,6 +512,7 @@ Return JSON: {{"category": "theme name"}}""",
             correlation_id=request.correlation_id,
             error=str(last_error),
         )
+        self._log_call(provenance, success=False, model_key=None)
         return AITaskResult.failure(str(last_error), provenance)
 
     async def _execute_with_validation(
@@ -502,7 +541,10 @@ Return JSON: {{"category": "theme name"}}""",
         if schema:
             jsonschema.validate(data, schema)
 
-        return data
+        # Token usage as reported by the provider (None for providers /
+        # calls that don't report it) — surfaced onto Provenance by execute().
+        usage = response.get("usage")
+        return data, usage
 
     async def _deterministic_fallback(
         self,
@@ -548,6 +590,7 @@ Return JSON: {{"category": "theme name"}}""",
             correlation_id=request.correlation_id,
             error=f"LLM failed: {error}; used deterministic fallback",
         )
+        self._log_call(provenance, success=True, model_key=None)
         return AITaskResult.success(result, provenance)
 
     async def health_check_all(self) -> Dict[str, Dict]:

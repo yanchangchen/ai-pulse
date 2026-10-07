@@ -81,7 +81,8 @@ TF-IDF synthetic documents. Edit `config/themes.py` to retrain the classifier.
 │                   self-healing probe, backoff retries, LLM_DEBUG)│
 │  • Gemini Client (on-demand Google Gemini synthesis + fallback)  │
 │  • Sage Agent    (Memory Wiki chat — chronological citations;    │
-│                   automatic Gemini fallback)                     │
+│                   routed through the Model Gateway `sage_chat`   │
+│                   policy: fallback chain + provenance caption)   │
 │  • Evaluator     (3 LLM-as-judge + 4 deterministic, weekly run)  │
 │  • Quality Schema (Supabase table for evaluator results)         │
 │  • Design System (shared CSS tokens for visual consistency)      │
@@ -147,6 +148,8 @@ The gateway routes each task type to a primary model with an ordered fallback ch
 | summarise | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
 | synthesise | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
 | project | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
+| evaluate | gemini-3.5-flash-lite | gemini-3.8-flash | nemotron-3-ultra | gpt-oss-120b | No |
+| sage_chat | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | No |
 
 All providers have per-request timeouts:
 - **Gemini:** 30s default (configurable via `GEMINI_REQUEST_TIMEOUT`)
@@ -162,12 +165,17 @@ gateway** (`get_gateway().execute(AITaskRequest(...))`), not raw clients. The le
 classifier/summariser only for backward compatibility and quota state.
 
 - `contracts.py` — `TaskType` (categorise / extract / summarise / synthesise / project /
-  evaluate), `AITaskRequest`, `AITaskResult`, `ErrorType` (retryable / non_retryable /
+  evaluate / sage_chat), `AITaskRequest`, `AITaskResult`, `ErrorType` (retryable / non_retryable /
   output_failure), and `Provenance` (provider, model, latency, attempts, fallback chain,
-  correlation id). `EVALUATE` is the LLM-as-judge task (core/evaluator.py
+  correlation id, provider-reported `tokens_in`/`tokens_out`). `EVALUATE` is the LLM-as-judge task (core/evaluator.py
   `GatewayJudgeLLM` adapter): Gemini-first routing, verbatim prompts (no template
   wrapping), no output schema, and `deterministic_fallback: False` — a rule-based judge
-  verdict is meaningless, so failures surface and samples are excluded.
+  verdict is meaningless, so failures surface and samples are excluded. `SAGE_CHAT`
+  (core/sage_agent.py) follows the same verbatim-prompt contract for the Sage
+  conversational agent: Ollama-primary routing (nemotron was Sage's engine), Gemini
+  fallbacks, and `deterministic_fallback: False` — a rule-based stand-in for Sage's
+  persona would fabricate an "analysis", so total failure surfaces as a friendly
+  notice string.
 - `gateway.py` — `ModelGateway` singleton via `get_gateway()`. Holds a **model registry +
   per-task routing policies** (primary + ordered fallback chain, currently Gemini flash
   models + Ollama cloud models). Per-model health tracking (3 consecutive failures →
@@ -180,7 +188,15 @@ classifier/summariser only for backward compatibility and quota state.
   `ProviderAdapter`.
 - `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`,
   `keyword_extract`, `statistical_projection`.
-- Callers: `core/classifier.py` (pass 3) and `core/summariser.py` call
+- `call_log.py` — durable observability mirror: every completed gateway execution
+  (LLM success, deterministic fallback, total failure) is appended to the Supabase
+  `llm_calls` table (migration: `supabase_migration_llm_calls.sql`) on a fire-and-forget
+  daemon thread, availability-gated so offline runs and tests stay quiet. This is the
+  project's token/cost accounting — free-tier trace backends only retain ~30 days, so
+  `llm_calls` is the permanent record upgrade decisions are made from. `trace_id`
+  stays NULL until the OTel/Langfuse integration (Phase 0.3) populates it.
+- Callers: `core/classifier.py` (pass 3), `core/summariser.py`, `core/evaluator.py`
+  (`GatewayJudgeLLM`), and `core/sage_agent.py` (`chat_with_sage`) call
   `get_gateway().execute(AITaskRequest(...))` inside `asyncio.run(...)`.
 
 ## Dual-Engine Summarization Detail
@@ -220,7 +236,9 @@ Every summary dict carries provenance via `_with_provenance()`: `_source` token 
 
 ## Quota Management (`core/llm_client.py`)
 
-Legacy Ollama wrapper, still the shared client for Sage and quota state. Quota exhaustion
+Legacy Ollama wrapper, still the shared client for the summariser/classifier legacy
+paths and quota state (Sage no longer uses it — it routes through the Model Gateway).
+Quota exhaustion
 is tracked process-wide via flags on the `sys` module (`_aipulse_llm_quota_exceeded` …);
 `LLMClient.is_quota_exceeded()` / `mark_quota_exceeded()` / `reset_quota_status()` manage
 it, and `probe_quota_status()` hits `/api/tags` to self-heal the flag instantly when quota

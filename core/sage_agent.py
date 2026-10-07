@@ -11,11 +11,13 @@ theme summaries and articles).  Every response follows a strict format:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections import Counter
 from typing import Dict, List, Optional, Any
 
-from core.llm_client import LLMClient
+from core.ai_gateway.contracts import AITaskRequest, AITaskResult, TaskType
+from core.ai_gateway.gateway import get_gateway
 from core.history_manager import load_full_history
 from core.logger import setup_logger
 
@@ -393,14 +395,18 @@ def build_wiki_context(
 # Chat interface
 # ---------------------------------------------------------------------------
 
+_ENGINE_UNAVAILABLE_MSG = (
+    "I'm having trouble connecting to my analysis engine right now. "
+    "Please try again in a moment."
+)
+
+
 def chat_with_sage(
-    llm_client: LLMClient,
     messages: List[Dict[str, str]],
     wiki_context,  # Union[str, Dict] — dict from build_wiki_context or legacy str
-    gemini_client: Optional[Any] = None,
-    gemini_model: Optional[str] = None,
-) -> str:
-    """Build a multi-turn prompt and call the LLM with automatic Google Gemini fallback.
+) -> Dict[str, Any]:
+    """Build a multi-turn prompt and generate Sage's reply through the Model
+    Gateway (``TaskType.SAGE_CHAT``).
 
     ``messages`` is a list of ``{"role": "user"|"assistant", "content": "..."}``
     dicts representing the conversation so far (the latest user message is the
@@ -410,10 +416,17 @@ def chat_with_sage(
     ``build_wiki_context`` (preferred). When a dict is passed, the actual
     context text is read from its ``"context"`` key.
 
-    Returns Sage's text response.
-    """
-    from core.gemini_client import GeminiClient, GeminiQuotaError, GeminiClientError
+    Routing through the gateway gives Sage the same machinery as the
+    summariser/classifier: per-model health tracking, retries, an ordered
+    fallback chain (Ollama primary, Ollama + Gemini fallbacks), and a
+    ``Provenance`` record for every call.
 
+    Returns:
+        ``{"response": str, "provenance": dict | None}`` — the provenance dict
+        (from ``Provenance.to_dict()``) lets the UI caption which engine
+        answered; it is ``None`` only when the gateway call could not be made
+        at all.
+    """
     # Accept both the legacy string form and the new dict form from
     # build_wiki_context.
     context_str = (
@@ -431,53 +444,51 @@ def chat_with_sage(
 
     prompt = "\n\n".join(prompt_parts) + "\n\nSage:"
 
-    # 1. Attempt primary Ollama LLM if quota is not flagged
-    quota_active = False
-    try:
-        from core.llm_client import LLMClient as _LLMClient
-        quota_active = _LLMClient.is_quota_exceeded()
-    except Exception:
-        pass
+    # Providers take a single prompt (no separate system channel), so the
+    # persona + wiki context are folded in ahead of the conversation —
+    # EVALUATE-style verbatim prompting.
+    full_prompt = f"{system}\n\n---\n\n{prompt}"
 
-    if not quota_active:
-        try:
-            response = llm_client.generate(
-                prompt=prompt,
-                system=system,
-                temperature=0.4,
-                max_tokens=3000,
-            )
-            if response and response.strip():
-                return response.strip()
-        except Exception as e:
-            logger.warning("Sage primary LLM failed (%s). Attempting Gemini fallback...", e)
-
-    # 2. Seamless Fallback to Google Gemini
-    g_client = gemini_client if gemini_client is not None else GeminiClient()
-    if g_client.is_configured():
-        target_model = gemini_model or g_client.default_model
-        try:
-            logger.info("Sage querying Google Gemini fallback with model '%s'...", target_model)
-            gemini_resp = g_client.generate_content(
-                prompt=prompt,
-                system_instruction=system,
-                model=target_model,
-                temperature=0.4,
-                max_output_tokens=3000,
-                timeout=30,
-            )
-            if gemini_resp and gemini_resp.strip():
-                return gemini_resp.strip()
-        except GeminiQuotaError as q_err:
-            logger.warning("Sage Gemini fallback hit quota: %s", q_err)
-            return (
-                f"⚠️ *Sage Notice: Primary LLM quota is paused, and Google Gemini quota limit (HTTP 429) "
-                f"was reached for model `{target_model}`. Please consider checking API quota or selecting another model ID.*"
-            )
-        except Exception as g_err:
-            logger.error("Sage Gemini fallback failed: %s", g_err)
-
-    return (
-        "I'm having trouble connecting to my analysis engine right now. "
-        "Please try again in a moment."
+    request = AITaskRequest(
+        task=TaskType.SAGE_CHAT,
+        input=full_prompt,
+        temperature=0.4,
+        max_tokens=3000,
+        allow_deterministic_fallback=False,
+        metadata={"caller": "sage_agent"},
     )
+
+    try:
+        result: AITaskResult = asyncio.run(get_gateway().execute(request))
+    except Exception as e:
+        logger.error("Sage gateway execution error: %s", e)
+        return {"response": _ENGINE_UNAVAILABLE_MSG, "provenance": None}
+
+    if result.is_success() and isinstance(result.result, str) and result.result.strip():
+        logger.info(
+            "Sage replied via %s/%s (%.1fs, %d attempt(s)%s)",
+            result.provenance.provider,
+            result.provenance.model,
+            result.provenance.latency_ms / 1000,
+            result.provenance.attempts,
+            " — fallback" if result.provenance.fallback_used else "",
+        )
+        return {
+            "response": result.result.strip(),
+            "provenance": result.provenance.to_dict(),
+        }
+
+    # Total failure across the fallback chain (no deterministic fallback
+    # for sage_chat). Distinguish quota exhaustion so the user knows to
+    # check API quotas rather than just retry.
+    error = result.provenance.error or str(result.result)
+    logger.warning("Sage gateway failed on all models: %s", error)
+    if "429" in error or "quota" in error.lower():
+        return {
+            "response": (
+                "⚠️ *Sage Notice: All engines are quota-limited right now (HTTP 429). "
+                "Please check API quotas or try again later.*"
+            ),
+            "provenance": result.provenance.to_dict(),
+        }
+    return {"response": _ENGINE_UNAVAILABLE_MSG, "provenance": result.provenance.to_dict()}

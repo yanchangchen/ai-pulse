@@ -146,7 +146,6 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
     """Render the Ask Sage conversational chat interface with in-depth scope control and persistent history."""
     from datetime import date, datetime, timedelta
     from core.sage_agent import SAGE_INTRO, build_wiki_context, chat_with_sage
-    from core.llm_client import LLMClient
     from core.sage_conversations import (
         list_saved_conversations,
         get_conversation,
@@ -365,9 +364,6 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
         unsafe_allow_html=True,
     )
 
-    if LLMClient.is_quota_exceeded():
-        st.info("⚡ **Live Gemini Fallback Active**: Primary Ollama quota is paused. Sage conversations are powered by Google Gemini.", icon="⚡")
-
     # If empty conversation, show starter prompts
     if not st.session_state.sage_messages:
         st.markdown(
@@ -412,14 +408,22 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
                     source_filter=active_source_filter,
                 )
 
-                llm = LLMClient()
-                sage_response = chat_with_sage(
-                    llm_client=llm,
+                sage_result = chat_with_sage(
                     messages=st.session_state.sage_messages,
                     wiki_context=wiki_ctx,
                 )
+                sage_response = sage_result["response"]
 
             st.markdown(sage_response)
+
+            # Engine provenance caption (gateway fallback chain + latency)
+            prov = sage_result.get("provenance") or {}
+            if prov.get("model"):
+                fallback_tag = " · fallback" if prov.get("fallback_used") else ""
+                st.caption(
+                    f"🧠 Engine: {prov.get('provider', '?')}/{prov.get('model')}"
+                    f" · {prov.get('latency_ms', 0) / 1000:.1f}s{fallback_tag}"
+                )
 
             stats = wiki_ctx if isinstance(wiki_ctx, dict) else {}
             if stats.get("date_count"):

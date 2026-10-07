@@ -26,6 +26,16 @@ Run in the SQL Editor, roughly in order:
 5. `supabase_migration_user_feedback.sql` — page 8 feedback
 6. `supabase_migration_backfill_articles.sql`
 7. `supabase_migration_app_settings.sql` — `app_settings` KV store for evaluation-driven config
+8. `supabase_migration_llm_calls.sql` — `llm_calls` append-only observability log
+
+## `llm_calls`
+
+Append-only Model Gateway call log (see `core/ai_gateway/call_log.py`): every completed
+gateway execution — LLM success, deterministic fallback, and total failure — writes one
+row with task type, provider, model, provider-reported tokens in/out, latency, cost
+class, correlation id, and error text. Writes are fire-and-forget daemon threads gated
+on `is_available()`, so the log never blocks or breaks an LLM task. `trace_id` is
+reserved for the OTel/Langfuse observability integration (Phase 0.3 in `Future.md`).
 
 ## RLS
 

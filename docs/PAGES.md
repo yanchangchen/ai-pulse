@@ -32,15 +32,19 @@ Full source list with links.
 Three tabs:
 
 - **🔮 Ask Sage** — conversational agent grounded in wiki data (`core/sage_agent.py`),
-  automatic Gemini fallback when the primary LLM fails or is quota-blocked.
+  routed through the Model Gateway (`sage_chat` policy: Ollama primary, Gemini
+  fallbacks, per-model health tracking). Each reply is captioned with the engine
+  provenance (provider/model, latency, fallback flag).
 - **📖 Memory Timeline**
 - **⚖️ Compare Runs**
 
 ### Sage agent internals (`core/sage_agent.py`)
 
 - Assembles a relevance-ranked, character-budgeted context string from cross-run
-  summaries (`get_summaries_across_runs()`) with first-appearance annotations, then calls
-  the primary LLM with automatic Gemini fallback.
+  summaries (`get_summaries_across_runs()`) with first-appearance annotations, then
+  routes the fully-formed prompt (persona + wiki context + conversation) through
+  the Model Gateway — no deterministic fallback, so total engine failure surfaces
+  as a friendly notice string (quota exhaustion gets a dedicated 429 notice).
 - Response structure: (1) a chronological account with `[Theme · Run YYYY-MM-DD]`
   citations, then (2) a "My read on this" assessment.
 - Multi-turn state lives in `st.session_state.sage_messages`.

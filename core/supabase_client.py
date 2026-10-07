@@ -744,6 +744,30 @@ class SupabaseManager:
             logger.warning(f"Failed to upsert app_settings '{key}' (run supabase_migration_app_settings.sql if not yet): {e}")
             return False
 
+    def insert_llm_call(self, row: Dict) -> bool:
+        """
+        Append one row to the llm_calls observability log (Model Gateway).
+
+        Rows are built by ``core/ai_gateway/call_log.py`` from a completed
+        call's ``Provenance``: task_type, provider, model, tokens_in/out,
+        latency_ms, cost_class, correlation_id, success, error_text.
+
+        Returns True on success; False (never raises) if Supabase is
+        unavailable, the table is missing, or the write fails — the call
+        log is best-effort observability and must never break an LLM task.
+        """
+        if not self.available:
+            return False
+
+        try:
+            self.client.table("llm_calls").insert(row).execute()
+            return True
+        except Exception as e:
+            logger.warning(
+                f"Failed to insert llm_calls row (run supabase_migration_llm_calls.sql if not yet): {e}"
+            )
+            return False
+
     # ------------------------------------------------------------------
     # New query helpers for analytics, trends, and wiki pages
     # ------------------------------------------------------------------

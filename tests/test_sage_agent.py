@@ -1,9 +1,10 @@
 """Tests for the Sage agent module — relevance scoring, first-appearance
-annotation, context building, and chat prompt assembly."""
+annotation, context building, and gateway-routed chat."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from core.ai_gateway.contracts import AITaskResult, Provenance, TaskType
 from core.sage_agent import (
     _tokenise,
     score_summary_relevance,
@@ -13,6 +14,34 @@ from core.sage_agent import (
     SAGE_SYSTEM_PROMPT,
     SAGE_INTRO,
 )
+
+
+def _gateway_result(
+    status: str = "success",
+    payload=None,
+    error: str = None,
+    fallback_used: bool = False,
+) -> AITaskResult:
+    """Build an AITaskResult shaped like a sage_chat gateway response."""
+    provenance = Provenance(
+        task="sage_chat",
+        method="llm" if status == "success" else "failed",
+        provider="ollama",
+        model="nemotron-3-ultra:cloud",
+        latency_ms=1234,
+        fallback_used=fallback_used,
+        error=error,
+    )
+    if status == "success":
+        return AITaskResult.success(payload, provenance)
+    return AITaskResult.failure(error or "boom", provenance)
+
+
+def _mock_gateway(result: AITaskResult) -> MagicMock:
+    """A gateway stand-in whose execute() is an async mock returning ``result``."""
+    gateway = MagicMock()
+    gateway.execute = AsyncMock(return_value=result)
+    return gateway
 
 
 # ---------------------------------------------------------------------------
@@ -315,88 +344,126 @@ class TestBuildWikiContext:
 
 
 # ---------------------------------------------------------------------------
-# Chat prompt assembly
+# Gateway-routed chat
 # ---------------------------------------------------------------------------
 
 class TestChatWithSage:
-    def test_calls_llm_generate(self):
-        mock_llm = MagicMock()
-        mock_llm.generate.return_value = "Sage says hello."
-
+    def test_success_returns_response_and_provenance(self):
         messages = [{"role": "user", "content": "What's happening?"}]
         context = "=== WIKI CONTEXT ===\nSome data.\n=== END WIKI CONTEXT ==="
 
-        result = chat_with_sage(mock_llm, messages, context)
+        gateway = _mock_gateway(_gateway_result(payload="Sage says hello."))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            result = chat_with_sage(messages, context)
 
-        assert result == "Sage says hello."
-        mock_llm.generate.assert_called_once()
-        call_kwargs = mock_llm.generate.call_args
-        assert "Sage" in call_kwargs.kwargs["system"]
-        assert "WIKI CONTEXT" in call_kwargs.kwargs["system"]
-        assert "What's happening?" in call_kwargs.kwargs["prompt"]
+        assert result["response"] == "Sage says hello."
+        assert result["provenance"]["model"] == "nemotron-3-ultra:cloud"
+        assert result["provenance"]["task"] == "sage_chat"
+
+    def test_request_routed_as_sage_chat_without_deterministic_fallback(self):
+        messages = [{"role": "user", "content": "What's happening?"}]
+
+        gateway = _mock_gateway(_gateway_result(payload="ok"))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            chat_with_sage(messages, "context")
+
+        request = gateway.execute.call_args.args[0]
+        assert request.task is TaskType.SAGE_CHAT
+        assert request.allow_deterministic_fallback is False
+        assert request.temperature == 0.4
+        assert request.max_tokens == 3000
+
+    def test_prompt_contains_persona_context_and_conversation(self):
+        messages = [{"role": "user", "content": "What's happening?"}]
+        context = "=== WIKI CONTEXT ===\nSome data.\n=== END WIKI CONTEXT ==="
+
+        gateway = _mock_gateway(_gateway_result(payload="ok"))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            chat_with_sage(messages, context)
+
+        prompt = gateway.execute.call_args.args[0].input
+        assert "You are Sage" in prompt
+        assert "WIKI CONTEXT" in prompt
+        assert "What's happening?" in prompt
+        assert prompt.rstrip().endswith("Sage:")
 
     def test_multi_turn_prompt(self):
-        mock_llm = MagicMock()
-        mock_llm.generate.return_value = "Follow-up answer."
-
         messages = [
             {"role": "user", "content": "First question"},
             {"role": "assistant", "content": "First answer"},
             {"role": "user", "content": "Follow-up question"},
         ]
 
-        result = chat_with_sage(mock_llm, messages, "context")
-        prompt = mock_llm.generate.call_args.kwargs["prompt"]
+        gateway = _mock_gateway(_gateway_result(payload="Follow-up answer."))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            chat_with_sage(messages, "context")
+
+        prompt = gateway.execute.call_args.args[0].input
         assert "First question" in prompt
         assert "First answer" in prompt
         assert "Follow-up question" in prompt
 
-    def test_llm_failure_returns_error_message(self):
-        mock_llm = MagicMock()
-        mock_llm.is_quota_exceeded.return_value = False
-        mock_llm.generate.side_effect = Exception("LLM down")
-
-        mock_gemini = MagicMock()
-        mock_gemini.is_configured.return_value = False
-
+    def test_dict_wiki_context_form_is_unwrapped(self):
         messages = [{"role": "user", "content": "anything"}]
-        result = chat_with_sage(mock_llm, messages, "context", gemini_client=mock_gemini)
+        wiki_ctx = {"context": "WIKI CONTEXT BODY", "run_count": 1,
+                    "date_count": 1, "date_range": "2025-07-01"}
 
-        assert "trouble connecting" in result
+        gateway = _mock_gateway(_gateway_result(payload="ok"))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            chat_with_sage(messages, wiki_ctx)
 
-    def test_sage_fallback_to_gemini_on_quota_exceeded(self):
-        from core.llm_client import LLMClient
-        LLMClient.mark_quota_exceeded("test quota")
+        prompt = gateway.execute.call_args.args[0].input
+        assert "WIKI CONTEXT BODY" in prompt
 
-        mock_llm = MagicMock()
-        mock_gemini = MagicMock()
-        mock_gemini.is_configured.return_value = True
-        mock_gemini.default_model = "gemini-3.7-flash"
-        mock_gemini.generate_content.return_value = "Sage grounded answer from Gemini fallback."
+    def test_gateway_failure_returns_error_message(self):
+        messages = [{"role": "user", "content": "anything"}]
 
-        messages = [{"role": "user", "content": "What happened with Claude 3.7?"}]
-        result = chat_with_sage(mock_llm, messages, "context", gemini_client=mock_gemini)
+        gateway = _mock_gateway(_gateway_result(status="failed", error="all models down"))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            result = chat_with_sage(messages, "context")
 
-        assert result == "Sage grounded answer from Gemini fallback."
-        mock_gemini.generate_content.assert_called_once()
-        # Verify primary LLM was bypassed because quota was exceeded
-        mock_llm.generate.assert_not_called()
+        assert "trouble connecting" in result["response"]
+        assert result["provenance"]["error"] == "all models down"
 
-    def test_sage_fallback_to_gemini_on_primary_exception(self):
-        mock_llm = MagicMock()
-        mock_llm.is_quota_exceeded.return_value = False
-        mock_llm.generate.side_effect = Exception("Ollama HTTP 500")
+    def test_quota_error_returns_quota_notice(self):
+        messages = [{"role": "user", "content": "anything"}]
 
-        mock_gemini = MagicMock()
-        mock_gemini.is_configured.return_value = True
-        mock_gemini.default_model = "gemini-3.7-flash"
-        mock_gemini.generate_content.return_value = "Recovered response via Gemini."
+        gateway = _mock_gateway(_gateway_result(status="failed", error="HTTP 429 quota exceeded"))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            result = chat_with_sage(messages, "context")
 
-        messages = [{"role": "user", "content": "Tell me about reasoning models"}]
-        result = chat_with_sage(mock_llm, messages, "context", gemini_client=mock_gemini)
+        assert "429" in result["response"]
+        assert "trouble connecting" not in result["response"]
 
-        assert result == "Recovered response via Gemini."
-        mock_gemini.generate_content.assert_called_once()
+    def test_gateway_exception_returns_error_message(self):
+        messages = [{"role": "user", "content": "anything"}]
+
+        gateway = MagicMock()
+        gateway.execute = AsyncMock(side_effect=RuntimeError("event loop exploded"))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            result = chat_with_sage(messages, "context")
+
+        assert "trouble connecting" in result["response"]
+        assert result["provenance"] is None
+
+    def test_empty_success_response_treated_as_failure(self):
+        messages = [{"role": "user", "content": "anything"}]
+
+        gateway = _mock_gateway(_gateway_result(payload="   "))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            result = chat_with_sage(messages, "context")
+
+        assert "trouble connecting" in result["response"]
+
+    def test_success_after_fallback_reports_fallback(self):
+        messages = [{"role": "user", "content": "anything"}]
+
+        gateway = _mock_gateway(_gateway_result(payload="Recovered via fallback.", fallback_used=True))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            result = chat_with_sage(messages, "context")
+
+        assert result["response"] == "Recovered via fallback."
+        assert result["provenance"]["fallback_used"] is True
 
 
 # ---------------------------------------------------------------------------

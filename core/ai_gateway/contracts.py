@@ -21,6 +21,12 @@ class TaskType(Enum):
     # and a deterministic "judge verdict" would be meaningless, so the
     # evaluate policy disables the deterministic fallback.
     EVALUATE = "evaluate"
+    # Sage conversational replies (core/sage_agent.py).  Like EVALUATE,
+    # prompts are fully formed (persona + wiki context + conversation)
+    # and pass through verbatim with no output schema; a deterministic
+    # substitute for Sage's voice would be fabrication, so the policy
+    # disables the deterministic fallback.
+    SAGE_CHAT = "sage_chat"
 
 
 class QualityLevel(Enum):
@@ -90,6 +96,12 @@ class Provenance:
     correlation_id: str = ""
     source_ids: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    # Token usage as reported by the provider (None when the provider does
+    # not report usage, or for deterministic-fallback results).  Persisted
+    # to the Supabase ``llm_calls`` table by the gateway call log so cost
+    # accounting is durable.
+    tokens_in: Optional[int] = None
+    tokens_out: Optional[int] = None
 
     def to_dict(self) -> Dict:
         return {
@@ -108,6 +120,8 @@ class Provenance:
             "correlation_id": self.correlation_id,
             "source_ids": self.source_ids,
             "error": self.error,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
         }
 
     @classmethod
@@ -130,6 +144,8 @@ class Provenance:
             correlation_id=data.get("correlation_id", ""),
             source_ids=data.get("source_ids", []),
             error=data.get("error"),
+            tokens_in=data.get("tokens_in"),
+            tokens_out=data.get("tokens_out"),
         )
 
     def short_summary(self) -> str:
