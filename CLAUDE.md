@@ -44,6 +44,10 @@ python -m pytest -m integration tests/                                      # op
 - Gateway provider init resolves keys through `config.settings` (st.secrets → secrets.toml → env vars → default) — both `secrets.toml` and plain OS env vars work. Full details and gotchas: docs/CONFIGURATION.md.
 - Summariser params must be read via `get_summariser_settings()` (merges `config/custom_settings.json`), never hardcoded.
 
+## Long-Term Work in Progress
+
+**`Future.md`** is the standing roadmap for evolving Sage into a time-aware, multi-stage hierarchical RAG system (hybrid dense+sparse retrieval, 3-tier memory, pgvector schema, multi-agent synthesis). **Read it before any Sage-related work** and consult it when planning larger changes — the phased roadmap (Phase 1 done; Phases 2–5 pending) tracks where the project is headed. Update the phase checkboxes there as work lands.
+
 ## Documentation Routing
 
 These docs are NOT auto-loaded — read the relevant one before working in that area:
