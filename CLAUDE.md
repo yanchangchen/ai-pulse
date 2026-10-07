@@ -38,82 +38,25 @@ python -m pytest -m integration tests/                                      # op
 - `tests/conftest.py` has an autouse fixture that resets `LLMClient` quota flags around every test; keep it in mind when adding fixtures that touch quota state.
 - A second autouse fixture pins the Supabase manager singleton to an offline stub (`is_available() == False`) so tests never touch the production project. This matters on machines with `.streamlit/secrets.toml`: importing `config.settings` makes Streamlit export all secrets (including `SUPABASE_URL`/`SUPABASE_KEY`) into `os.environ`, which `core/supabase_client.py` reads directly. Tests that exercise Supabase-backed behaviour must patch `core.supabase_client.get_supabase_manager` with their own mock (pattern: `test_processed_articles.py::test_supabase_preferred`).
 
-## Configuration
+## Configuration (summary)
 
-- `.streamlit/secrets.toml` — read by `config/settings.py` `_get_secret()` in order: `st.secrets` → direct TOML parse → env vars → default. Keys: `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default `nemotron-3-ultra:cloud`), `OLLAMA_API_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL` (default `gemini-3.7-flash`; `GEMINI_AVAILABLE_MODELS` lists the switchable set).
-- `.env` — optional Supabase persistence: `SUPABASE_URL`, `SUPABASE_KEY`.
-- **⚠️ Gateway gotcha:** `ModelGateway._init_providers()` reads `os.getenv("GEMINI_API_KEY" / "OLLAMA_API_KEY" / "OLLAMA_BASE_URL")` **directly** — it does NOT consult `st.secrets`/`secrets.toml`. If keys live only in `secrets.toml`, the gateway starts with zero providers and every gateway task silently lands on the deterministic fallback ("Non-LLM"/"gateway:error" provenance chips). Gateway-driven runs need real OS environment variables (or `_init_providers` must be extended to use the `config.settings` constants).
-- Core constants are in `config/settings.py` — source of truth for `DAYS_LOOKBACK` (14), `CACHE_TTL_SECONDS` (12h), `FETCH_WORKERS` (8), evaluation budgets, and the **model-aware context-window table** (`OLLAMA_MODEL_CONTEXT_WINDOWS` / `get_ollama_num_ctx()` — wrong `num_ctx` truncates input and causes empty responses).
-- The Quality Evaluation page's summariser tuner persists temperature / max_tokens / strict-faithfulness overrides to `config/custom_settings.json` via `load_custom_settings()` / `get_summariser_settings()` — code that reads summariser params must go through that merge, not hardcode defaults. The overlay is **Supabase-backed** (`app_settings` table, key `custom_settings`): loads are remote-first (remote row wins and refreshes the local file as an offline cache; the remote fetch is TTL-cached ~30s), saves write through to both. Same for the auto-remediation state (`data/auto_remediation_state.json`, key `auto_remediation_state`) — this is what makes evaluation-driven config survive app restarts and Streamlit Cloud redeploys, where the local filesystem is wiped on every git push. `core/supabase_client.py` `get_app_setting()` / `upsert_app_setting()` are the generic accessors; the table comes from `supabase_migration_app_settings.sql` (already applied to the live project; sync degrades to local-only when missing).
+- API keys: `ai-pulse/.streamlit/secrets.toml` (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_API_KEY`, `GEMINI_API_KEY`); optional Supabase credentials in `ai-pulse/.env`.
+- Gateway provider init resolves keys through `config.settings` (st.secrets → secrets.toml → env vars → default) — both `secrets.toml` and plain OS env vars work. Full details and gotchas: docs/CONFIGURATION.md.
+- Summariser params must be read via `get_summariser_settings()` (merges `config/custom_settings.json`), never hardcoded.
 
-## Architecture
+## Documentation Routing
 
-### Data Pipeline
+These docs are NOT auto-loaded — read the relevant one before working in that area:
 
-`fetcher` → `classifier` → `summariser` → `history_manager` → (optional) `supabase_client`. Runs synchronously on first run or in a background daemon thread via `core/bg_refresher.py` (singleton `BackgroundRefresher`).
+| Working on | Read first |
+|---|---|
+| Model Gateway (`core/ai_gateway/`), providers, contracts, routing, health, fallbacks | docs/ARCHITECTURE.md |
+| Classifier (`core/classifier.py`, `core/tfidf_classifier.py`, `core/classification_cache.py`, `config/themes.py`), gate stats | docs/ARCHITECTURE.md — "The 4-pass waterfall" |
+| Summariser (`core/summariser.py`, `core/non_llm_summariser.py`, `core/gemini_client.py`, `core/provenance.py`) | docs/ARCHITECTURE.md — "Dual-Engine Summarization Detail" |
+| Pipeline, `core/bg_refresher.py`, memory system, quota/LLMClient, caching | docs/ARCHITECTURE.md |
+| Evaluation (`core/evaluator.py`, `core/eval_controller.py`, `core/auto_remediation.py`, page 7) | docs/QUALITY_EVALUATION.md |
+| Any page/UI (`pages/*.py`, `app.py`, `core/shared_sidebar.py`, `core/design_system.py`, `core/sage_agent.py`, `core/visualiser.py`) | docs/PAGES.md |
+| Config (`config/settings.py`, secrets, env vars, `custom_settings.json`, `custom_keywords.json`, `watch.md`) | docs/CONFIGURATION.md |
+| Supabase (`core/supabase_client.py`, `supabase_*.sql`, schema, migrations, RLS, app_settings) | docs/SUPABASE.md |
 
-### Model Gateway (core/ai_gateway/) — the central LLM abstraction
-
-- `contracts.py` — `TaskType` (categorise / extract / summarise / synthesise / project / evaluate), `AITaskRequest`, `AITaskResult`, `ErrorType` (retryable / non_retryable / output_failure), and `Provenance` (provider, model, latency, attempts, fallback chain, correlation id). `EVALUATE` is the LLM-as-judge task (core/evaluator.py `GatewayJudgeLLM` adapter): Gemini-first routing, verbatim prompts (no template wrapping), no output schema, and `deterministic_fallback: False` — a rule-based judge verdict is meaningless, so failures surface and samples are excluded.
-- `gateway.py` — `ModelGateway` singleton via `get_gateway()`. Holds a **model registry + per-task routing policies** (primary + ordered fallback chain, currently Gemini flash models + Ollama cloud models). Per-model health tracking (3 consecutive failures → degraded, 5 → unavailable, with a circuit-breaker auto-reset that retries an unavailable model half-open after `GATEWAY_HEALTH_RESET_SECONDS` — default 300s — and a successful `health_check_all()` probe clearing the latch immediately), context-fit check (input must fit ~60% of the model's window), exponential-backoff retries, JSON-schema validation, WARNING-level logs on every fallback transition, and a final **deterministic fallback** when all LLMs fail. Ollama request timeout defaults to 180s (`OLLAMA_REQUEST_TIMEOUT`) because cloud models can exceed 60s under load.
-- `providers/` — `GeminiProvider` and `OllamaCloudProvider` async adapters behind `ProviderAdapter`.
-- `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`, `keyword_extract`, `statistical_projection`.
-- Callers: `core/classifier.py` (pass 3) and `core/summariser.py` call `get_gateway().execute(AITaskRequest(...))` inside `asyncio.run(...)`. New LLM work should go through the gateway, not raw clients.
-
-### Theme Classification — 4-pass waterfall (core/classifier.py)
-
-1. `gate_1_keyword` — weighted keyword matching (integer weights 1–3 in `config/themes.py`, highest score wins).
-2. `gate_2_tfidf` — TF-IDF cosine similarity against synthetic theme documents (`core/tfidf_classifier.py`, zero-dependency, sub-millisecond).
-3. `gate_3_llm` — LLM classification through the Model Gateway (fallback + provenance). Before querying the gateway, a cross-run classification cache (`core/classification_cache.py`, keyed by content_hash — Supabase `articles` table lookup + `data/classification_cache.json` local mirror) reuses themes assigned in previous runs; cache hits are tallied in `gate_3_cache_hits` and cached themes missing from the current `THEMES` registry fall through to the LLM.
-4. `gate_4_heuristic` — `find_closest_theme()` relaxed soft match.
-
-Gate counts are exposed via `get_latest_gate_stats()` (keys `gate_1_keyword` … `gate_4_heuristic`, plus `gate_3_cache_hits`) and surfaced in the UI.
-
-### Summarisation — three engines, all provenance-tagged
-
-1. **Gateway LLM synthesis** (`generate_theme_summary_gateway`) — a structured 5-section intelligence brief (What Is Happening / Engineering Tradeoffs / Product Impact / Actionable Watchlist / Strategic Further Reading) with length instructions scaled to article count. Articles are relevance-ranked (`_rank_articles_by_relevance`) and truncated to a char budget derived from `num_ctx`. Themes whose article hashes were all seen before are skipped (`gateway:skipped`). Prior-run memory is injected via `get_recent_context()` so briefs report evolutions, not static updates.
-2. **Non-LLM extractive engine** (`core/non_llm_summariser.py`) — LexRank graph centrality + Luhn keyword-cluster scoring + n-gram keyphrase extraction; <50ms, zero-cost, 100% extractive. Used when the gateway fails completely, and forced when the user selects "⚡ Non-LLM Extractive Only" (`st.session_state.summariser_mode`).
-3. **On-demand Gemini Deep Dive** (`generate_gemini_theme_summary` + `core/gemini_client.py`) — per-theme Deep Dive re-summarisation with up to `MAX_ARTICLES_PER_GEMINI_SUMMARY` (75) articles; on HTTP 429 the UI suggests switching to another model from `GEMINI_AVAILABLE_MODELS`.
-
-Every summary dict carries provenance via `_with_provenance()`: `_source` token (e.g. `"google:gemini-3.6-flash"`, `"ollama:…"`, `"extractive_fallback"`, `"gateway:error"`), `_generation_log`, and optionally the full `_provenance` dict. `core/provenance.py` maps `_source` to the coloured UI chip; Supabase persists it in `theme_summaries.generation_source` / `generation_log`.
-
-### Quota management (core/llm_client.py)
-
-Legacy Ollama wrapper, still the shared client for Sage and quota state. Quota exhaustion is tracked process-wide via flags on the `sys` module (`_aipulse_llm_quota_exceeded` …); `LLMClient.is_quota_exceeded()` / `mark_quota_exceeded()` / `reset_quota_status()` manage it, and `probe_quota_status()` hits `/api/tags` to self-heal the flag instantly when quota recovers (called before refresh runs). A process-local empty-response streak counter lets the summariser degrade the rest of a run to the extractive engine instead of burning retries. Set `LLM_DEBUG=1` to log prompts/responses on failures.
-
-### Memory System (Three Layers)
-
-- `history.json` — machine-readable run history with full articles, themed articles, and summaries.
-- `memory.md` — human-readable wiki that appends each run as a new section.
-- Supabase (PostgreSQL) — cloud persistence for cross-device access; auto-backfilled from `history.json` on first load; degrades gracefully (`is_available()` returns `False` without env vars).
-
-`core/history_manager.py` exposes `get_recent_context()` (injects the last 2 runs' summaries into LLM prompts) and `purge_run()`.
-
-### Supabase Schema
-
-Core 4 tables in `supabase_schema.sql`: `trend_runs`, `theme_summaries`, `articles` (deduplicated by `(content_hash, theme_name)`), `sync_metadata`. Migrations (run in the SQL Editor, roughly in order): `supabase_migration_dedup.sql`, `supabase_migration_keywords.sql` (keyword_suggestions), `supabase_migration_quality_metrics.sql` (4 deterministic-judge score columns on `quality_evaluations`), `supabase_migration_provenance.sql` (generation_source/generation_log), `supabase_migration_user_feedback.sql` (page 8 feedback), `supabase_migration_backfill_articles.sql`, `supabase_migration_app_settings.sql` (app_settings KV store for evaluation-driven config). RLS is enabled with read-only public access (app_settings/custom_keywords allow public write — single-user app).
-
-### Pages
-
-All pages share `core/shared_sidebar.py` (nav + background-refresh status) and `core/design_system.py` (adaptive CSS tokens, `sanitize_summary_html()`).
-
-- `app.py` — entry point, ingestion state machine, Thematic Pulse dashboard
-- `1_Overview.py` — theme summary cards with provenance chips and key takeaways
-- `2_Deep_Dive.py` — per-theme article list, full summaries, on-demand Gemini re-summarisation, further reading
-- `3_Keyword_Analysis.py` — keyword velocity analytics (theme filter, top-10 auto-plot, `canonicalize_word()` singular/plural merging, low-signal stopwords) + theme word clouds
-- `4_Sources.py` — full source list with links
-- `5_History.py` — Memory Wiki with 3 tabs: **🔮 Ask Sage** (conversational agent grounded in wiki data, `core/sage_agent.py`, automatic Gemini fallback when the primary LLM fails or is quota-blocked), 📖 Memory Timeline, ⚖️ Compare Runs
-- `6_Trend_Analytics.py` — historical thematic momentum & theme drilldown timeline
-- `7_Quality_Evaluation.py` — evaluation engine scoring 7 metrics (3 LLM-as-judge routed through the gateway `EVALUATE` task + 4 deterministic judges, `ThreadPoolExecutor` in `core/evaluator.py`) with live progress panel, in-app remediation (1-click apply buttons, Theme Keyword Manager, Faithfulness & Summariser Tuner), and opt-in **auto-remediation** (`core/auto_remediation.py`: bounded tuner/keyword auto-applies with score-drop rollback, state in `data/auto_remediation_state.json`). Runs are user-triggered on-demand; the ISO-week-guarded background thread (`core/weekly_evaluator.py`) exists but `maybe_start_weekly_evaluator()` is currently a no-op. **Pause/resume + crash-safe progress**: evaluations run on the `EvaluationRunner` worker (`core/eval_controller.py`, `sys._aipulse_eval_state` — survives page navigation/reruns) with every successful judge item checkpointed to `data/evaluation_checkpoint.json` (atomic writes; only *successful* judgments are cached — failures retry on resume; faithfulness keys by `(run_id, item_id)`). The page offers Pause/Resume/Discard; resume replays cached items and pins the original run set/config (`set_run_ids` at start). If the final `quality_evaluations` insert fails, the finished report sits in the checkpoint and the worker retries every `EVAL_DB_RETRY_SECONDS` (status `awaiting_db`) until the DB recovers or the user pauses; `mark_completed` (status write, then file delete) is the double-insert guard. Judge infra failures are excluded from scores (counted in `raw_metrics`), skipped judges render as chart gaps, and grounding/structural judges need `supabase_migration_further_reading.sql`. A standing "Pending keyword suggestions" section re-surfaces every pending `keyword_suggestions` row (from evaluations AND the classifier's heuristic auto-improvement) with Apply/Dismiss buttons (`update_keyword_suggestion_status()` in `core/quality_schema.py`) — the one-time result panel is session-only, this section is the durable surface. The `awaiting_db` banner shows the actual insert error (`EvalControl.set_db_error`, fed by `insert_quality_evaluation(on_error=...)`) so a schema mismatch is diagnosable from the UI instead of hiding behind a generic retry loop. The page's **🧠 Judge Model** selector (`EVALUATION_JUDGE_MODELS` in `config/settings.py`) pins every LLM judge call to ONE gateway model via `AITaskRequest.preferred_model` (no cross-model fallback; unknown/unconfigured model falls back to default routing with a WARNING) so scores stay comparable across evaluations; the choice is recorded in `raw_metrics.judge_model`.
-- `8_Feedback_&_Roadmap.py` — feature requests / bug reports / UX ideas persisted to the `user_feedback` table, plus SDD writing prompts
-
-## Key Patterns
-
-- **New LLM calls go through the Model Gateway** (`get_gateway()`), which owns routing, retries, health, and provenance. The legacy `_get_llm()` module-level `LLMClient` singletons (`threading.Semaphore(3)`) remain in classifier/summariser only for backward compatibility and quota state.
-- **Theme keywords are weighted dicts** — higher weight = stronger signal for both gate 1 and TF-IDF synthetic documents. Edit `config/themes.py` to retrain the classifier.
-- **`watch.md`** is the user's watchlist keywords and engineering blog sources — referenced by the fetcher for high-signal targeting.
-- **Logs** go to `logs/app.log` via `core/logger.py` (`setup_logger(__name__)`).
-- **LLM calls are batched** where possible (classification/evaluation), and summaries are skipped entirely when article content hashes are unchanged (`get_articles_hash()` / `_get_existing_article_hashes()`).
-- **Two-layer cache**: `st.cache_data` (12h TTL) wraps every expensive step; `.cache/*.json` disk cache survives restarts; content-based SHA-256 hashing prevents redundant LLM calls.
-- **Sage** (`core/sage_agent.py`) assembles a relevance-ranked, character-budgeted context string from cross-run summaries (`get_summaries_across_runs()`) with first-appearance annotations, then calls the primary LLM with automatic Gemini fallback. Responses are (1) a chronological account with `[Theme · Run YYYY-MM-DD]` citations, then (2) a "My read on this" assessment. Multi-turn state lives in `st.session_state.sage_messages`.
-- **Keyword canonicalization** — `core/visualiser.py` exports `canonicalize_word()` (merges plurals: `agents` → `agent`); used by `extract_top_words()` and the Keyword Velocity Analytics page.
+Human-facing guides: README.md (quick start), SUPABASE_SETUP_GUIDE.md, SUPABASE_INTEGRATION_README.md. Test-targeting cheat sheet: AGENTS.md.

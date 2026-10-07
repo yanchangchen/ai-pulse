@@ -37,9 +37,9 @@ OLLAMA_API_KEY  = "your-ollama-api-key"
 GEMINI_API_KEY  = "your-gemini-api-key"
 ```
 
-### 2. Export Environment Variables (for gateway routing)
+### 2. Export Environment Variables (optional tuning)
 
-The Model Gateway reads from OS env vars, not Streamlit secrets:
+The Model Gateway resolves provider keys through `config.settings` (st.secrets → secrets.toml → env vars → default), so `secrets.toml` alone is sufficient; OS env vars also work and additionally tune gateway behaviour:
 
 ```bash
 export OLLAMA_BASE_URL="https://api.ollama.com"
@@ -120,10 +120,13 @@ See [test files](tests/) for the full suite.
 
 | Document | What's Inside |
 |---|---|
-| [Architecture](docs/ARCHITECTURE.md) | Classification modes, system diagrams, routing policies, summarizer pipeline |
-| [Quality Evaluation](docs/QUALITY_EVALUATION.md) | 7 judge metrics table, in-app remediation |
+| [CLAUDE.md](CLAUDE.md) | Always-loaded agent rules: testing directive, configuration gotchas, documentation routing table |
+| [Architecture](docs/ARCHITECTURE.md) | Classification modes, 4-pass waterfall, system diagrams, gateway internals, routing policies, summarizer pipeline, quota, memory, caching |
+| [Quality Evaluation](docs/QUALITY_EVALUATION.md) | 7 judge metrics table, page-7 execution model (checkpointing, judge model selector), in-app + auto remediation |
+| [Pages](docs/PAGES.md) | Per-page reference for all 8 pages, app.py, Sage agent internals |
+| [Configuration](docs/CONFIGURATION.md) | Secrets/env resolution, settings constants, custom_settings/custom_keywords, gateway tunables |
+| [Supabase](docs/SUPABASE.md) | Schema, migrations, RLS, app_settings KV store, test isolation |
 | [BLOG.md](BLOG.md) | Engineering lessons learned, dated entries grouped by 2-week blocks |
-| [CLAUDE.md](CLAUDE.md) | Full architecture, configuration, and gotchas for developers |
 
 ## 📈 Performance & Monitoring
 

@@ -76,3 +76,55 @@ Every action (applied or rolled back) is recorded in the evaluation's `raw_metri
 (`auto_remediation` key) and persists to Supabase for audit. Remediations take effect at
 runtime — keyword and settings writes go through the same hot-reload paths as the manual
 UI controls.
+
+## Page 7 Execution Model
+
+Runs are **user-triggered on-demand**. The ISO-week-guarded background thread
+(`core/weekly_evaluator.py`) exists, but `maybe_start_weekly_evaluator()` is currently a
+no-op.
+
+### Runner, checkpointing & crash-safe resume
+
+- Evaluations run on the **`EvaluationRunner` worker** (`core/eval_controller.py`,
+  `sys._aipulse_eval_state` — survives page navigation/reruns) with every successful judge
+  item checkpointed to `data/evaluation_checkpoint.json` (atomic writes; only *successful*
+  judgments are cached — failures retry on resume; faithfulness keys by
+  `(run_id, item_id)`).
+- The page offers **Pause/Resume/Discard**; resume replays cached items and pins the
+  original run set/config (`set_run_ids` at start).
+- If the final `quality_evaluations` insert fails, the finished report sits in the
+  checkpoint and the worker retries every `EVAL_DB_RETRY_SECONDS` (status `awaiting_db`)
+  until the DB recovers or the user pauses; `mark_completed` (status write, then file
+  delete) is the double-insert guard.
+- The `awaiting_db` banner shows the **actual insert error** (`EvalControl.set_db_error`,
+  fed by `insert_quality_evaluation(on_error=...)`) so a schema mismatch is diagnosable
+  from the UI instead of hiding behind a generic retry loop.
+
+### 🧠 Judge Model selector
+
+The page's **🧠 Judge Model** selector (`EVALUATION_JUDGE_MODELS` in `config/settings.py`)
+pins every LLM judge call to ONE gateway model via `AITaskRequest.preferred_model` (no
+cross-model fallback; unknown/unconfigured model falls back to default routing with a
+WARNING) so scores stay comparable across evaluations; the choice is recorded in
+`raw_metrics.judge_model`.
+
+### Failure surfacing
+
+Judge infra failures are **excluded from scores** (counted in `raw_metrics`), skipped
+judges render as chart gaps, and the grounding/structural judges need
+`supabase_migration_further_reading.sql`.
+
+### Pending keyword suggestions
+
+A standing "Pending keyword suggestions" section re-surfaces every pending
+`keyword_suggestions` row (from evaluations AND the classifier's heuristic
+auto-improvement) with Apply/Dismiss buttons (`update_keyword_suggestion_status()` in
+`core/quality_schema.py`) — the one-time result panel is session-only, this section is the
+durable surface.
+
+### Tuner persistence
+
+The Faithfulness & Summariser Tuner and the auto-remediation state persist through
+`config/custom_settings.json` / `data/auto_remediation_state.json`, both **Supabase-backed**
+via the `app_settings` table so they survive app restarts and Streamlit Cloud redeploys —
+see [docs/CONFIGURATION.md](CONFIGURATION.md#summariser-tuner-settings--configcustom_settingsjson).

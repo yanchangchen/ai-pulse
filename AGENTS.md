@@ -36,4 +36,4 @@ This document outlines key operational constraints and testing workflows for AI 
 1. **Test Location**: Always run pytest targeting `tests/` explicitly (`python -m pytest tests/...`). The root-level scripts (`test_supabase.py`, `test_backfill.py`, etc.) are standalone manual test scripts, not pytest fixtures.
 2. **Supabase Isolation**: `tests/conftest.py` automatically stubs `SupabaseManager` to offline mode (`is_available() == False`) so unit tests never accidentally write to or corrupt production tables. Tests asserting Supabase behavior must mock `core.supabase_client.get_supabase_manager`.
 3. **LLM Quota Reset**: `tests/conftest.py` automatically resets the `LLMClient` quota flag before and after each test.
-4. **Primary Documentation**: See [CLAUDE.md](file:///c:/claude/ai-pulse/CLAUDE.md) for full project architecture, LLM gateway policies, and data pipeline details.
+4. **Primary Documentation**: See [CLAUDE.md](CLAUDE.md) for always-loaded agent rules (testing directive, configuration gotchas) and a routing table pointing to topic docs under `docs/` (ARCHITECTURE, QUALITY_EVALUATION, PAGES, CONFIGURATION, SUPABASE).

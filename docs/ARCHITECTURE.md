@@ -1,5 +1,11 @@
 # AI Pulse Architecture
 
+## Data Pipeline
+
+`fetcher` → `classifier` → `summariser` → `history_manager` → (optional) `supabase_client`.
+Runs synchronously on first run or in a background daemon thread via `core/bg_refresher.py`
+(singleton `BackgroundRefresher`).
+
 ## Classification Modes
 
 The classifier supports two modes, controlled from the **Quality Evaluation → 🧭 Classification Mode** tab (`config/custom_settings.json`):
@@ -11,6 +17,26 @@ The classifier supports two modes, controlled from the **Quality Evaluation → 
 Hybrid:       Keywords → TF-IDF → LLM (Gateway) → Heuristic
 Deterministic: Keywords → TF-IDF → Heuristic
 ```
+
+### The 4-pass waterfall (`core/classifier.py`)
+
+1. `gate_1_keyword` — weighted keyword matching (integer weights 1–3 in `config/themes.py`,
+   highest score wins).
+2. `gate_2_tfidf` — TF-IDF cosine similarity against synthetic theme documents
+   (`core/tfidf_classifier.py`, zero-dependency, sub-millisecond).
+3. `gate_3_llm` — LLM classification through the Model Gateway (fallback + provenance).
+   Before querying the gateway, a cross-run classification cache
+   (`core/classification_cache.py`, keyed by content_hash — Supabase `articles` table
+   lookup + `data/classification_cache.json` local mirror) reuses themes assigned in
+   previous runs; cache hits are tallied in `gate_3_cache_hits` and cached themes missing
+   from the current `THEMES` registry fall through to the LLM.
+4. `gate_4_heuristic` — `find_closest_theme()` relaxed soft match.
+
+Gate counts are exposed via `get_latest_gate_stats()` (keys `gate_1_keyword` …
+`gate_4_heuristic`, plus `gate_3_cache_hits`) and surfaced in the UI.
+
+Theme keywords are weighted dicts — higher weight = stronger signal for both gate 1 and
+TF-IDF synthetic documents. Edit `config/themes.py` to retrain the classifier.
 
 ## System Architecture
 
@@ -127,6 +153,100 @@ All providers have per-request timeouts:
 - **Ollama:** 180s default (configurable via `OLLAMA_REQUEST_TIMEOUT`) — cloud models like nemotron can exceed 60s under load, which used to trip premature fallbacks
 
 When a provider times out or fails, the gateway classifies the error (retryable vs non-retryable), records the failure for health tracking, and moves to the next model in the chain (each fallback logs a WARNING naming the failed model and error). Health latches: 3 consecutive failures → degraded, 5 → unavailable. An unavailable model is not skipped forever — a circuit-breaker auto-reset retries it in half-open state after a cooldown (`GATEWAY_HEALTH_RESET_SECONDS`, default 300s), and a successful `health_check_all()` probe clears the latch immediately. If all LLMs fail, the deterministic fallback uses `extractive_summarise_from_text()` for SUMMARISE/SYNTHESISE tasks and rule-based extraction for CATEGORISE/EXTRACT.
+
+## Model Gateway Internals (`core/ai_gateway/`)
+
+The Model Gateway is the central LLM abstraction. **New LLM work should go through the
+gateway** (`get_gateway().execute(AITaskRequest(...))`), not raw clients. The legacy
+`_get_llm()` module-level `LLMClient` singletons (`threading.Semaphore(3)`) remain in
+classifier/summariser only for backward compatibility and quota state.
+
+- `contracts.py` — `TaskType` (categorise / extract / summarise / synthesise / project /
+  evaluate), `AITaskRequest`, `AITaskResult`, `ErrorType` (retryable / non_retryable /
+  output_failure), and `Provenance` (provider, model, latency, attempts, fallback chain,
+  correlation id). `EVALUATE` is the LLM-as-judge task (core/evaluator.py
+  `GatewayJudgeLLM` adapter): Gemini-first routing, verbatim prompts (no template
+  wrapping), no output schema, and `deterministic_fallback: False` — a rule-based judge
+  verdict is meaningless, so failures surface and samples are excluded.
+- `gateway.py` — `ModelGateway` singleton via `get_gateway()`. Holds a **model registry +
+  per-task routing policies** (primary + ordered fallback chain, currently Gemini flash
+  models + Ollama cloud models). Per-model health tracking (3 consecutive failures →
+  degraded, 5 → unavailable, with the circuit-breaker auto-reset described above),
+  context-fit check (input must fit ~60% of the model's window), exponential-backoff
+  retries, JSON-schema validation, WARNING-level logs on every fallback transition, and a
+  final **deterministic fallback** when all LLMs fail. Ollama request timeout defaults to
+  180s (`OLLAMA_REQUEST_TIMEOUT`) because cloud models can exceed 60s under load.
+- `providers/` — `GeminiProvider` and `OllamaCloudProvider` async adapters behind
+  `ProviderAdapter`.
+- `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`,
+  `keyword_extract`, `statistical_projection`.
+- Callers: `core/classifier.py` (pass 3) and `core/summariser.py` call
+  `get_gateway().execute(AITaskRequest(...))` inside `asyncio.run(...)`.
+
+## Dual-Engine Summarization Detail
+
+### 1. Gateway LLM synthesis (`generate_theme_summary_gateway`)
+
+- A structured 5-section intelligence brief: **What Is Happening / Engineering Tradeoffs /
+  Product Impact / Actionable Watchlist / Strategic Further Reading**, with length
+  instructions scaled to article count.
+- Articles are relevance-ranked (`_rank_articles_by_relevance`) and truncated to a char
+  budget derived from `num_ctx`.
+- Themes whose article hashes were all seen before are skipped (`gateway:skipped`) —
+  summaries are skipped entirely when article content hashes are unchanged
+  (`get_articles_hash()` / `_get_existing_article_hashes()`).
+- Prior-run memory is injected via `get_recent_context()` so briefs report evolutions,
+  not static updates.
+
+### 2. Non-LLM extractive engine (`core/non_llm_summariser.py`)
+
+LexRank graph centrality + Luhn keyword-cluster scoring + n-gram keyphrase extraction;
+<50ms, zero-cost, 100% extractive. Used when the gateway fails completely, and forced when
+the user selects "⚡ Non-LLM Extractive Only" (`st.session_state.summariser_mode`).
+
+### 3. On-demand Gemini Deep Dive
+
+`generate_gemini_theme_summary` + `core/gemini_client.py` — per-theme Deep Dive
+re-summarisation with up to `MAX_ARTICLES_PER_GEMINI_SUMMARY` (75) articles; on HTTP 429
+the UI suggests switching to another model from `GEMINI_AVAILABLE_MODELS`.
+
+### Provenance
+
+Every summary dict carries provenance via `_with_provenance()`: `_source` token (e.g.
+`"google:gemini-3.6-flash"`, `"ollama:…"`, `"extractive_fallback"`, `"gateway:error"`),
+`_generation_log`, and optionally the full `_provenance` dict. `core/provenance.py` maps
+`_source` to the coloured UI chip; Supabase persists it in
+`theme_summaries.generation_source` / `generation_log`.
+
+## Quota Management (`core/llm_client.py`)
+
+Legacy Ollama wrapper, still the shared client for Sage and quota state. Quota exhaustion
+is tracked process-wide via flags on the `sys` module (`_aipulse_llm_quota_exceeded` …);
+`LLMClient.is_quota_exceeded()` / `mark_quota_exceeded()` / `reset_quota_status()` manage
+it, and `probe_quota_status()` hits `/api/tags` to self-heal the flag instantly when quota
+recovers (called before refresh runs). A process-local empty-response streak counter lets
+the summariser degrade the rest of a run to the extractive engine instead of burning
+retries. Set `LLM_DEBUG=1` to log prompts/responses on failures.
+
+## Memory System (Three Layers)
+
+- `history.json` — machine-readable run history with full articles, themed articles, and
+  summaries.
+- `memory.md` — human-readable wiki that appends each run as a new section.
+- Supabase (PostgreSQL) — cloud persistence for cross-device access; auto-backfilled from
+  `history.json` on first load; degrades gracefully (`is_available()` returns `False`
+  without env vars). See [docs/SUPABASE.md](SUPABASE.md).
+
+`core/history_manager.py` exposes `get_recent_context()` (injects the last 2 runs'
+summaries into LLM prompts) and `purge_run()`.
+
+## Caching & Batching
+
+- **LLM calls are batched** where possible (classification/evaluation), and summaries are
+  skipped entirely when article content hashes are unchanged.
+- **Two-layer cache**: `st.cache_data` (12h TTL) wraps every expensive step; `.cache/*.json`
+  disk cache survives restarts; content-based SHA-256 hashing prevents redundant LLM calls.
+- **Logs** go to `logs/app.log` via `core/logger.py` (`setup_logger(__name__)`).
 
 ## Self-Improving Keywords
 
