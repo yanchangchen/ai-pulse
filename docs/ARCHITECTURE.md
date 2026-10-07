@@ -188,13 +188,21 @@ classifier/summariser only for backward compatibility and quota state.
   `ProviderAdapter`.
 - `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`,
   `keyword_extract`, `statistical_projection`.
+- `tracing.py` — one OpenTelemetry span per gateway execution (`execute()` wraps
+  `_execute_inner()`), exported OTLP to Langfuse Cloud via a `BatchSpanProcessor`
+  background thread. Span attributes follow the Langfuse OTel mapping (`gen_ai.*`
+  semantic conventions for model/usage, `langfuse.observation.*` for
+  input/output/metadata) so LLM calls render as generations; traced text is capped
+  (~2000 chars) to keep Hobby-tier unit usage flat. **Env-gated**: no
+  `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` (or missing `opentelemetry-*` packages)
+  → silent no-op, `Provenance.trace_id` stays `None`. See docs/CONFIGURATION.md.
 - `call_log.py` — durable observability mirror: every completed gateway execution
   (LLM success, deterministic fallback, total failure) is appended to the Supabase
   `llm_calls` table (migration: `supabase_migration_llm_calls.sql`) on a fire-and-forget
   daemon thread, availability-gated so offline runs and tests stay quiet. This is the
   project's token/cost accounting — free-tier trace backends only retain ~30 days, so
   `llm_calls` is the permanent record upgrade decisions are made from. `trace_id`
-  stays NULL until the OTel/Langfuse integration (Phase 0.3) populates it.
+  (32-char OTel hex) links each row back to its Langfuse trace when tracing is on.
 - Callers: `core/classifier.py` (pass 3), `core/summariser.py`, `core/evaluator.py`
   (`GatewayJudgeLLM`), and `core/sage_agent.py` (`chat_with_sage`) call
   `get_gateway().execute(AITaskRequest(...))` inside `asyncio.run(...)`.

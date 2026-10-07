@@ -5,6 +5,7 @@ Pytest configuration and global fixtures for AI Pulse tests.
 from unittest.mock import MagicMock
 
 import pytest
+from core.ai_gateway import tracing
 from core.llm_client import LLMClient
 
 
@@ -37,3 +38,21 @@ def disable_cloud_supabase(monkeypatch):
     offline = MagicMock()
     offline.is_available.return_value = False
     monkeypatch.setattr("core.supabase_client._manager", offline)
+
+
+@pytest.fixture(autouse=True)
+def disable_gateway_tracing(monkeypatch):
+    """Guarantee tests never export OTel spans to a real Langfuse project.
+
+    Same rationale as ``disable_cloud_supabase``: once real Langfuse keys
+    land in ``.streamlit/secrets.toml``, ``config.settings`` resolves them
+    and every gateway call would start exporting spans to cloud.langfuse.com
+    from inside pytest.  Resetting the tracing singleton and pinning it off
+    keeps tests silent; tests that exercise tracing re-enable it explicitly
+    with fake keys and an in-memory span exporter
+    (see ``test_gateway_tracing.py``).
+    """
+    tracing.reset_tracing()
+    monkeypatch.setattr(tracing, "is_tracing_enabled", lambda: False)
+    yield
+    tracing.reset_tracing()

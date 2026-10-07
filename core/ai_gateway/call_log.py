@@ -13,8 +13,10 @@ Design constraints:
 - **Availability-gated** — when Supabase is unavailable the row is skipped
   synchronously (no thread is spawned), which also keeps offline tests and
   local runs quiet.
-- **trace_id stays NULL** until Phase 0.3 links the OpenTelemetry trace ids
-  into this table (see Future.md, Pillar F).
+- **trace-linked** — ``Provenance.trace_id`` (OpenTelemetry, set by
+  ``tracing.py`` when Langfuse keys are configured) is persisted here so
+  the durable row joins back to its trace after the backend's ~30-day
+  retention expires.
 """
 import logging
 import threading
@@ -58,6 +60,7 @@ def record_call(
         "latency_ms": provenance.latency_ms,
         "cost_class": cost_class,
         "correlation_id": provenance.correlation_id or None,
+        "trace_id": provenance.trace_id,
         "success": success,
     }
     if provenance.error:

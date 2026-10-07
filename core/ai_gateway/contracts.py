@@ -65,6 +65,11 @@ class AITaskRequest:
     metadata: Dict = field(default_factory=dict)
     temperature: float = 0.3
     max_tokens: int = 2000
+    # OTel trace id, stamped by the gateway tracing wrapper as soon as the
+    # span opens (before routing starts) so every Provenance constructed
+    # during execution — and the llm_calls row snapshotted from it — links
+    # back to the trace.  None when tracing is disabled.
+    trace_id: Optional[str] = None
 
     def estimated_input_tokens(self) -> int:
         """Rough token estimate (3 chars/token)."""
@@ -102,6 +107,10 @@ class Provenance:
     # accounting is durable.
     tokens_in: Optional[int] = None
     tokens_out: Optional[int] = None
+    # OpenTelemetry trace id (32-char hex) when gateway tracing is enabled
+    # (core/ai_gateway/tracing.py, Phase 0.3); links the durable llm_calls
+    # row back to its trace in Langfuse.  None when tracing is off.
+    trace_id: Optional[str] = None
 
     def to_dict(self) -> Dict:
         return {
@@ -122,6 +131,7 @@ class Provenance:
             "error": self.error,
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
+            "trace_id": self.trace_id,
         }
 
     @classmethod
@@ -146,6 +156,7 @@ class Provenance:
             error=data.get("error"),
             tokens_in=data.get("tokens_in"),
             tokens_out=data.get("tokens_out"),
+            trace_id=data.get("trace_id"),
         )
 
     def short_summary(self) -> str:

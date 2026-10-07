@@ -75,9 +75,11 @@ class TestProvenanceTokens:
         d = prov.to_dict()
         assert d["tokens_in"] == 11
         assert d["tokens_out"] == 7
+        assert d["trace_id"] is None
         restored = Provenance.from_dict(d)
         assert restored.tokens_in == 11
         assert restored.tokens_out == 7
+        assert restored.trace_id is None
 
     def test_defaults_none(self):
         d = Provenance(task="x", method="llm").to_dict()
@@ -139,8 +141,21 @@ class TestRecordCall:
         assert row["latency_ms"] == 1500
         assert row["cost_class"] == "medium"
         assert row["correlation_id"] == "abc12345"
+        assert row["trace_id"] is None
         assert row["success"] is True
         assert "error_text" not in row
+
+    def test_trace_id_is_persisted(self):
+        manager = MagicMock()
+        manager.is_available.return_value = True
+        with self._patch_manager(manager):
+            thread = call_log.record_call(
+                self._prov(trace_id="b" * 32), success=True, cost_class="medium"
+            )
+        thread.join(timeout=5)
+
+        row = manager.insert_llm_call.call_args.args[0]
+        assert row["trace_id"] == "b" * 32
 
     def test_failure_row_carries_capped_error_text(self):
         manager = MagicMock()

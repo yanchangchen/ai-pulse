@@ -107,6 +107,16 @@ GEMINI_AVAILABLE_MODELS: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Langfuse Cloud observability (Model Gateway OTel tracing, Phase 0.3)
+# ---------------------------------------------------------------------------
+# Tracing is env-gated: with either key absent, the gateway emits no spans
+# and every trace_id stays None, so offline runs and tests stay quiet.
+LANGFUSE_PUBLIC_KEY: str = _get_secret("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY: str = _get_secret("LANGFUSE_SECRET_KEY", "")
+# Data region base URL (EU default; US: https://us.cloud.langfuse.com, ...)
+LANGFUSE_HOST: str = _get_secret("LANGFUSE_HOST", "https://cloud.langfuse.com")
+
+# ---------------------------------------------------------------------------
 # App-level constants
 # ---------------------------------------------------------------------------
 DAYS_LOOKBACK: int = 14

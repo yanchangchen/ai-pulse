@@ -378,7 +378,34 @@ Return JSON: {{"category": "theme name"}}""",
         return schemas.get(task)
 
     async def execute(self, request: AITaskRequest) -> AITaskResult:
-        """Execute a task with routing, retry, fallback, and provenance."""
+        """Execute a task with routing, retry, fallback, and provenance.
+
+        The whole execution is wrapped in one OpenTelemetry span
+        (``gateway.<task>``, exported to Langfuse when keys are configured —
+        see ``tracing.py``); the span's trace id is stamped onto the result
+        provenance so the durable ``llm_calls`` row joins back to its trace.
+        Tracing is best-effort: any failure in the span layer is swallowed
+        and the task result is returned untouched.
+        """
+        from .tracing import task_span, finalize_span, span_trace_id
+
+        with task_span(request) as span:
+            # The trace id is known the moment the span opens — stamp it on
+            # the request BEFORE routing so every Provenance constructed
+            # along the way (and the llm_calls row snapshotted from it by
+            # _log_call) carries it.  Stamping after the fact would race
+            # the fire-and-forget row insert.
+            request.trace_id = span_trace_id(span)
+            result = await self._execute_inner(request)
+            try:
+                finalize_span(span, request, result)
+                result.provenance.trace_id = request.trace_id
+            except Exception as e:
+                logger.debug(f"tracing wrapper skipped: {e}")
+            return result
+
+    async def _execute_inner(self, request: AITaskRequest) -> AITaskResult:
+        """Routing/retry/fallback engine (untraced internals)."""
         task = request.task
         policy = self._get_routing_policy(task)
         candidates = self._build_candidate_chain(task)
@@ -464,6 +491,7 @@ Return JSON: {{"category": "theme name"}}""",
                         correlation_id=request.correlation_id,
                         tokens_in=(usage or {}).get("input_tokens"),
                         tokens_out=(usage or {}).get("output_tokens"),
+                        trace_id=getattr(request, "trace_id", None),
                     )
                     self._log_call(provenance, success=True, model_key=model_key)
                     return AITaskResult.success(result, provenance)
@@ -511,6 +539,7 @@ Return JSON: {{"category": "theme name"}}""",
             fallback_from=fallback_from,
             correlation_id=request.correlation_id,
             error=str(last_error),
+            trace_id=getattr(request, "trace_id", None),
         )
         self._log_call(provenance, success=False, model_key=None)
         return AITaskResult.failure(str(last_error), provenance)
@@ -589,6 +618,7 @@ Return JSON: {{"category": "theme name"}}""",
             fallback_from=fallback_from,
             correlation_id=request.correlation_id,
             error=f"LLM failed: {error}; used deterministic fallback",
+            trace_id=getattr(request, "trace_id", None),
         )
         self._log_call(provenance, success=True, model_key=None)
         return AITaskResult.success(result, provenance)
