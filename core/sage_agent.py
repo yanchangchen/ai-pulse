@@ -50,7 +50,10 @@ Grounding rules:
 - You MUST only reference information present in the WIKI CONTEXT below.
 - The context may also contain an ARTICLE EVIDENCE section of individual \
   article briefs.  When a claim rests on a specific article, cite it as \
-  "[Theme · Source · Date]".
+  "[Theme · Source · Date]".  If the brief carries a source link, attach it \
+  to the citation as a Markdown hyperlink, e.g. "[OpenAI Blog · \
+  2026-09-12](https://openai.com/...)" so the reader can open the original \
+  article.  Only use links that appear in the context — never invent URLs.
 - If the context does not contain enough data to answer, say so explicitly — \
   never fabricate or guess.
 - When the user asks "when did you first see" something, scan the context \
@@ -84,7 +87,9 @@ RECENT_BUDGET_SHARE = 0.5
 # Sage also grounds answers in individual articles: a bounded, newest-first
 # candidate window is fetched (SQL filters only), scored client-side against
 # the question's keywords, and the top matches rendered as compact briefs
-# after the wiki section.  Links are carried but not rendered until 2.2.
+# after the wiki section.  Each brief carries its source link (Phase 2.2)
+# so Sage can cite articles as Markdown hyperlinks, and the rendered list
+# flows back to the UI for the evidence popover.
 ARTICLE_CANDIDATE_LIMIT = 300  # max rows fetched before client-side scoring
 ARTICLE_TOP_K = 15             # max article briefs in the context
 ARTICLE_BUDGET_SHARE = 0.3     # fraction of max_chars for the article section
@@ -233,12 +238,28 @@ def annotate_first_appearances(ordered_summaries: List[Dict]) -> List[Dict]:
 # Tier-1 article retrieval (Phase 2.1)
 # ---------------------------------------------------------------------------
 
+def _safe_link(link: Any) -> Optional[str]:
+    """Return ``link`` only when it is a well-formed http(s) URL.
+
+    Scraped article data is untrusted input: anything that isn't a plain
+    http(s) URL (``javascript:``, ``data:``, malformed strings) becomes
+    ``None`` so it can never reach the prompt or render as a Markdown
+    hyperlink in the UI.
+    """
+    if isinstance(link, str):
+        stripped = link.strip()
+        if stripped.lower().startswith(("http://", "https://")):
+            return stripped
+    return None
+
+
 def _normalise_article(row: Dict, run_date: str = "") -> Dict:
     """Normalise a Supabase row or history.json article into one shape.
 
     ``_date`` is the best available YYYY-MM-DD (published_at, then
-    published_date, then the run date).  ``link`` is carried through for the
-    Phase 2.2 citation work — it is not rendered in the context yet.
+    published_date, then the run date).  ``link`` is sanitised through
+    ``_safe_link`` so only real http(s) URLs flow into the context and the
+    UI evidence list (Phase 2.2 citations).
     """
     published = row.get("published_at") or row.get("published_date") or ""
     date = published[:10] if published else (run_date or "")
@@ -247,7 +268,7 @@ def _normalise_article(row: Dict, run_date: str = "") -> Dict:
         "title": row.get("title", ""),
         "summary": row.get("summary", "") or "",
         "source_name": row.get("source_name", ""),
-        "link": row.get("link"),
+        "link": _safe_link(row.get("link")),
         "_date": date,
     }
 
@@ -322,34 +343,53 @@ def _select_articles(candidates: List[Dict], question_kws: List[str]) -> List[Di
     return ranked[:ARTICLE_TOP_K]
 
 
-def _render_article_section(articles: List[Dict], budget: int) -> Tuple[str, int]:
+def _render_article_section(articles: List[Dict], budget: int) -> Tuple[str, List[Dict]]:
     """Render the selected article briefs within ``budget`` chars.
 
-    Returns ``(section_text, rendered_count)`` — ``("", 0)`` when there is
-    nothing to render or the budget is below ``ARTICLE_MIN_BLOCK``.
+    Each brief carries its source link (Phase 2.2) so Sage can cite articles
+    as Markdown hyperlinks; ``link`` was already sanitised to an http(s) URL
+    (or None) by ``_normalise_article``.
+
+    Returns ``(section_text, rendered_articles)`` — the list holds one
+    trimmed dict per brief that actually made it into the section
+    (theme_name / title / source_name / _date / link / snippet), feeding the
+    UI evidence popover; ``("", [])`` when there is nothing to render or the
+    budget is below ``ARTICLE_MIN_BLOCK``.
     """
     if not articles or budget < ARTICLE_MIN_BLOCK:
-        return "", 0
+        return "", []
 
     header = "=== ARTICLE EVIDENCE (top keyword matches, newest first) ===\n\n"
     footer = "\n=== END ARTICLE EVIDENCE ==="
     used = len(header) + len(footer)
     blocks: List[str] = []
+    rendered: List[Dict] = []
     for a in articles:
         snippet = _condense_text(a.get("summary", ""), ARTICLE_SNIPPET_CHARS)
         block = f"- [{a.get('theme_name', '')} · {a.get('source_name', '')} · {a.get('_date', '')}] {a.get('title', '')}"
         if snippet:
             block += f" — {snippet}"
+        link = a.get("link")
+        if link:
+            block += f"\n  Link: {link}"
         block += "\n"
         if used + len(block) > budget and blocks:
             # Budget spent; keep the higher-ranked briefs already collected.
             break
         blocks.append(block)
+        rendered.append({
+            "theme_name": a.get("theme_name", ""),
+            "title": a.get("title", ""),
+            "source_name": a.get("source_name", ""),
+            "_date": a.get("_date", ""),
+            "link": link,
+            "snippet": snippet,
+        })
         used += len(block)
 
     if not blocks:
-        return "", 0
-    return header + "".join(blocks) + footer, len(blocks)
+        return "", []
+    return header + "".join(blocks) + footer, rendered
 
 
 # ---------------------------------------------------------------------------
@@ -385,8 +425,11 @@ def build_wiki_context(
 
     Returns:
         A dict ``{"context": str, "run_count": int, "date_count": int,
-        "date_range": str, "article_count": int}`` so the caller can surface
-        how far Sage actually reached.
+        "date_range": str, "article_count": int, "articles": List[Dict]}``
+        so the caller can surface how far Sage actually reached.  The
+        ``articles`` list (Phase 2.2) carries the exact briefs rendered into
+        the context — title, source, date, sanitised link, snippet — so the
+        UI can show an evidence popover per reply.
     """
     from collections import defaultdict
     question_kws = _tokenise(question)
@@ -396,9 +439,10 @@ def build_wiki_context(
         supabase, history, theme_filter, date_from, date_to, source_filter
     )
     selected_articles = _select_articles(article_candidates, question_kws)
-    article_section, article_count = _render_article_section(
+    article_section, article_list = _render_article_section(
         selected_articles, int(max_chars * ARTICLE_BUDGET_SHARE)
     )
+    article_count = len(article_list)
     # Wiki gets whatever budget the article section didn't consume; with no
     # articles found it keeps the full budget (existing behaviour).
     wiki_max = max_chars - len(article_section)
@@ -450,6 +494,7 @@ def build_wiki_context(
             "date_count": 0,
             "date_range": "",
             "article_count": 0,
+            "articles": [],
         }
     if not summaries:
         # Summaries empty but article evidence exists — render it alone.
@@ -459,6 +504,7 @@ def build_wiki_context(
             "date_count": 0,
             "date_range": "",
             "article_count": article_count,
+            "articles": article_list,
         }
 
     from core.design_system import sanitize_summary_html
@@ -484,6 +530,7 @@ def build_wiki_context(
                 "date_count": 0,
                 "date_range": "",
                 "article_count": article_count,
+                "articles": article_list,
             }
         return {
             "context": "[No wiki data available for the selected filters.]",
@@ -491,6 +538,7 @@ def build_wiki_context(
             "date_count": 0,
             "date_range": "",
             "article_count": 0,
+            "articles": [],
         }
 
     # ------- Split budget between recent & older tiers -------
@@ -588,6 +636,7 @@ def build_wiki_context(
         "date_count": date_count,
         "date_range": date_range_str,
         "article_count": article_count,
+        "articles": article_list,
     }
 
 

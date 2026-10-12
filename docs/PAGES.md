@@ -54,11 +54,19 @@ Three tabs:
   top matches render as an `=== ARTICLE EVIDENCE ===` section capped at
   ~30% of the char budget, with unused budget flowing back to the summaries.
   With no keyword matches the selection degrades to newest-first, so Sage
-  always has some article-level grounding. Links are carried but not
-  rendered yet — that's Phase 2.2.
+  always has some article-level grounding.
+- **Article citations (Phase 2.2):** each brief carries a `Link:` line
+  (sanitised to http(s) via `_safe_link` — scraped URLs are untrusted), and
+  the persona prompt instructs Sage to attach those links to article
+  citations as Markdown hyperlinks (never inventing URLs). The rendered
+  briefs also flow back as `build_wiki_context()["articles"]`, which the
+  chat tab renders as a `📰 Article Evidence (N)` accordion under each
+  assistant message (`_render_sage_article_evidence`). The list is persisted
+  as an `articles` key on the message dict, so evidence popovers survive
+  conversation reloads.
 - Response structure: (1) a chronological account with `[Theme · Run YYYY-MM-DD]`
-  citations (articles cite `[Theme · Source · Date]`), then (2) a
-  "My read on this" assessment.
+  citations (articles cite `[Theme · Source · Date]`, hyperlinked when a
+  source link exists), then (2) a "My read on this" assessment.
 - Multi-turn state lives in `st.session_state.sage_messages`.
 - Persistent conversation threads are stored in Supabase and locally
   (`core/sage_conversations.py`).

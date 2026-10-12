@@ -232,7 +232,7 @@ class TestBuildWikiContext:
         assert result["date_count"] == 1
 
     def test_return_dict_shape(self):
-        """build_wiki_context returns a dict with all 4 expected keys."""
+        """build_wiki_context returns a dict with all 6 expected keys."""
         mock_supabase = MagicMock()
         mock_supabase.is_available.return_value = True
         mock_supabase.get_summaries_across_runs.return_value = [
@@ -247,18 +247,21 @@ class TestBuildWikiContext:
                 "article_count": 3,
             }
         ]
-
-        result = build_wiki_context(supabase=mock_supabase, question="anything")
+        # history={} pins the local article fallback off so the real
+        # history.json on this machine cannot leak into the test.
+        result = build_wiki_context(supabase=mock_supabase, question="anything", history={})
 
         assert isinstance(result, dict)
         assert set(result.keys()) == {
             "context", "run_count", "date_count", "date_range", "article_count",
+            "articles",
         }
         assert isinstance(result["context"], str)
         assert isinstance(result["run_count"], int)
         assert isinstance(result["date_count"], int)
         assert isinstance(result["date_range"], str)
         assert isinstance(result["article_count"], int)
+        assert isinstance(result["articles"], list)
 
     def test_all_dates_in_window_are_represented(self):
         """With many dates and large blocks, every date must still appear in
@@ -468,7 +471,7 @@ class TestArticleContext:
         section, rendered = _render_article_section(articles, int(10_000 * ARTICLE_BUDGET_SHARE))
 
         assert len(section) <= int(10_000 * ARTICLE_BUDGET_SHARE)
-        assert rendered < 20  # budget stopped the render before all 20
+        assert len(rendered) < 20  # budget stopped the render before all 20
 
     def test_total_budget_respected_with_articles(self):
         articles = [
@@ -582,6 +585,131 @@ class TestArticleContext:
 
         assert "July article" in result["context"]
         assert "Old June article" not in result["context"]
+
+
+# ---------------------------------------------------------------------------
+# Article citations (Phase 2.2)
+# ---------------------------------------------------------------------------
+
+class TestArticleCitations:
+    """Links flow into the prompt briefs and back out to the UI evidence list."""
+
+    def test_link_rendered_in_context_brief(self):
+        articles = [_article_row(link="https://example.com/opus")]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        result = build_wiki_context(
+            supabase=supabase, question="claude release", history={}
+        )
+
+        assert "Link: https://example.com/opus" in result["context"]
+
+    def test_no_link_no_link_line(self):
+        articles = [_article_row(link=None)]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        result = build_wiki_context(
+            supabase=supabase, question="claude release", history={}
+        )
+
+        assert "Link:" not in result["context"]
+        assert result["articles"][0]["link"] is None
+
+    def test_unsafe_link_is_dropped(self):
+        # Scraped link data is untrusted — non-http(s) schemes must never
+        # reach the prompt or the UI hyperlink.
+        articles = [_article_row(link="javascript:alert(1)")]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        result = build_wiki_context(
+            supabase=supabase, question="claude release", history={}
+        )
+
+        assert "javascript" not in result["context"]
+        assert result["articles"][0]["link"] is None
+
+    def test_articles_list_flows_to_ui(self):
+        articles = [
+            _article_row(
+                title="Claude 4.5 Opus released",
+                summary="Anthropic ships Claude 4.5 Opus with major gains.",
+                link="https://example.com/opus",
+            )
+        ]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        result = build_wiki_context(
+            supabase=supabase, question="What happened with Claude releases?", history={}
+        )
+
+        arts = result["articles"]
+        assert len(arts) == 1
+        assert arts[0]["title"] == "Claude 4.5 Opus released"
+        assert arts[0]["source_name"] == "OpenAI Blog"
+        assert arts[0]["_date"] == "2025-07-01"
+        assert arts[0]["link"] == "https://example.com/opus"
+        assert arts[0]["snippet"] == "Anthropic ships Claude 4.5 Opus with major gains."
+        assert result["article_count"] == len(arts)
+
+    def test_articles_list_only_contains_rendered_briefs(self):
+        # Budget cutoff must stop the UI list too — the popover may only
+        # claim evidence that actually reached the prompt.
+        from core.sage_agent import _render_article_section, ARTICLE_BUDGET_SHARE
+
+        articles = [
+            _article_row(title=f"Article {i}", summary="word " * 500, published=f"2025-07-{i+1:02d}T09:00:00")
+            for i in range(20)
+        ]
+        section, rendered = _render_article_section(articles, int(10_000 * ARTICLE_BUDGET_SHARE))
+
+        for a in rendered:
+            assert a["title"] in section
+        assert len(rendered) < 20
+
+    def test_articles_empty_when_no_evidence(self):
+        supabase = _mock_supabase(articles=None, summaries=[_summary_row()])
+
+        result = build_wiki_context(
+            supabase=supabase, question="claude release", history={}
+        )
+
+        assert result["articles"] == []
+        assert result["article_count"] == 0
+
+    def test_local_fallback_link_flows_through(self):
+        mock_supabase = MagicMock()
+        mock_supabase.is_available.return_value = False
+
+        history = {
+            "2025-07-01 10:00:00": {
+                "date": "2025-07-01",
+                "summaries": {},
+                "counts": {},
+                "themed_articles": {
+                    "AI Models": [
+                        {
+                            "title": "GPT-5 launch coverage",
+                            "summary": "OpenAI launched GPT-5 today.",
+                            "source_name": "OpenAI Blog",
+                            "link": "https://example.com/gpt5",
+                        }
+                    ]
+                },
+            }
+        }
+
+        result = build_wiki_context(
+            supabase=mock_supabase, question="What happened with GPT-5?", history=history
+        )
+
+        assert "Link: https://example.com/gpt5" in result["context"]
+        assert result["articles"][0]["link"] == "https://example.com/gpt5"
+
+    def test_system_prompt_instructs_hyperlink_citations(self):
+        # The persona must tell Sage to attach context-provided links as
+        # Markdown hyperlinks — and never invent URLs.
+        assert "Markdown hyperlink" in SAGE_SYSTEM_PROMPT
+        assert "never invent URLs" in SAGE_SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------

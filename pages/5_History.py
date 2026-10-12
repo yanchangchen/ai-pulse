@@ -142,6 +142,36 @@ def main() -> None:
 # Sage chat tab
 # ---------------------------------------------------------------------------
 
+def _render_sage_article_evidence(articles):
+    """Pillar D evidence popover: an accordion under a Sage reply listing the
+    article briefs that grounded it (Phase 2.2).
+
+    Each entry links to the original article (links were sanitised to
+    http(s) URLs in ``core/sage_agent.py``) and shows the exact snippet Sage
+    saw, so every claim is inspectable at the source.  Renders nothing when
+    the reply has no article evidence (e.g. pre-2.2 messages).
+    """
+    if not articles:
+        return
+    items = []
+    for a in articles:
+        title = (a.get("title") or "Untitled article").strip()
+        # Escape brackets so a title containing them can't break the
+        # Markdown link syntax below.
+        title = title.replace("[", "\\[").replace("]", "\\]")
+        meta = " · ".join(
+            part for part in (a.get("source_name"), a.get("_date")) if part
+        )
+        snippet = (a.get("snippet") or "").strip()
+        link = a.get("link")
+        head = f"[{title}]({link})" if link else title
+        item = f"- **{head}**" + (f" — {meta}" if meta else "")
+        if snippet:
+            item += f"\n  \n  {snippet}"
+        items.append(item)
+    with st.expander(f"📰 Article Evidence ({len(articles)})", expanded=False):
+        st.markdown("\n\n".join(items))
+
 def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None, default_date_to=None, default_source_filter=None):
     """Render the Ask Sage conversational chat interface with in-depth scope control and persistent history."""
     from datetime import date, datetime, timedelta
@@ -386,6 +416,8 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
         avatar = "🔮" if msg["role"] == "assistant" else "👤"
         with st.chat_message(msg["role"], avatar=avatar):
             st.markdown(msg["content"])
+            if msg["role"] == "assistant":
+                _render_sage_article_evidence(msg.get("articles"))
 
     # Chat input
     user_input = st.chat_input("Ask Sage anything about AI trends...")
@@ -446,7 +478,15 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
             elif stats.get("run_count") == 0:
                 st.caption("ℹ️ *Notice: No wiki records matched the selected period/theme filters.*")
 
-        st.session_state.sage_messages.append({"role": "assistant", "content": sage_response})
+            # Evidence popover for this reply (also persisted with the
+            # message so it survives conversation reloads — the extra
+            # "articles" key rides along in the JSONB messages payload).
+            _render_sage_article_evidence(stats.get("articles"))
+
+        assistant_msg = {"role": "assistant", "content": sage_response}
+        if stats.get("articles"):
+            assistant_msg["articles"] = stats["articles"]
+        st.session_state.sage_messages.append(assistant_msg)
 
         # Auto-update saved conversation thread if one is active
         if st.session_state.sage_current_conv_id:
