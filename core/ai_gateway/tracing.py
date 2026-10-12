@@ -38,22 +38,46 @@ _TRUNCATION_MARKER = "… [truncated]"
 _tracer = None
 _provider = None
 _tracing_enabled: Optional[bool] = None
+# Last _configure() exception, when one occurred.  A *definitive* off state
+# (keys absent) caches False for the process; a *failed* configuration (import
+# hiccup, transient env problem) must not — the next gateway call retries
+# instead of the whole process staying dark.  Diagnosed 2026-10-12: an app
+# process ran all day with tracing silently off (llm_calls rows with NULL
+# trace_id) because the first _configure() failure was cached at DEBUG level.
+_last_config_error: Optional[str] = None
 
 
 def is_tracing_enabled() -> bool:
     """True when Langfuse keys are configured (and OTel importable)."""
+    return _resolve_enabled()
+
+
+def _resolve_enabled() -> bool:
+    """The memoizing gate behind ``is_tracing_enabled``.
+
+    Kept separate so tests can exercise the memoization semantics directly
+    (the conftest autouse pin stubs the public ``is_tracing_enabled``).
+    """
     global _tracing_enabled
     if _tracing_enabled is None:
-        _tracing_enabled = _configure()
-    return _tracing_enabled
+        enabled = _configure()
+        if _last_config_error is None:
+            # Definitive verdict (keys present + pipeline built, or keys
+            # absent) — safe to memoize.
+            _tracing_enabled = enabled
+        # A failed configuration returns False for THIS call but leaves
+        # _tracing_enabled unset, so the next gateway call retries.
+    return _tracing_enabled is True
 
 
 def _configure() -> bool:
     """Build the OTLP pipeline; return False (no-op mode) on any failure."""
+    global _last_config_error
     try:
         from config.settings import LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
 
         if not LANGFUSE_PUBLIC_KEY or not LANGFUSE_SECRET_KEY:
+            _last_config_error = None
             return False
 
         import base64
@@ -86,13 +110,20 @@ def _configure() -> bool:
             )
         )
         _set_provider(provider)
+        _last_config_error = None
         logger.info(
             f"Gateway tracing enabled: OTLP spans -> {LANGFUSE_HOST} (Langfuse)"
         )
         return True
     except Exception as e:
-        # Missing opentelemetry packages or a broken env: no-op mode.
-        logger.debug(f"Gateway tracing disabled: {e}")
+        # Missing opentelemetry packages or a broken env: no-op mode for
+        # this call.  WARNING (not DEBUG) so a dark process is visible in
+        # the terminal — and NOT memoized, so the next call retries.
+        _last_config_error = str(e)
+        logger.warning(
+            f"Gateway tracing configuration failed (will retry on next "
+            f"gateway call): {e}"
+        )
         return False
 
 
@@ -117,10 +148,11 @@ def reset_tracing() -> None:
     real Langfuse keys in ``secrets.toml`` never make a test export spans,
     the same rationale as the Supabase offline pin.
     """
-    global _tracer, _provider, _tracing_enabled
+    global _tracer, _provider, _tracing_enabled, _last_config_error
     _tracer = None
     _provider = None
     _tracing_enabled = None
+    _last_config_error = None
 
 
 def flush() -> None:

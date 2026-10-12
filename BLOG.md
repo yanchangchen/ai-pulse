@@ -19,6 +19,7 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 **Also shipped**:
 
 - 514 tests, all offline — the FTS path is tested by pinning the `match_articles` RPC call and its graceful degradation to the window fetch; the prompt invariants are string-asserted against `SAGE_SYSTEM_PROMPT`; the judge tests cover parse/infra failures, thread gating, and row skipping.
+- **A dark-process fix in gateway tracing.** Symptom: today's `sage_chat` rows landed in `llm_calls` with NULL `trace_id` — no traces in Langfuse — while keys, region, OTLP ingestion, and the span→generation mapping all verified healthy from fresh processes. Root cause: the first `_configure()` failure in the app process was *memoized for the process lifetime* and logged at DEBUG, so one transient startup hiccup (an import or settings blip) silenced tracing for the whole run with no visible symptom. Fix: a failed configuration returns False for that call but leaves the gate un-memoized — the next gateway call retries — and failures log at WARNING. *Lesson: "best-effort observability" still needs a broken-effort signal; a silent cache of a transient failure turns best-effort into no-effort.*
 
 **Result**: Sage's candidate pool is now every keyword-matching article in the table, ranked in the database — not the newest 300 — replies open with the answer instead of a preamble, and every reply quietly grades its own groundedness into a durable baseline. **Phase 2 closed.**
 

@@ -64,6 +64,45 @@ class TestGating:
         assert tracing._configure() is False
         assert tracing.get_tracer() is None
 
+    def test_config_failure_is_not_memoized(self, monkeypatch, caplog):
+        # Regression (diagnosed 2026-10-12): an app process ran all day with
+        # tracing silently off because the FIRST _configure() failure was
+        # cached for the process lifetime at DEBUG level.  A *failed*
+        # configuration (import hiccup, transient env problem) must return
+        # False for the call but leave the gate un-memoized so the next
+        # gateway call retries — and the failure must be a WARNING, visible
+        # in the terminal.
+        monkeypatch.setitem(
+            sys.modules, "opentelemetry.exporter.otlp.proto.http.trace_exporter", None
+        )
+        monkeypatch.setattr("config.settings.LANGFUSE_PUBLIC_KEY", "pk-lf-fake")
+        monkeypatch.setattr("config.settings.LANGFUSE_SECRET_KEY", "sk-lf-fake")
+        tracing.reset_tracing()
+
+        # _resolve_enabled is the real gate (conftest stubs only the public
+        # is_tracing_enabled).
+        assert tracing._resolve_enabled() is False
+        assert tracing._tracing_enabled is None  # NOT memoized
+        assert tracing._last_config_error is not None
+
+        # The failure logs at WARNING so a dark process is diagnosable, and
+        # the next call retries instead of staying dark.
+        import logging as _logging
+        with caplog.at_level(_logging.WARNING, logger="core.ai_gateway.tracing"):
+            assert tracing._resolve_enabled() is False
+        assert any("retry" in r.message for r in caplog.records)
+
+    def test_config_success_is_memoized(self, monkeypatch):
+        # Definitive verdicts (keys present + pipeline built; keys absent)
+        # ARE memoized — no repeated configure attempts per gateway call.
+        monkeypatch.setattr("config.settings.LANGFUSE_PUBLIC_KEY", "")
+        monkeypatch.setattr("config.settings.LANGFUSE_SECRET_KEY", "")
+        tracing.reset_tracing()
+
+        assert tracing._resolve_enabled() is False
+        assert tracing._tracing_enabled is False  # cached: keys absent
+        assert tracing._last_config_error is None
+
     def test_span_errors_never_break_execute(self, monkeypatch):
         # Even a completely broken tracer object must not fail the task.
         class BrokenTracer:
