@@ -38,24 +38,38 @@ Your personality:
 - You are never verbose for the sake of it.  Every sentence earns its place.
 
 Your response format (follow this strictly):
-1. **Factual Account** — Answer the user's question chronologically, citing \
-   the specific run date and theme for every claim.  Use the format \
-   "[Theme · Run YYYY-MM-DD]" for citations.  Start with when you *first* \
-   observed the trend and walk forward in time.
-2. **Sage's Assessment** — After the factual account, add a section titled \
-   "**My read on this:**" where you give your own synthesis, opinion, or \
-   prediction based on the patterns you see.
+1. **Direct Answer** — Open with one to three sentences that answer the \
+   question head-on: the headline takeaway, no preamble.  For a narrow \
+   factual question, the reply can be just this step plus citations.
+2. **Evidence** — Support the answer with the facts, cited per claim.  For \
+   trend-shaped questions, give the account chronologically — start with \
+   when you *first* observed the trend and walk forward in time, using the \
+   format "[Theme · Run YYYY-MM-DD]" for run-level citations.
+3. **Sage's Assessment** — Close with a section titled "**My read on this:**" \
+   where you give your own synthesis, opinion, or prediction based on the \
+   patterns you see.
 
 Grounding rules:
 - You MUST only reference information present in the WIKI CONTEXT below.
 - The context may also contain an ARTICLE EVIDENCE section of individual \
-  article briefs.  When a claim rests on a specific article, cite it as \
-  "[Theme · Source · Date]".  If the brief carries a source link, attach it \
-  to the citation as a Markdown hyperlink, e.g. "[OpenAI Blog · \
+  article briefs, pre-filtered for relevance to this question.  Use it for \
+  specific claims (models, numbers, events, with hyperlinks); use the WIKI \
+  CONTEXT for the multi-run arc.  When a claim rests on a specific article, \
+  cite it as "[Theme · Source · Date]".  If the brief carries a source link, \
+  attach it to the citation as a Markdown hyperlink, e.g. "[OpenAI Blog · \
   2026-09-12](https://openai.com/...)" so the reader can open the original \
   article.  Only use links that appear in the context — never invent URLs.
 - If the context does not contain enough data to answer, say so explicitly — \
-  never fabricate or guess.
+  never fabricate or guess.  When the evidence covers only part of the \
+  question, give that partial answer and state its scope (which dates, \
+  themes, or sources the context actually covers) rather than refusing.
+- Match the answer's shape to the question: a direct fact gets a short \
+  direct answer; a trend gets its arc over time; a comparison contrasts \
+  the two things explicitly.
+- If runs disagree or a trend reverses across dates, surface the change \
+  with its dates — never smooth it away or silently keep only the newest.
+- Prefer concrete numbers, names, and dates from the context over vague \
+  characterisations.
 - When the user asks "when did you first see" something, scan the context \
   chronologically and cite the earliest run date where it appears.
 - Refer to yourself as "I" and to the user as "you".
@@ -280,14 +294,18 @@ def _fetch_article_candidates(
     date_from: Optional[str],
     date_to: Optional[str],
     source_filter: Optional[str],
+    question: str = "",
 ) -> List[Dict]:
-    """Fetch a bounded, newest-first candidate window of articles.
+    """Fetch the candidate pool of articles for Tier-1 evidence.
 
-    Supabase path first; local fallback flattens ``themed_articles`` from
-    history.json runs inside the date window (mirroring the summary
-    fallback's string-compare date filtering).  Keyword matching is NOT done
-    here — SQL only bounds the candidate set; scoring/selection is
-    client-side in ``_select_articles`` (proper FTS arrives in Phase 2.3).
+    Supabase path first: with a question, keyword matching runs in Postgres
+    FTS (``match_articles``, Phase 2.3) — every matching article ranked by
+    ``ts_rank`` is a candidate, not just the newest window; the RPC degrades
+    to a bounded newest-first window when nothing matches or the function is
+    missing.  Local fallback flattens ``themed_articles`` from history.json
+    runs inside the date window (mirroring the summary fallback's
+    string-compare date filtering) — no Postgres, no FTS, so its candidates
+    rely on client-side scoring in ``_select_articles`` either way.
     """
     candidates: List[Dict] = []
 
@@ -298,6 +316,7 @@ def _fetch_article_candidates(
             date_to=date_to,
             source_filter=source_filter,
             limit=ARTICLE_CANDIDATE_LIMIT,
+            query=question,
         )
         # isinstance guard: a non-list (e.g. a bare Mock or an error sentinel)
         # means "no Supabase articles", never a crash.
@@ -435,8 +454,10 @@ def build_wiki_context(
     question_kws = _tokenise(question)
 
     # ------- Fetch Tier-1 article candidates & render within budget -------
+    # The raw question goes to SQL (websearch_to_tsquery does its own
+    # parsing); the tokenised keywords are for client-side scoring.
     article_candidates = _fetch_article_candidates(
-        supabase, history, theme_filter, date_from, date_to, source_filter
+        supabase, history, theme_filter, date_from, date_to, source_filter, question
     )
     selected_articles = _select_articles(article_candidates, question_kws)
     article_section, article_list = _render_article_section(

@@ -417,6 +417,19 @@ class TestArticleContext:
         assert context.index("=== END WIKI CONTEXT ===") < context.index("=== ARTICLE EVIDENCE")
         assert result["article_count"] == 1
 
+    def test_question_flows_to_supabase_as_fts_query(self):
+        # Phase 2.3: the raw question (not the tokenised keywords) reaches
+        # Supabase so match_articles can fold it with websearch_to_tsquery.
+        articles = [_article_row(title="Claude 4.5 Opus released")]
+        supabase = _mock_supabase(articles=articles, summaries=[_summary_row()])
+
+        build_wiki_context(
+            supabase=supabase, question="What happened with Claude releases?"
+        )
+
+        kwargs = supabase.get_articles_for_context.call_args.kwargs
+        assert kwargs["query"] == "What happened with Claude releases?"
+
     def test_keyword_match_ranks_above_non_match(self):
         articles = [
             _article_row(title="Unrelated storage story", summary="Disks got cheaper."),
@@ -710,6 +723,34 @@ class TestArticleCitations:
         # Markdown hyperlinks — and never invent URLs.
         assert "Markdown hyperlink" in SAGE_SYSTEM_PROMPT
         assert "never invent URLs" in SAGE_SYSTEM_PROMPT
+
+    def test_system_prompt_leads_with_direct_answer(self):
+        # Phase 2.3: replies open by answering the question head-on, not
+        # with a chronological walk; the timeline lives in the Evidence step.
+        assert "Direct Answer" in SAGE_SYSTEM_PROMPT
+        assert SAGE_SYSTEM_PROMPT.index("Direct Answer") < SAGE_SYSTEM_PROMPT.index("Evidence")
+        # Trend questions still get their chronological arc (first observed
+        # → forward in time) in the evidence step.
+        assert "chronologically" in SAGE_SYSTEM_PROMPT
+
+    def test_system_prompt_partial_evidence_states_scope(self):
+        # Groundedness with usefulness: partial evidence yields a partial
+        # answer plus its scope (dates/themes covered), not a bare refusal.
+        assert "partial answer" in SAGE_SYSTEM_PROMPT
+        assert "scope" in SAGE_SYSTEM_PROMPT
+        # And insufficiency must still be stated explicitly.
+        assert "never fabricate" in SAGE_SYSTEM_PROMPT
+
+    def test_system_prompt_surfaces_conflicting_evidence(self):
+        # Runs that disagree must be shown with dates, never smoothed away.
+        assert "disagree" in SAGE_SYSTEM_PROMPT
+        assert "never smooth it away" in SAGE_SYSTEM_PROMPT
+
+    def test_system_prompt_routes_article_evidence_vs_wiki(self):
+        # The pre-filtered ARTICLE EVIDENCE section is for specific claims;
+        # WIKI CONTEXT is for the multi-run arc.
+        assert "pre-filtered" in SAGE_SYSTEM_PROMPT
+        assert "multi-run arc" in SAGE_SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------

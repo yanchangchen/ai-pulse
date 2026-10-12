@@ -108,3 +108,92 @@ def test_get_articles_for_context_unavailable():
     manager.available = False
 
     assert manager.get_articles_for_context() is None
+
+
+def _rpc_chain(rows):
+    """A self-returning postgrest rpc-builder mock ending in ``rows``."""
+    r = MagicMock()
+    r.execute.return_value = MagicMock(data=rows)
+    return r
+
+
+def test_get_articles_for_context_with_query_uses_fts_rpc():
+    """Phase 2.3: a query routes keyword matching to the match_articles RPC
+    (ranked by ts_rank in SQL) instead of the newest-first window."""
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [{"id": "a1", "title": "Claude released", "rank": 0.42}]
+    rpc = _rpc_chain(rows)
+    manager.client = MagicMock()
+    manager.client.rpc.return_value = rpc
+    window = _query_chain([])
+    manager.client.table.return_value = window
+
+    result = manager.get_articles_for_context(
+        theme_filter="Frontier Models & Benchmarks",
+        date_from="2025-06-15",
+        date_to="2025-07-15",
+        source_filter="OpenAI Blog",
+        limit=100,
+        query="What happened with Claude releases?",
+    )
+
+    assert result == rows
+    manager.client.rpc.assert_called_once_with("match_articles", {
+        "query": "What happened with Claude releases?",
+        "result_limit": 100,
+        "theme_filter": "Frontier Models & Benchmarks",
+        "date_from": "2025-06-15",
+        "date_to": "2025-07-15",
+        "source_filter": "OpenAI Blog",
+    })
+    # The window fetch must not run when the RPC already matched rows.
+    manager.client.table.assert_not_called()
+
+
+def test_get_articles_for_context_query_empty_rpc_falls_back_to_window():
+    """No FTS match (or an RPC that isn't a list) → newest-first window, so
+    Sage always has some Tier-1 evidence."""
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [{"id": "a9", "title": "Newest article"}]
+    manager.client = MagicMock()
+    manager.client.rpc.return_value = _rpc_chain([])
+    manager.client.table.return_value = _query_chain(rows)
+
+    result = manager.get_articles_for_context(query="obscure keywords")
+
+    assert result == rows
+    manager.client.table.assert_called_with("articles")
+
+
+def test_get_articles_for_context_rpc_error_falls_back_to_window():
+    """A failing RPC (e.g. match_articles not migrated yet) degrades to the
+    window fetch instead of surfacing the error."""
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [{"id": "a9", "title": "Newest article"}]
+    rpc = MagicMock()
+    rpc.execute.side_effect = Exception("function match_articles not found")
+    manager.client = MagicMock()
+    manager.client.rpc.return_value = rpc
+    manager.client.table.return_value = _query_chain(rows)
+
+    result = manager.get_articles_for_context(query="anything")
+
+    assert result == rows
+    manager.client.table.assert_called_with("articles")
+
+
+def test_get_articles_for_context_blank_query_uses_window():
+    """A blank query is treated as no query — the RPC is never called."""
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [{"id": "a9", "title": "Newest article"}]
+    manager.client = MagicMock()
+    manager.client.table.return_value = _query_chain(rows)
+
+    result = manager.get_articles_for_context(query="   ")
+
+    assert result == rows
+    manager.client.rpc.assert_not_called()

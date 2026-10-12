@@ -938,15 +938,19 @@ class SupabaseManager:
         date_to: Optional[str] = None,
         source_filter: Optional[str] = None,
         limit: int = 300,
+        query: Optional[str] = None,
     ) -> Optional[List[Dict]]:
         """
-        Retrieve recent articles for Sage's Tier-1 evidence context (Phase 2.1).
+        Retrieve articles for Sage's Tier-1 evidence context (Phases 2.1/2.3).
 
-        Unlike search_articles (single ilike on title), this intentionally does
-        no keyword matching in SQL — it returns a bounded, newest-first
-        candidate window within the period/theme/source filters, and the
-        caller (core/sage_agent.py) scores and selects against the question
-        client-side. Proper FTS (tsvector + GIN) arrives in Phase 2.3.
+        With ``query`` set (the raw user question), keyword matching runs in
+        Postgres FTS via the ``match_articles`` RPC — the candidate pool is
+        every keyword-matching article ranked by ``ts_rank``, not just the
+        newest window. With no ``query``, or when the RPC returns nothing /
+        fails (function not migrated yet, no keyword matches), this falls
+        back to a bounded newest-first window within the filters. Either way
+        the caller (core/sage_agent.py) makes the final selection
+        client-side; SQL bounds and matches, judgement stays in Python.
 
         Args:
             theme_filter: Optional theme name to filter by.
@@ -954,12 +958,40 @@ class SupabaseManager:
             date_to: ISO date string upper bound on published_at.
             source_filter: Optional source name to filter by.
             limit: Max candidate articles to return.
+            query: Optional question text for SQL-side FTS matching.
 
         Returns:
-            List of article dicts (newest first), or None on failure.
+            List of article dicts (best matches / newest first), or None on
+            failure.
         """
         if not self.available:
             return None
+
+        # Phase 2.3: SQL-side keyword matching via FTS. The RPC degrades to
+        # the newest-first window below on any failure or empty match, so
+        # Sage always has some Tier-1 evidence.
+        if query and query.strip():
+            try:
+                params = {"query": query, "result_limit": limit}
+                if theme_filter:
+                    params["theme_filter"] = theme_filter
+                if date_from:
+                    params["date_from"] = date_from
+                if date_to:
+                    params["date_to"] = date_to
+                if source_filter:
+                    params["source_filter"] = source_filter
+                response = self.client.rpc("match_articles", params).execute()
+                if isinstance(response.data, list) and response.data:
+                    return response.data
+                logger.info(
+                    "match_articles returned no rows; falling back to the "
+                    "newest-first article window"
+                )
+            except Exception as e:
+                # Pre-migration databases (no match_articles function) keep
+                # working through the fallback path.
+                logger.warning(f"match_articles RPC failed, using window fetch: {e}")
 
         try:
             q = self.client.table("articles") \

@@ -46,12 +46,15 @@ Three tabs:
   routes the fully-formed prompt (persona + wiki context + conversation) through
   the Model Gateway — no deterministic fallback, so total engine failure surfaces
   as a friendly notice string (quota exhaustion gets a dedicated 429 notice).
-- **Tier-1 article evidence (Phase 2.1):** alongside the summary narrative, a
-  bounded newest-first candidate window of articles
-  (`SupabaseManager.get_articles_for_context()`, local fallback:
-  `themed_articles` from history.json) is fetched and scored client-side
-  against the question's keywords (`score_article_relevance`, titles ×2); the
-  top matches render as an `=== ARTICLE EVIDENCE ===` section capped at
+- **Tier-1 article evidence (Phases 2.1/2.3):** alongside the summary narrative,
+  articles are fetched via `SupabaseManager.get_articles_for_context()` — with
+  the question passed as `query`, keyword matching runs in Postgres FTS (the
+  `match_articles` RPC over `articles.search_vector`, ranked by `ts_rank`);
+  with no match or a pre-migration database it degrades to a bounded
+  newest-first window. Local fallback (`themed_articles` from history.json)
+  has no FTS and relies on client-side scoring. Either way the candidates are
+  scored client-side (`score_article_relevance`, titles ×2) for the final
+  top-K, which render as an `=== ARTICLE EVIDENCE ===` section capped at
   ~30% of the char budget, with unused budget flowing back to the summaries.
   With no keyword matches the selection degrades to newest-first, so Sage
   always has some article-level grounding.
@@ -64,9 +67,13 @@ Three tabs:
   assistant message (`_render_sage_article_evidence`). The list is persisted
   as an `articles` key on the message dict, so evidence popovers survive
   conversation reloads.
-- Response structure: (1) a chronological account with `[Theme · Run YYYY-MM-DD]`
+- Response structure (Phase 2.3 prompt rework): (1) a **Direct Answer** —
+  1-3 sentences answering the question head-on, no preamble; (2) **Evidence**
+  — for trend questions a chronological account with `[Theme · Run YYYY-MM-DD]`
   citations (articles cite `[Theme · Source · Date]`, hyperlinked when a
-  source link exists), then (2) a "My read on this" assessment.
+  source link exists), with partial evidence answered at its stated scope and
+  conflicting runs surfaced with dates rather than smoothed; then (3) a
+  "My read on this" assessment.
 - Multi-turn state lives in `st.session_state.sage_messages`.
 - Persistent conversation threads are stored in Supabase and locally
   (`core/sage_conversations.py`).

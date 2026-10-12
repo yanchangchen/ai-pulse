@@ -4,6 +4,24 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-10-08 to 2026-10-12 — Phase 2.3: keyword matching moves into Postgres, and Sage learns to answer first
+
+**Problem**: Two gaps. Retrieval: Sage's article evidence drew its candidate pool from the newest 300 rows — anything relevant-but-older was invisible, and the Python scorer wasn't word-aware (no stemming, no ranking, `LIKE`-style substring thinking). Answering: the persona forced every reply to open as a chronological walk, so a direct factual question ("what did Anthropic ship in September?") buried its answer under a timeline.
+
+**What happened**:
+
+1. **Full-text search on `articles` (Phase 2.3).** For anyone new to Postgres FTS, the mechanics in one breath: each row's text folds into a `tsvector` — a normalised list of word *stems* (`"Models are running"` → `'model':1 'run':3`, plurals stripped, verb forms merged); the question folds the same way into a `tsquery` (`websearch_to_tsquery('english', ...)`, which parses raw user text safely); the `@@` operator matches query against vector; a GIN index turns that match into an index lookup instead of a table scan; and `ts_rank()` scores how well each row matched, so ordering happens in the database. Concretely: `supabase_migration_fts_articles.sql` adds a `search_vector` GENERATED ALWAYS column (title at weight A, summary at B — the existing "title counts double" client-side semantics, expressed in SQL) with a GIN index, plus a `match_articles` RPC returning matches ranked by `ts_rank`. PostgREST's built-in `fts` filter can't `ORDER BY ts_rank`, so a function is the standard Supabase pattern for ranked retrieval. `GENERATED ... STORED` backfills every existing row on ALTER — no backfill script. Design kept from 2.1: SQL now both bounds *and* matches the candidate set, but final top-K judgement stays client-side (`score_article_relevance` unchanged) where it's testable and provider-agnostic. The RPC degrades to the old newest-first window on failure or empty match, so pre-migration databases and no-match questions keep working, and the local history.json fallback (no Postgres → no FTS) is untouched. *Lesson: move matching to where the index is, keep judgement where the tests are.*
+
+2. **The prompt rework: answer first, evidence second.** The response format became three steps — **Direct Answer** (1-3 sentences, no preamble; a narrow factual question can be just this plus citations) → **Evidence** (the chronological account with citations, kept for trend-shaped questions) → **My read on this**. New grounding rules: partial evidence yields a *partial answer with its stated scope* (which dates/themes the context covers) instead of a bare refusal; runs that disagree get surfaced with dates, never smoothed away; concrete numbers/names/dates beat vague characterisations; and the pre-filtered ARTICLE EVIDENCE section is for specific claims while WIKI CONTEXT carries the multi-run arc. Every 2.1/2.2 invariant survived — context-only claims, citation formats, hyperlinked links, "never invent URLs" — which is the interesting part: *groundedness lives in the grounding rules, not in the format order. Reordering the format for readability cost nothing in faithfulness.*
+
+**Also shipped**:
+
+- 502 tests, all offline — the FTS path is tested by pinning the `match_articles` RPC call and its graceful degradation to the window fetch; the prompt invariants are string-asserted against `SAGE_SYSTEM_PROMPT`.
+
+**Result**: Sage's candidate pool is now every keyword-matching article in the table, ranked in the database — not the newest 300 — and replies open with the answer instead of a preamble. (Faithfulness judge for the Phase 2 gate still deferred as its own task, per the sequencing decision recorded earlier.)
+
+---
+
 ## 2026-10-01 to 2026-10-07 — RAG foundations: Sage joins the gateway, gets traced, and reads articles
 
 **Problem**: `Future.md` lays out the path from prompt-stuffed Sage to a time-aware hierarchical RAG system, but three foundations were missing. Sage still called the LLM client directly, bypassing the gateway's fallback chain, health tracking, and provenance. Nothing anywhere recorded token usage — provider responses carried it and we threw it away. And Sage's only grounding was theme summaries, so a question like "what did that Mistral release actually say" had no article-level evidence to draw on.

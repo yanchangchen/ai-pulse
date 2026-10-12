@@ -27,6 +27,7 @@ Run in the SQL Editor, roughly in order:
 6. `supabase_migration_backfill_articles.sql`
 7. `supabase_migration_app_settings.sql` — `app_settings` KV store for evaluation-driven config
 8. `supabase_migration_llm_calls.sql` — `llm_calls` append-only observability log
+9. `supabase_migration_fts_articles.sql` — `articles.search_vector` (generated tsvector + GIN) and the `match_articles` FTS RPC (Phase 2.3)
 
 ## `llm_calls`
 
@@ -41,9 +42,15 @@ tracing is enabled (`core/ai_gateway/tracing.py`, Phase 0.3).
 ## Sage article retrieval
 
 `SupabaseManager.get_articles_for_context()` (`core/supabase_client.py`) is Sage's
-Tier-1 evidence query (Phase 2.1): a bounded newest-first window on `articles` with
-period/theme/source filters — keyword matching is intentionally NOT done in SQL
-(FTS arrives in Phase 2.3); `core/sage_agent.py` scores and selects client-side.
+Tier-1 evidence query. Phase 2.1 was a bounded newest-first window on `articles`
+with period/theme/source filters and client-side keyword scoring. Phase 2.3 moved
+keyword matching into Postgres FTS: with a `query` (the raw Sage question), the
+method calls the `match_articles` RPC, which matches `articles.search_vector`
+(a GENERATED ALWAYS tsvector, title weight A / summary weight B) via
+`websearch_to_tsquery` and returns rows ranked by `ts_rank`. On RPC failure or
+no keyword match it degrades to the original newest-first window, so
+pre-migration databases and no-match questions keep working. Final top-K
+selection stays client-side in `core/sage_agent.py`.
 
 ## RLS
 
