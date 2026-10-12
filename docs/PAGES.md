@@ -75,6 +75,11 @@ Three tabs:
   conflicting runs surfaced with dates rather than smoothed; then (3) a
   "My read on this" assessment.
 - Multi-turn state lives in `st.session_state.sage_messages`.
+- **Chat-time faithfulness judging (Phase 2 gate):** every successful reply
+  (LLM answers only — error/quota notices are skipped) is judged in the
+  background by `record_sage_faithfulness()` against the exact context it
+  was given; fire-and-forget on a daemon thread, so the chat never blocks.
+  Scores land in `sage_evaluations` and surface on page 7.
 - Persistent conversation threads are stored in Supabase and locally
   (`core/sage_conversations.py`).
 
@@ -87,6 +92,11 @@ Historical thematic momentum & theme drilldown timeline.
 Evaluation engine scoring 7 metrics (3 LLM-as-judge routed through the gateway `EVALUATE`
 task + 4 deterministic judges, `ThreadPoolExecutor` in `core/evaluator.py`) with live
 progress panel, in-app remediation, and opt-in auto-remediation.
+
+**🔮 Sage Faithfulness section (Phase 2 gate):** independent of the evaluation runs —
+renders the chat-time judge's `sage_evaluations` rows (rolling mean over the last 20
+replies, per-reply score line, and a recent unsupported-claims expander), with an
+empty state pointing at the chat tab and the required migration.
 
 → Full execution model (EvaluationRunner, checkpointing, pause/resume, Judge Model
 selector, keyword suggestions): [docs/QUALITY_EVALUATION.md](QUALITY_EVALUATION.md).

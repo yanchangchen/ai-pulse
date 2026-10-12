@@ -197,3 +197,60 @@ def test_get_articles_for_context_blank_query_uses_window():
 
     assert result == rows
     manager.client.rpc.assert_not_called()
+
+
+def test_insert_sage_evaluation_inserts_row():
+    """The Phase 2 gate judge row lands via a plain table insert."""
+    manager = SupabaseManager()
+    manager.available = True
+    insert = MagicMock()
+    manager.client = MagicMock()
+    manager.client.table.return_value = insert
+
+    row = {"question": "q", "answer_text": "a", "score": 0.9}
+    ok = manager.insert_sage_evaluation(row)
+
+    assert ok is True
+    manager.client.table.assert_called_with("sage_evaluations")
+    insert.insert.assert_called_once_with(row)
+
+
+def test_insert_sage_evaluation_degrades_to_false():
+    """An insert failure (or unavailable manager) returns False, never raises
+    — the fire-and-forget judge thread must not surface in the chat."""
+    manager = SupabaseManager()
+    manager.available = True
+    insert = MagicMock()
+    insert.insert.side_effect = Exception("table missing")
+    manager.client = MagicMock()
+    manager.client.table.return_value = insert
+
+    assert manager.insert_sage_evaluation({"score": 1.0}) is False
+
+    offline = SupabaseManager()
+    offline.available = False
+    assert offline.insert_sage_evaluation({"score": 1.0}) is False
+
+
+def test_get_sage_evaluations_orders_newest_first():
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [{"id": "e1", "score": 0.9}]
+    q = _query_chain(rows)
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    result = manager.get_sage_evaluations(limit=50)
+
+    assert result == rows
+    manager.client.table.assert_called_with("sage_evaluations")
+    q.select.assert_called_once()
+    q.order.assert_called_with("created_at", desc=True)
+    q.limit.assert_called_with(50)
+
+
+def test_get_sage_evaluations_unavailable_returns_none():
+    manager = SupabaseManager()
+    manager.available = False
+
+    assert manager.get_sage_evaluations() is None

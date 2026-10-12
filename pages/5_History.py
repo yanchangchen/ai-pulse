@@ -176,6 +176,7 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
     """Render the Ask Sage conversational chat interface with in-depth scope control and persistent history."""
     from datetime import date, datetime, timedelta
     from core.sage_agent import SAGE_INTRO, build_wiki_context, chat_with_sage
+    from core.evaluator import record_sage_faithfulness
     from core.sage_conversations import (
         list_saved_conversations,
         get_conversation,
@@ -482,6 +483,20 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
             # message so it survives conversation reloads — the extra
             # "articles" key rides along in the JSONB messages payload).
             _render_sage_article_evidence(stats.get("articles"))
+
+            # Phase 2 gate: judge this reply's faithfulness against the exact
+            # context it was grounded in, fire-and-forget — the context string
+            # and the answer coexist only right here, and the daemon thread
+            # never blocks or fails the chat it is observing.  Error/quota
+            # notice strings (method != "llm") are not worth judging.
+            if prov.get("method") == "llm" and isinstance(stats.get("context"), str):
+                record_sage_faithfulness(
+                    question=user_input,
+                    answer=sage_response,
+                    context=stats["context"],
+                    conversation_id=st.session_state.sage_current_conv_id,
+                    answer_model=prov.get("model"),
+                )
 
         assistant_msg = {"role": "assistant", "content": sage_response}
         if stats.get("articles"):

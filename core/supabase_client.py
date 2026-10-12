@@ -1271,6 +1271,51 @@ class SupabaseManager:
     # Sage Conversations (Persistent Cloud Threads)
     # ------------------------------------------------------------------
 
+    def insert_sage_evaluation(self, row: Dict) -> bool:
+        """Insert one Sage faithfulness judgment (Phase 2 gate).
+
+        Called from the fire-and-forget judge thread in
+        ``core.evaluator.record_sage_faithfulness`` — one row per successful
+        Sage reply, scored against the exact context the reply was grounded
+        in.  Failures return ``False`` (logged, never raised) so a judge
+        thread can never surface in the chat.
+
+        Args:
+            row: Dict with conversation_id / question / answer_text / score /
+                unsupported_claims / judge_model / answer_model keys.
+
+        Returns:
+            True when the row landed, False otherwise.
+        """
+        if not self.available:
+            return False
+        try:
+            self.client.table("sage_evaluations").insert(row).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to insert sage evaluation: {e}")
+            return False
+
+    def get_sage_evaluations(self, limit: int = 100) -> Optional[List[Dict]]:
+        """Read recent Sage faithfulness judgments, newest first.
+
+        Feeds the Sage Faithfulness section on the Quality Evaluation page.
+        Returns ``None`` when unavailable or on failure so the caller can
+        render the empty state rather than an error.
+        """
+        if not self.available:
+            return None
+        try:
+            res = self.client.table("sage_evaluations") \
+                .select("*") \
+                .order("created_at", desc=True) \
+                .limit(limit) \
+                .execute()
+            return res.data if res.data else []
+        except Exception as e:
+            logger.warning(f"Failed to fetch sage evaluations: {e}")
+            return None
+
     def save_sage_conversation(
         self,
         messages: List[Dict],

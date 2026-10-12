@@ -32,11 +32,28 @@ points as gaps instead of the persisted 1.0 placeholder.
 |---|---|---|---|---|
 | **Categoriser Accuracy** | LLM-as-Judge | Are articles being sorted into the right themes? | Re-classifies a stratified sample via LLM, compares against active assignments. | ≥ 80% |
 | **Faithfulness Score** | LLM-as-Judge | Are summaries truthful without hallucination? | Extracts claims from bullet points, fact-checks against source articles. | ≥ 80% |
+| **Sage Faithfulness** | LLM-as-Judge (chat-time) | Are Sage chat answers grounded in the context they received? | Each successful reply is judged against the exact wiki/article context it was given; one `sage_evaluations` row per reply (Phase 2 gate baseline). | ≥ 80% |
 | **Uniqueness Score** | Hybrid Heuristic + LLM | Are summaries distinct across themes/runs? | Jaccard/cosine text overlap filtering; LLM pairwise judge for ambiguous bands. | ≥ 80% |
 | **Grounding Score** | Deterministic | Do "Further Reading" links point to real articles? | Cross-references cited titles/links against the input source set. Reports *Skipped* (not a vacuous 100%) when a run has no persisted citations — requires `supabase_migration_further_reading.sql`. | 100% |
 | **Structural Compliance** | Deterministic | Is the summary properly formatted? | Validates 5 mandatory sections and sentence count bounds (3–7) on prose. Sections absent from a legacy schema are skipped, not failed. | 100% |
 | **Coverage Score** | Deterministic | Did the summary capture key information from all articles? | Source article title/entity token recall across the generated summary. | ≥ 70% |
 | **Temporal Coherence** | Deterministic | Is the summary updating week-over-week? | Compares active summary against past runs to flag stale text repetition. | ≥ 75% |
+
+## Sage Faithfulness (chat-time judge, Phase 2 gate)
+
+Unlike the judges above, the Sage faithfulness judge is **not part of the evaluation run** — it
+fires per reply. `record_sage_faithfulness()` (`core/evaluator.py`) is called from the Sage chat
+tab right after each successful reply (engine failures and quota notices are skipped): the
+context string and the answer coexist only at that moment, so the judge runs right there,
+fire-and-forget on a daemon thread (the `llm_calls` pattern — never blocks or fails the chat it
+observes, availability-gated so offline runs stay quiet). One cheap `TaskType.EVALUATE` call
+scores the answer against the supplied context; only *successful* judgments insert a
+`sage_evaluations` row — judge outages skip the row rather than scoring zero, so a judge outage
+never masquerades as mass hallucination in the trend chart. The Quality Evaluation page renders
+the rolling mean, per-reply score history, and recent unsupported claims from this table. It is
+the Phase 2 baseline: per the recorded sequencing decision there is no pre-2.1 baseline, so
+Phase 3 retrieval changes get measured against the post-2.3 batch that accumulates here.
+Requires `supabase_migration_sage_evaluations.sql`.
 
 ## In-App Remediation
 

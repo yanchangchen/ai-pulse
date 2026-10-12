@@ -1294,3 +1294,119 @@ class TestJudgeSelection:
 
 
 
+
+
+class TestSageFaithfulnessJudge:
+    """Phase 2 gate: the chat-time judge that scores each Sage reply
+    against the exact context it was given."""
+
+    def _llm(self, payload: str) -> MagicMock:
+        llm = MagicMock()
+        llm.generate.return_value = payload
+        return llm
+
+    def test_parses_score_and_claims(self):
+        from core.evaluator import judge_sage_answer
+        llm = self._llm('{"score": 0.7, "unsupported_claims": ["GPT-6 exists"]}')
+
+        score, claims, failure = judge_sage_answer(
+            llm, "What shipped?", "GPT-6 shipped [Frontier · 2026-10-01].",
+            "=== WIKI CONTEXT ===\nNothing about GPT-6.",
+        )
+
+        assert score == 0.7
+        assert claims == ["GPT-6 exists"]
+        assert failure is None
+        prompt = llm.generate.call_args.args[0]
+        # The judge must see the question, the answer, and the context.
+        assert "What shipped?" in prompt
+        assert "GPT-6 shipped" in prompt
+        assert "Nothing about GPT-6" in prompt
+        # And the invented-URL rule (groundedness contract from Phase 2.2).
+        assert "fabricated URL" in prompt
+
+    def test_unparseable_response_is_parse_failure(self):
+        from core.evaluator import judge_sage_answer
+        llm = self._llm("I cannot score this answer.")
+
+        score, claims, failure = judge_sage_answer(llm, "q", "a", "ctx")
+
+        assert score is None
+        assert failure == "parse_failure"
+
+    def test_llm_error_is_infra_error(self):
+        from core.evaluator import judge_sage_answer
+        from core.evaluator import LLMClientError  # evaluator-bound: reload-safe
+        llm = MagicMock()
+        llm.generate.side_effect = LLMClientError("gateway down")
+
+        score, claims, failure = judge_sage_answer(llm, "q", "a", "ctx")
+
+        assert score is None
+        assert failure == "infra_error"
+
+    def test_empty_answer_is_excluded_not_scored(self):
+        from core.evaluator import judge_sage_answer
+        score, claims, failure = judge_sage_answer(self._llm("{}"), "q", "  ", "ctx")
+
+        assert score is None
+        assert failure is None
+        # No judge call was wasted on an empty answer.
+        llm = self._llm("{}")
+        judge_sage_answer(llm, "q", "", "ctx")
+        llm.generate.assert_not_called()
+
+    def test_record_skips_when_no_providers(self):
+        from core.evaluator import record_sage_faithfulness
+        with patch("core.evaluator._gateway_has_providers", return_value=False):
+            assert record_sage_faithfulness("q", "a", "ctx") is None
+
+    def test_record_skips_when_supabase_unavailable(self):
+        from core.evaluator import record_sage_faithfulness
+        manager = MagicMock()
+        manager.is_available.return_value = False
+        with patch("core.evaluator._gateway_has_providers", return_value=True):
+            with patch("core.supabase_client.get_supabase_manager", return_value=manager):
+                assert record_sage_faithfulness("q", "a", "ctx") is None
+        manager.insert_sage_evaluation.assert_not_called()
+
+    def test_record_judges_and_inserts_row(self):
+        from core.evaluator import record_sage_faithfulness
+        manager = MagicMock()
+        manager.is_available.return_value = True
+        judge_llm = MagicMock()
+        judge_llm.generate.return_value = '{"score": 1.0, "unsupported_claims": []}'
+
+        with patch("core.evaluator._gateway_has_providers", return_value=True):
+            with patch("core.supabase_client.get_supabase_manager", return_value=manager):
+                with patch("core.evaluator.GatewayJudgeLLM", return_value=judge_llm):
+                    thread = record_sage_faithfulness(
+                        question="What shipped?",
+                        answer="Claude shipped.",
+                        context="=== WIKI CONTEXT ===\nClaude shipped.",
+                        conversation_id="conv-1",
+                        answer_model="nemotron-3-ultra:cloud",
+                    )
+                    thread.join(timeout=5)
+
+        row = manager.insert_sage_evaluation.call_args.args[0]
+        assert row["question"] == "What shipped?"
+        assert row["score"] == 1.0
+        assert row["conversation_id"] == "conv-1"
+        assert row["answer_model"] == "nemotron-3-ultra:cloud"
+
+    def test_record_skips_row_on_judge_failure(self):
+        from core.evaluator import record_sage_faithfulness
+        manager = MagicMock()
+        manager.is_available.return_value = True
+        judge_llm = MagicMock()
+        judge_llm.generate.return_value = "no json here"  # parse failure
+
+        with patch("core.evaluator._gateway_has_providers", return_value=True):
+            with patch("core.supabase_client.get_supabase_manager", return_value=manager):
+                with patch("core.evaluator.GatewayJudgeLLM", return_value=judge_llm):
+                    thread = record_sage_faithfulness("q", "a", "ctx")
+                    thread.join(timeout=5)
+
+        # Judge outage must not masquerade as a hallucination score.
+        manager.insert_sage_evaluation.assert_not_called()

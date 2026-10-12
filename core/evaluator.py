@@ -16,6 +16,11 @@ LLM Judges (concurrent via ThreadPoolExecutor + Semaphore(3)):
 3. **UniquenessJudge** — scores pairwise overlap (0..1) between all theme summaries
    in the same run and across consecutive runs. Output: `uniqueness_score`.
 
+Chat-time LLM judge (not part of the weekly evaluation run — fires per reply):
+* **SageFaithfulnessJudge** — fact-checks each Sage chat answer against the exact
+  wiki/article context it was given, fire-and-forget on a daemon thread. Output: one
+  `sage_evaluations` row per successful reply (the Phase 2 gate baseline).
+
 Deterministic Judges (sub-millisecond, zero LLM cost):
 4. **GroundingScore** — verifies further reading citations match input source articles.
 5. **StructuralComplianceScore** — checks section presence, 3–7 sentence bounds for prose, and list formatting.
@@ -28,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -44,6 +50,7 @@ from config.settings import (
     EVAL_CATEGORISER_SUMMARY_CHARS,
     EVAL_FAITHFULNESS_SUMMARY_CHARS,
     EVAL_FAITHFULNESS_ARTICLE_BUDGET,
+    EVAL_SAGE_CONTEXT_CHARS,
     EVAL_OVERLAP_TEXT_CHARS,
     EVAL_HEURISTIC_LOW,
     EVAL_HEURISTIC_HIGH,
@@ -1033,6 +1040,166 @@ def faithfulness_judge(
         "infra_errors": infra_errors,
         "parse_failures": parse_failures,
     }
+
+
+# ---------------------------------------------------------------------------
+# Sage faithfulness judge (Phase 2 gate — chat-time, fire-and-forget)
+# ---------------------------------------------------------------------------
+
+
+SAGE_FAITHFULNESS_PROMPT = """You are a strict fact-checker for a RAG chatbot's answers.
+
+You will be given the QUESTION the user asked, the ANSWER the chatbot produced, and the \
+CONTEXT (wiki summaries plus article evidence) that the chatbot was given when it answered.  \
+Score how faithfully the answer reflects ONLY what the context supports.
+
+Rules:
+- A claim is "supported" if the context states it directly or reasonably implies it.
+- Citations that resolve to context entries (a theme and run date that appear in the \
+context, or a source link the context carries) count as supported.
+- A claim is "unsupported" if it introduces facts, model names, numbers, dates, events, \
+or URLs that are NOT in the context — a fabricated URL is an unsupported claim.
+- Do not penalise rewording, condensation, or synthesis across multiple context entries.  \
+Only penalise claims the context does not back.
+- The assessment/opinion section is judged only on its factual statements, not on whether \
+you agree with the opinion.
+
+Return a JSON object on a single line, exactly:
+{{"score": <float 0.0-1.0>, "unsupported_claims": [<string>, ...]}}
+
+Scoring guide:
+- 1.0 = every claim is supported
+- 0.8 = minor unsupported detail
+- 0.5 = several unsupported claims
+- 0.0 = heavily fabricated
+
+QUESTION:
+{question}
+
+ANSWER:
+{answer}
+
+CONTEXT:
+{context}
+"""
+
+
+def judge_sage_answer(
+    llm: LLMClient,
+    question: str,
+    answer: str,
+    context: str,
+) -> Tuple[Optional[float], Optional[List[str]], Optional[str]]:
+    """Fact-check one Sage answer against the context it was given.
+
+    Returns ``(score, unsupported_claims, failure)``.  ``failure`` is ``None``
+    on success, ``"infra_error"`` when the judge LLM call failed, or
+    ``"parse_failure"`` when the response carried no usable score — the
+    caller excludes failed judgments rather than scoring them as zeros, so a
+    judge outage never masquerades as mass hallucination.
+    """
+    if not answer or not answer.strip():
+        # Empty answers (engine failure notices are handled by the caller)
+        # are excluded, not scored.
+        return None, None, None
+    prompt = SAGE_FAITHFULNESS_PROMPT.format(
+        question=(question or "")[:EVAL_FAITHFULNESS_SUMMARY_CHARS],
+        answer=answer[:EVAL_FAITHFULNESS_SUMMARY_CHARS],
+        context=(context or "")[:EVAL_SAGE_CONTEXT_CHARS],
+    )
+    t0 = time.monotonic()
+    try:
+        resp = llm.generate(prompt, temperature=0.1, max_tokens=400)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+    except LLMClientError as exc:
+        logger.warning("Sage faithfulness judge LLM error: %s", exc)
+        return None, None, "infra_error"
+    parsed = _extract_json(resp)
+    score = _coerce_score(parsed)
+    if score is None:
+        score = _extract_float_from_raw(resp)
+    if score is None:
+        logger.warning(
+            "Sage faithfulness judge: no parseable score in response: %r",
+            (resp or "")[:300],
+        )
+        return None, None, "parse_failure"
+    claims: Optional[List[str]] = None
+    if isinstance(parsed, dict) and isinstance(parsed.get("unsupported_claims"), list):
+        claims = [str(c) for c in parsed["unsupported_claims"]]
+    _record_event(
+        judge="sage_faithfulness",
+        run_id="",
+        item_id="",
+        latency_ms=latency_ms,
+        parse_ok=True,
+        score=score,
+    )
+    return score, claims, None
+
+
+def record_sage_faithfulness(
+    question: str,
+    answer: str,
+    context: str,
+    conversation_id: Optional[str] = None,
+    answer_model: Optional[str] = None,
+) -> Optional[threading.Thread]:
+    """Judge a Sage reply in the background and persist the row.
+
+    Chat-time, fire-and-forget (the ``core/ai_gateway/call_log.py`` pattern):
+    the context string and the answer coexist only at the moment of reply, so
+    each successful reply is judged right there on a daemon thread — the chat
+    is never blocked or failed by its own evaluation.  Availability gates run
+    synchronously (no thread is spawned when Supabase is down or the gateway
+    has no providers), which also keeps offline runs and tests quiet.  Only
+    successful judgments insert a row; judge failures are logged and skipped.
+
+    Returns the worker ``Thread`` (already started) so tests can join it, or
+    ``None`` when the row was skipped.  Never raises.
+    """
+    if not _gateway_has_providers():
+        return None
+    try:
+        from core.supabase_client import get_supabase_manager
+
+        manager = get_supabase_manager()
+        if not manager or not manager.is_available():
+            return None
+    except Exception as e:  # noqa: BLE001 — evaluation must never break the chat
+        logger.debug(f"Sage faithfulness judging skipped (no Supabase manager): {e}")
+        return None
+
+    def _worker() -> None:
+        try:
+            judge = GatewayJudgeLLM(label="sage_faithfulness")
+            score, claims, failure = judge_sage_answer(judge, question, answer, context)
+            if failure or score is None:
+                # Judge outages / unparseable verdicts skip the row — never
+                # persisted as zeros (see the migration's header comment).
+                return
+            manager.insert_sage_evaluation({
+                "conversation_id": conversation_id,
+                "question": question,
+                "answer_text": answer,
+                "score": score,
+                "unsupported_claims": claims,
+                "judge_provider": "gateway",
+                "judge_model": getattr(judge, "model_key", None) or "auto",
+                "answer_model": answer_model,
+            })
+        except Exception as e:  # noqa: BLE001 — never surface in the chat
+            logger.warning(f"Sage faithfulness recording failed: {e}")
+
+    try:
+        thread = threading.Thread(
+            target=_worker, name="sage-faithfulness-judge", daemon=True
+        )
+        thread.start()
+        return thread
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Sage faithfulness thread failed to start: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------

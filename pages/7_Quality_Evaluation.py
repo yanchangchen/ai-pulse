@@ -752,6 +752,73 @@ else:
                 st.success(rec)
 
 # ---------------------------------------------------------------------------
+# Sage faithfulness (Phase 2 gate — chat-time judge, not part of the
+# weekly evaluation run; rows accumulate in sage_evaluations as Sage replies)
+# ---------------------------------------------------------------------------
+st.divider()
+st.subheader("🔮 Sage Faithfulness (chat-time judge)")
+
+_sage_evals = []
+try:
+    from core.supabase_client import get_supabase_manager
+    _sage_mgr = get_supabase_manager()
+    if _sage_mgr and _sage_mgr.is_available():
+        _sage_evals = _sage_mgr.get_sage_evaluations(limit=100) or []
+except Exception as _e:
+    st.caption(f"⚠️ Could not load Sage judgments: {_e}")
+
+if not _sage_evals:
+    st.info(
+        "No Sage judgments yet.  Each grounded Sage reply (History → Ask Sage tab) "
+        "is judged in the background against the exact context it was given — ask "
+        "Sage a few questions to start the Phase 2 baseline.  Requires "
+        "`supabase_migration_sage_evaluations.sql`."
+    )
+else:
+    import pandas as _pd
+
+    _sage_df = _pd.DataFrame(_sage_evals)
+    _sage_df["created_at"] = _pd.to_datetime(_sage_df["created_at"], errors="coerce")
+    _sage_df = _sage_df.sort_values("created_at")
+
+    _ROLLING = 20
+    _recent = _sage_df.tail(_ROLLING)
+    _mean = float(_recent["score"].astype(float).mean()) if len(_recent) else 0.0
+    _ok = _mean >= 0.8
+
+    _m1, _m2 = st.columns([2, 3])
+    with _m1:
+        st.metric(
+            f"Mean (last {len(_recent)} replies)",
+            f"{_mean:.0%}",
+            delta="target ≥ 80%",
+            delta_color="normal" if _ok else "inverse",
+        )
+        st.progress(max(0.0, min(1.0, _mean)))
+    with _m2:
+        st.line_chart(_sage_df.set_index("created_at")["score"].astype(float))
+
+    st.caption(
+        f"{len(_sage_df)} judgments total  •  "
+        f"judge model: {_sage_df['judge_model'].dropna().iloc[-1] if _sage_df['judge_model'].notna().any() else 'auto'}  •  "
+        "each reply scored against the wiki/article context it actually received"
+    )
+
+    # The actionable payload: what Sage said that its context did not back.
+    _with_claims = [
+        e for e in _sage_evals
+        if isinstance(e.get("unsupported_claims"), list) and e["unsupported_claims"]
+    ]
+    if _with_claims:
+        with st.expander(f"⚠️ Recent unsupported claims ({len(_with_claims)} replies)", expanded=False):
+            for e in reversed(_with_claims[-10:]):
+                _q = (e.get("question") or "")[:120]
+                st.markdown(f"**{_q}** — score {float(e.get('score', 0)):.0%}")
+                for claim in e["unsupported_claims"][:5]:
+                    st.markdown(f"- 🚩 {claim}")
+                st.divider()
+
+# ---------------------------------------------------------------------------
 # Time-series
 # ---------------------------------------------------------------------------
 if not history_df.empty and len(history_df) >= 1:

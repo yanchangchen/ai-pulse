@@ -170,6 +170,9 @@ EVAL_CHECKPOINT_MIN_SAVE_INTERVAL: float = 1.0
 EVAL_CATEGORISER_SUMMARY_CHARS: int = 500
 EVAL_FAITHFULNESS_SUMMARY_CHARS: int = 2000
 EVAL_FAITHFULNESS_ARTICLE_BUDGET: int = 6000
+# Sage faithfulness judge: how much of the wiki/article context string the
+# judge prompt carries (Phase 2 gate — chat-time judging).
+EVAL_SAGE_CONTEXT_CHARS: int = 8000
 EVAL_OVERLAP_TEXT_CHARS: int = 1500
 
 # Heuristic Jaccard overlap thresholds for the uniqueness judge.

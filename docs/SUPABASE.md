@@ -28,6 +28,7 @@ Run in the SQL Editor, roughly in order:
 7. `supabase_migration_app_settings.sql` — `app_settings` KV store for evaluation-driven config
 8. `supabase_migration_llm_calls.sql` — `llm_calls` append-only observability log
 9. `supabase_migration_fts_articles.sql` — `articles.search_vector` (generated tsvector + GIN) and the `match_articles` FTS RPC (Phase 2.3)
+10. `supabase_migration_sage_evaluations.sql` — `sage_evaluations`, the chat-time Sage faithfulness judge's score store (Phase 2 gate)
 
 ## `llm_calls`
 
@@ -51,6 +52,15 @@ method calls the `match_articles` RPC, which matches `articles.search_vector`
 no keyword match it degrades to the original newest-first window, so
 pre-migration databases and no-match questions keep working. Final top-K
 selection stays client-side in `core/sage_agent.py`.
+
+## `sage_evaluations`
+
+One row per successfully judged Sage reply (Phase 2 gate): `core.evaluator.record_sage_faithfulness()`
+runs the judge fire-and-forget on a daemon thread right after each grounded reply in the chat tab
+(the context and the answer coexist only then), and `SupabaseManager.insert_sage_evaluation()`
+persists the score, unsupported claims, and the judge/answer models. The Quality Evaluation page
+reads it back with `get_sage_evaluations()`. Judge failures skip the row — never a zero score —
+so a judge outage can't masquerade as hallucination in the trend chart.
 
 ## RLS
 
