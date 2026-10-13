@@ -32,9 +32,12 @@ SOURCES = [
         "type": "rss",
         "category": "news"
     },
+    # MarkTechPost (replaces VentureBeat AI — that category feed returned
+    # consistently zero articles; MarkTechPost is a high-volume AI/ML news
+    # site with a standard WordPress RSS feed, multiple posts per day)
     {
-        "name": "VentureBeat AI",
-        "url": "https://venturebeat.com/category/ai/feed/",
+        "name": "MarkTechPost",
+        "url": "https://www.marktechpost.com/feed/",
         "type": "rss",
         "category": "news"
     },
