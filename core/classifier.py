@@ -172,6 +172,68 @@ def find_closest_theme(title: str, summary: str) -> str:
     return "Agentic Systems & DevTools"
 
 
+# ---------------------------------------------------------------------------
+# Watchlist term → theme mapping (closed-loop keyword suggestions)
+# ---------------------------------------------------------------------------
+
+# Weight applied when an approved watchlist term is added to a theme's
+# keyword dict.  Matches the default weight for auto-discovered and
+# LLM-suggested keywords.
+WATCHLIST_TERM_APPLY_WEIGHT = 2
+
+# Static map from watchlist category (as proposed by the watchlist
+# suggestion prompt, normalised to lowercase) to one of the 7 themes.
+# Terms whose category misses the map fall through to find_closest_theme().
+WATCHLIST_CATEGORY_THEME_MAP: Dict[str, str] = {
+    "agent frameworks": "Agentic Systems & DevTools",
+    "agent memory": "Agentic Systems & DevTools",
+    "rag & context": "Agentic Systems & DevTools",
+    "models": "Frontier Models & Benchmarks",
+    "open source": "Frontier Models & Benchmarks",
+    "benchmarks": "Frontier Models & Benchmarks",
+    "papers": "Frontier Models & Benchmarks",
+    "hardware": "Hardware, Compute & LLMOps",
+    "ai energy": "Hardware, Compute & LLMOps",
+    "regulation": "Governance, Safety & Policy",
+    "supply chain security": "AI Security & Trust",
+}
+
+
+def _norm_watchlist_category(category: str) -> str:
+    """Normalise a watchlist category for map lookup: lowercase, collapse
+    whitespace, and unify 'and'/'&' so LLM output like 'RAG and context'
+    still hits the static map."""
+    norm = " ".join((category or "").split()).lower()
+    return norm.replace(" and ", " & ")
+
+
+def parse_watchlist_category(reason: str) -> str:
+    """Extract the category from a suggestion reason of the form
+    ``[Category] reason``.  Returns an empty string when no bracketed
+    prefix is present."""
+    text = (reason or "").strip()
+    if text.startswith("["):
+        end = text.find("]")
+        if end > 1:
+            return text[1:end].strip()
+    return ""
+
+
+def map_watchlist_term_to_theme(category: str, term: str) -> str:
+    """Map an approved watchlist term to one of the 7 themes.
+
+    Uses the static category map first; unknown or invented categories
+    fall back to find_closest_theme() over the category+term text.  With
+    zero keyword or theme-word overlap this lands on the default theme —
+    acceptable because the UI shows the resolved target theme before the
+    user applies.
+    """
+    mapped = WATCHLIST_CATEGORY_THEME_MAP.get(_norm_watchlist_category(category))
+    if mapped:
+        return mapped
+    return find_closest_theme(category, term)
+
+
 def classify_articles(articles: List[Dict], skip_llm: Optional[bool] = None) -> Dict[str, List[Dict]]:
     """Classify all articles into strategic themes using a 4-pass waterfall:
     - Pass 1: Weighted Keyword Matching
@@ -689,6 +751,11 @@ def _store_keyword_suggestions(
                 "reason": f"Candidate: appeared in {s['article_count']} Gate 3/4 articles",
                 "status": "pending",
             })
+
+        # Dedupe pending rows before insert (drops terms that are already
+        # theme keywords or already pending/applied in the table).
+        from core.quality_schema import filter_keyword_rows_for_insert
+        rows = filter_keyword_rows_for_insert(supabase, rows)
 
         if rows:
             insert_keyword_suggestions(supabase, rows)

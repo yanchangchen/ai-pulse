@@ -169,7 +169,7 @@ class KeywordSuggestionReport:
     ``theme_suggestions`` is keyed by theme name; each value is the list of
     terms that the LLM thought were missing from that theme's keyword set.
     ``watchlist_suggestions`` is a flat list of high-signal terms that the
-    LLM thought were under-represented in watch.md.
+    LLM thought were missing from the theme keyword sets.
     """
     theme_suggestions: Dict[str, List[KeywordSuggestion]]
     watchlist_suggestions: List[KeywordSuggestion]
@@ -1704,17 +1704,17 @@ Sample articles already classified as this theme:
 
 WATCHLIST_SUGGESTION_PROMPT = """You are an AI industry-watchlist editor.  You are given:
 
-1. The user's current watchlist of high-signal terms grouped by category.
+1. The current per-theme keyword sets used by the classifier.
 2. The set of AI-news theme summaries produced by the summariser this week.
 
-Your task: suggest 5-15 NEW high-signal terms that are MISSING from the
-watchlist (case-insensitive).  Each new term should be a noun phrase that
-the user would want to see in a weekly AI news digest (e.g. "open-weight
-release", "data center electricity", "agentic SDLC").  Don't repeat
-terms the watchlist already has.
+Your task: suggest 5-15 NEW high-signal terms that are MISSING from every
+theme's keyword list (case-insensitive).  Each new term should be a noun
+phrase that the user would want to see in a weekly AI news digest (e.g.
+"open-weight release", "data center electricity", "agentic SDLC").  Don't
+repeat terms any theme already has.
 
-For each new term, propose a one-word category that fits the existing
-watchlist vocabulary (one of: "Agent frameworks", "Agent memory", "Models",
+For each new term, propose a one-word category that fits the watchlist
+vocabulary (one of: "Agent frameworks", "Agent memory", "Models",
 "RAG & context", "Hardware", "Open source", "Benchmarks", "Papers",
 "Regulation", "Supply chain security", "AI energy").  If none fits,
 propose a new short category name.
@@ -1722,7 +1722,7 @@ propose a new short category name.
 Return ONLY a JSON object on a single line:
 {{"missing": [{{"term": "...", "category": "...", "reason": "..."}}, ...]}}
 
-Existing watchlist:
+Existing theme keywords:
 {existing}
 
 Recent theme summaries:
@@ -1743,43 +1743,6 @@ def _format_articles_for_suggestion(articles: List[Dict], max_chars: int = 4000)
         parts.append(block)
         used += len(block)
     return "\n".join(parts) if parts else "(no articles available)"
-
-
-def _load_watchlist_existing() -> set:
-    """Best-effort read of the existing watchlist terms from watch.md.
-
-    Returns a lowercase set of comma-separated terms under the
-    `## 1. SEARCH KEYWORDS` heading.  Empty set if the file is missing
-    or unparseable.
-    """
-    try:
-        from pathlib import Path
-        path = Path(__file__).resolve().parent.parent / "watch.md"
-        text = path.read_text(encoding="utf-8")
-    except Exception:
-        return set()
-    # Just pull every word/phrase after a `|` to next `|` inside the
-    # SEARCH KEYWORDS table.  Lightweight parser — markdown isn't worth a
-    # full AST.
-    if "## 1. SEARCH KEYWORDS" not in text:
-        return set()
-    head = text.split("## 1. SEARCH KEYWORDS", 1)[1]
-    head = head.split("## 4.", 1)[0]
-    terms = set()
-    for line in head.splitlines():
-        if not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 2:
-            continue
-        # Skip header rows like "| Category | Keywords |"
-        if cells[0].lower() == "category" or cells[1].lower() == "keywords":
-            continue
-        for term in cells[1].split(","):
-            t = term.strip().lower()
-            if t and len(t) >= 2:
-                terms.add(t)
-    return terms
 
 
 def _suggest_for_theme(
@@ -1836,12 +1799,17 @@ def _suggest_for_watchlist(
     llm: LLMClient,
     summaries: List[str],
 ) -> List[KeywordSuggestion]:
-    """Ask the LLM for missing watchlist terms, deduped against watch.md."""
-    existing_terms = _load_watchlist_existing()
+    """Ask the LLM for missing watchlist terms, deduped against the
+    current theme keyword sets (base + overlay)."""
+    from config.themes import THEMES, get_all_keywords
+    existing_terms = get_all_keywords()
     if not existing_terms:
-        existing_block = "(watchlist could not be read)"
+        existing_block = "(no theme keywords loaded)"
     else:
-        existing_block = ", ".join(sorted(existing_terms))
+        existing_block = "\n".join(
+            f"- {theme}: {', '.join(sorted(theme_data.get('keywords', {})))}"
+            for theme, theme_data in THEMES.items()
+        )
     summary_block = "\n\n".join(summaries[:30])[:6000] or "(no summaries)"
 
     prompt = WATCHLIST_SUGGESTION_PROMPT.format(
@@ -1899,8 +1867,8 @@ def generate_keyword_suggestions(
     ``THEMES`` dict.
 
     For watchlist: collect all theme summaries from ``summaries_by_run``
-    and ask the LLM what high-signal terms are missing from watch.md.
-    Dedupes against the parsed watchlist file.
+    and ask the LLM what high-signal terms are missing from the theme
+    keyword sets.  Dedupes against the merged ``THEMES`` keywords.
 
     The LLM is invoked once per weak theme plus once for the watchlist —
     so a 7-theme run with 3 weak themes produces 4 LLM calls.  Failure
@@ -2205,6 +2173,14 @@ def _execute_judges_and_build_report(
         "raw_metrics": report.raw_metrics,
     }
     keyword_rows = _keyword_rows_from_report(report)
+    try:
+        # Dedupe before insert (and before the checkpoint): drop terms that
+        # are already theme keywords or already pending/applied in the
+        # keyword_suggestions table.
+        from core.quality_schema import filter_keyword_rows_for_insert
+        keyword_rows = filter_keyword_rows_for_insert(supabase, keyword_rows)
+    except Exception as exc:
+        logger.warning("keyword_suggestions insert dedupe failed: %s", exc)
     if control is not None:
         # Checkpoint the finished report BEFORE attempting the insert —
         # from here on, a database outage is recoverable instead of fatal.
@@ -2282,6 +2258,13 @@ def persist_final_payload(supabase, control: EvalControl) -> Tuple[Dict, Optiona
     payload = control.state.get("final_payload") or {}
     report_dict = control.state.get("final_report") or {}
     keyword_rows = control.state.get("keyword_rows") or []
+    try:
+        # Re-filter checkpointed rows: a term may have become pending or
+        # applied elsewhere while this evaluation was paused.
+        from core.quality_schema import filter_keyword_rows_for_insert
+        keyword_rows = filter_keyword_rows_for_insert(supabase, keyword_rows)
+    except Exception as exc:
+        logger.warning("keyword_suggestions insert dedupe failed: %s", exc)
     inserted = insert_quality_evaluation(supabase, payload, on_error=control.set_db_error)
     while inserted is None:
         if control.pause_requested:

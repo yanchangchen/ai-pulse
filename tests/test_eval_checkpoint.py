@@ -364,7 +364,9 @@ class TestPersistRetry:
         control.set_final(
             {"runs_evaluated": ["r1"], "threshold": 0.8},
             {"run_ids": ["r1"]},
-            [{"kind": "watchlist_term", "term": "mcp"}],
+            # Term must NOT be an existing theme keyword — insert-time
+            # dedupe now drops rows whose term is already in THEMES.
+            [{"kind": "watchlist_term", "term": "quantum-error-correction-xyz"}],
         )
         with patch("core.evaluator.insert_quality_evaluation", return_value={"id": "row-9"}) as insert, \
              patch("core.quality_schema.insert_keyword_suggestions") as kw_insert:
@@ -376,6 +378,23 @@ class TestPersistRetry:
         assert kw_insert.call_args.kwargs.get("evaluation_id") == "row-9"
         assert report_dict["run_ids"] == ["r1"]
         assert not _isolated_checkpoint.exists()
+
+    def test_resumed_persist_dedupes_checkpointed_rows(self, _isolated_checkpoint):
+        """Checkpointed rows whose term is already a theme keyword are
+        filtered out before the keyword_suggestions insert."""
+        from core.evaluator import persist_final_payload
+
+        control = _control(path=_isolated_checkpoint)
+        control.set_final(
+            {"runs_evaluated": ["r1"], "threshold": 0.8},
+            {"run_ids": ["r1"]},
+            [{"kind": "watchlist_term", "term": "MCP"}],  # existing theme keyword
+        )
+        with patch("core.evaluator.insert_quality_evaluation", return_value={"id": "row-9"}), \
+             patch("core.quality_schema.insert_keyword_suggestions") as kw_insert:
+            report_dict, db_row_id = persist_final_payload(MagicMock(), control)
+        assert db_row_id == "row-9"
+        assert kw_insert.call_count == 0
 
     def test_no_control_legacy_path_no_retry(self):
         from core.evaluator import _execute_judges_and_build_report

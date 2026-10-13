@@ -837,8 +837,11 @@ class TestKeywordSuggestions:
 
     def test_watchlist_suggestions_run_when_summaries_present(self):
         from core.evaluator import generate_keyword_suggestions
+        # "MCP" is an existing theme keyword and must be deduped; the new
+        # term survives with its [Category] prefix embedded in the reason.
         llm = self._make_llm(
-            '{"missing": [{"term": "open-weight release", "category": "Models", "reason": "x"}]}'
+            '{"missing": [{"term": "MCP", "category": "Agent frameworks", "reason": "dup"}, '
+            '{"term": "open-weight release", "category": "Models", "reason": "new"}]}'
         )
         report = _make_report(
             classifier=0.9,
@@ -861,13 +864,65 @@ class TestKeywordSuggestions:
             summaries_by_run=summaries,
         )
         # Watchlist LLM call should have been made at least once.
-        assert any("category" in str(call) for call in llm.generate.call_args_list) or \
-               llm.generate.called
+        assert llm.generate.called
         # Even if all themes are strong, watchlist always runs when summaries exist.
-        # The result may be empty if all suggested terms already exist in
-        # watch.md (which is expected in CI where watch.md is fully populated),
-        # so we just check the field exists.
-        assert hasattr(result, "watchlist_suggestions")
+        terms = [s.term for s in result.watchlist_suggestions]
+        assert "open-weight release" in terms
+        assert "MCP" not in terms
+        sugg = next(s for s in result.watchlist_suggestions if s.term == "open-weight release")
+        assert sugg.reason.startswith("[Models]")
+
+    def test_watchlist_prompt_lists_theme_keywords(self):
+        """The prompt's 'existing' block is the per-theme keyword lists
+        (watch.md is gone)."""
+        from core.evaluator import WATCHLIST_SUGGESTION_PROMPT, _suggest_for_watchlist
+
+        llm = self._make_llm('{"missing": []}')
+        _suggest_for_watchlist(llm, ["Some theme summary text."])
+        prompt = llm.generate.call_args.args[0]
+        assert "Existing theme keywords:" in prompt
+        assert "Recent theme summaries:" in prompt
+        # A real theme name and one of its keywords appear.
+        assert "Agentic Systems" in prompt
+        assert "MCP" in prompt
+
+    def test_watchlist_dedupes_against_theme_keywords(self):
+        from core.evaluator import _suggest_for_watchlist
+
+        # NOTE: terms must not exist in the merged keyword overlay (the
+        # live Supabase custom_keywords table is loaded at import).
+        llm = self._make_llm(
+            '{"missing": [{"term": "mcp", "category": "Models", "reason": "dup"}, '
+            '{"term": "synthetic-watchlist-term-xyz", "category": "Models", "reason": "new"}]}'
+        )
+        out = _suggest_for_watchlist(llm, ["Summary."])
+        terms = [s.term for s in out]
+        # "mcp" matches the existing "MCP" keyword case-insensitively.
+        assert terms == ["synthetic-watchlist-term-xyz"]
+
+    def test_keyword_rows_deduped_before_insert(self):
+        """Rows built from a report are filtered against theme keywords
+        before hitting the keyword_suggestions table."""
+        from core.evaluator import _keyword_rows_from_report
+        from core.quality_schema import filter_keyword_rows_for_insert
+
+        report = _make_report()
+        report.keyword_suggestions = {
+            "theme_suggestions": {
+                "Agentic Systems & DevTools": [
+                    {"term": "MCP", "weight": 2, "reason": "already a keyword"},
+                    {"term": "brand new term", "weight": 2, "reason": "new"},
+                ],
+            },
+            "watchlist_suggestions": [
+                {"term": "mcp", "reason": "[Models] already a keyword"},
+                {"term": "open-weight release", "reason": "[Models] new"},
+            ],
+        }
+        rows = _keyword_rows_from_report(report)
+        out = filter_keyword_rows_for_insert(None, rows, active_rows=[])
+        terms = {r["term"] for r in out}
+        assert terms == {"brand new term", "open-weight release"}
 
     def test_format_helpers_produce_copy_paste_blocks(self):
         # Re-implement the formatters to mirror the page-level ones (the

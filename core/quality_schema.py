@@ -232,3 +232,146 @@ def fetch_recent_keyword_suggestions(supabase, limit: int = 50) -> List[Dict]:
         return response.data if response.data else []
     except Exception:
         return []
+
+
+def fetch_keyword_suggestions_by_status(
+    supabase,
+    statuses: List[str],
+    limit: int = 1000,
+) -> List[Dict]:
+    """Fetch keyword_suggestions rows with one of the given statuses,
+    newest first.  Returns an empty list if Supabase is unavailable or the
+    query fails (never raises).  Used for insert-time dedupe — the default
+    limit of 1000 rides the (status, generated_at) index and is far larger
+    than fetch_recent's UI-oriented 50.
+    """
+    if supabase is None or not supabase.is_available():
+        return []
+    if not statuses:
+        return []
+    try:
+        response = supabase.client.table("keyword_suggestions") \
+            .select("kind, theme_name, term, status") \
+            .in_("status", statuses) \
+            .order("generated_at", desc=True) \
+            .limit(limit) \
+            .execute()
+        return response.data if response.data else []
+    except Exception:
+        return []
+
+
+def update_keyword_suggestion_status_by_terms(
+    supabase,
+    terms: List[str],
+    status: str,
+    kind: str = "watchlist_term",
+) -> int:
+    """Update the status of keyword_suggestions rows matching the given
+    kind and terms (exact, case-sensitive — callers pass terms verbatim
+    from the same evaluation's rows).  Returns the number of rows updated;
+    0 on failure (never raises).  Serves the fresh-result panel, which has
+    DB rows but no row ids to hand.
+    """
+    if not terms or supabase is None or not supabase.is_available():
+        return 0
+    try:
+        response = supabase.client.table("keyword_suggestions") \
+            .update({"status": status}) \
+            .eq("kind", kind) \
+            .in_("term", terms) \
+            .execute()
+        return len(response.data or [])
+    except Exception as exc:
+        logger.warning("keyword_suggestions status-by-terms update failed: %s", exc)
+        return 0
+
+
+def filter_keyword_rows_for_insert(
+    supabase,
+    rows: List[Dict],
+    active_rows: Optional[List[Dict]] = None,
+) -> List[Dict]:
+    """Dedupe keyword_suggestion rows before they are inserted.
+
+    Drops a PENDING row when:
+      - its term is already a keyword of ANY theme (case-insensitive;
+        the themes dict is base + overlay merged), or
+      - it is a watchlist_term with a non-dismissed row already in the
+        keyword_suggestions table, or
+      - it is a theme_keyword with an existing (theme_name, term) row, or
+      - it duplicates another row in the incoming batch (same rule per kind).
+
+    Rows with another status (e.g. the classifier's ``auto_applied`` audit
+    records, whose terms are by definition already in THEMES) pass through
+    untouched.
+
+    When ``active_rows`` is None the table is fetched via
+    fetch_keyword_suggestions_by_status(); a failed fetch is treated as
+    "no DB info" so only theme-keyword filtering applies (never raises —
+    safe even with mock supabase clients).
+    """
+    if not rows:
+        return []
+    try:
+        from config.themes import get_all_keywords
+        theme_kw = get_all_keywords()
+    except Exception:
+        theme_kw = set()
+
+    if active_rows is None:
+        try:
+            active_rows = fetch_keyword_suggestions_by_status(
+                supabase, ["pending", "applied", "auto_applied"]
+            )
+            active_watch = {
+                (r.get("term") or "").strip().lower()
+                for r in (active_rows or [])
+                if r.get("kind") == "watchlist_term"
+            }
+            active_theme = {
+                (r.get("theme_name"), (r.get("term") or "").strip().lower())
+                for r in (active_rows or [])
+                if r.get("kind") == "theme_keyword"
+            }
+        except Exception:
+            # Unusable DB response (including mock clients) — treat as no
+            # DB info; only theme-keyword filtering applies.
+            active_watch = set()
+            active_theme = set()
+    else:
+        active_watch = {
+            (r.get("term") or "").strip().lower()
+            for r in (active_rows or [])
+            if r.get("kind") == "watchlist_term"
+        }
+        active_theme = {
+            (r.get("theme_name"), (r.get("term") or "").strip().lower())
+            for r in (active_rows or [])
+            if r.get("kind") == "theme_keyword"
+        }
+
+    out: List[Dict] = []
+    seen_watch: set = set()
+    seen_theme: set = set()
+    for row in rows:
+        if row.get("status", "pending") != "pending":
+            # Audit records (auto_applied) — not suggestions; pass through.
+            out.append(row)
+            continue
+        term = (row.get("term") or "").strip()
+        term_lower = term.lower()
+        if not term_lower or term_lower in theme_kw:
+            continue
+        kind = row.get("kind", "theme_keyword")
+        if kind == "watchlist_term":
+            if term_lower in active_watch or term_lower in seen_watch:
+                continue
+            seen_watch.add(term_lower)
+        else:
+            key = (row.get("theme_name"), term_lower)
+            if key in active_theme or key in seen_theme:
+                continue
+            seen_theme.add(key)
+        out.append(row)
+    return out

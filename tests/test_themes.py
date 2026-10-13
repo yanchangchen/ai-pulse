@@ -67,6 +67,23 @@ def test_add_keywords_to_theme_returns_false_for_unknown_theme(tmp_path):
     assert add_keywords_to_theme("Not a real theme", {"foo": 1}) is False
 
 
+def test_get_all_keywords_covers_base_and_overlay(tmp_path):
+    from config.themes import THEMES, add_keywords_to_theme, get_all_keywords
+
+    theme = "Agentic Systems & DevTools"
+    base_term = next(iter(THEMES[theme]["keywords"]))
+    add_keywords_to_theme(theme, {"overlay-term-xyz": 2})
+
+    terms = get_all_keywords()
+    # Base keywords and the freshly-added overlay keyword are both present,
+    # lowercased.
+    assert base_term.lower() in terms
+    assert "overlay-term-xyz" in terms
+    # Every theme contributes.
+    for theme_name, theme_data in THEMES.items():
+        assert any(kw.lower() in terms for kw in theme_data["keywords"])
+
+
 class FakeSupabaseResponse:
     def __init__(self, data):
         self.data = data

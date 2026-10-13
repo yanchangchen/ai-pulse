@@ -58,23 +58,45 @@ def _format_theme_suggestion_for_file(theme: str, items: list) -> str:
     return "\n".join(lines)
 
 
-def _format_watchlist_for_file(items: list) -> str:
-    """Format suggested watchlist terms as CSV rows ready to paste into
-    the ``## 1. SEARCH KEYWORDS`` table in ``watch.md``.  Category is
-    inferred from the bracketed prefix embedded in the reason field.
+def _apply_watchlist_terms(items: list) -> tuple:
+    """Apply approved watchlist suggestions as theme keywords (closed loop).
+
+    Maps each term to a theme via the category→theme map (classifier
+    fallback for unknown categories), skips terms that are already theme
+    keywords, and persists via ``add_keywords_to_theme`` (in-memory +
+    custom_keywords.json + Supabase custom_keywords).  Returns
+    ``(applied_count, applied_terms)``.
     """
-    lines = ["| Category | Keywords |", "|----------|----------|"]
+    from core.classifier import (
+        WATCHLIST_TERM_APPLY_WEIGHT,
+        map_watchlist_term_to_theme,
+        parse_watchlist_category,
+    )
+    from config.themes import add_keywords_to_theme, get_all_keywords
+
+    existing = get_all_keywords()
+    payload: dict = {}
+    applied_terms: list = []
     for it in items:
-        reason = (it.get("reason") or "").strip()
-        category = "(uncategorised)"
-        if reason.startswith("[") and "]" in reason:
-            category = reason[1:reason.index("]")].strip()
-        # Drop the bracket prefix when showing the term list.
-        raw_term = (it.get("term") or "").replace("|", "/").strip()
-        if not category:
-            category = "(uncategorised)"
-        lines.append(f"| {category} | {raw_term} |")
-    return "\n".join(lines)
+        term = (it.get("term") or "").strip()
+        if not term or term.lower() in existing:
+            continue
+        category = parse_watchlist_category(it.get("reason") or "")
+        theme = map_watchlist_term_to_theme(category, term)
+        payload.setdefault(theme, {})[term] = WATCHLIST_TERM_APPLY_WEIGHT
+        applied_terms.append(term)
+    for theme, kws in payload.items():
+        add_keywords_to_theme(theme, kws)
+    return len(applied_terms), applied_terms
+
+
+def _watchlist_target_theme(item: dict) -> str:
+    """Resolve the theme an apply would target, for display before approval."""
+    from core.classifier import map_watchlist_term_to_theme, parse_watchlist_category
+
+    term = (item.get("term") or "").strip()
+    category = parse_watchlist_category(item.get("reason") or "")
+    return map_watchlist_term_to_theme(category, term) if term else ""
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -133,7 +155,7 @@ with st.expander("📖 Guide: How Evaluation Checks Work & In-App Remedy Actions
          - **Reduce Max Output Tokens** to discourage ungrounded narrative filler.
          - **Enable Strict Anti-Hallucination Grounding Mode** to enforce source-article citation rules (persisted to `config/custom_settings.json`).
     4. **📌 Watchlist Term Suggestions**:
-       - Copy suggested terms at the bottom of this page into `watch.md` to refine future RSS & web fetching precision.
+       - Click **"⚡ Apply watchlist terms"** in the results panel (or the standing pending-suggestions section below) to map each approved term into the matching theme's keywords (weight 2, persisted to custom keywords) — closing the suggestion loop. Suggestions are deduplicated against existing theme keywords before they are stored.
     """)
 
 # ---------------------------------------------------------------------------
@@ -318,16 +340,26 @@ def _render_evaluation_result(report, events: list) -> None:
         watch = kw.get("watchlist_suggestions") or []
         if watch:
             with st.expander(f"📋 {len(watch)} new watchlist term(s)", expanded=True):
-                rows_text = "| term | reason |\n|---|---|\n"
+                rows_text = "| term | target theme | reason |\n|---|---|---|\n"
                 for it in watch:
                     term = (it.get("term") or "").replace("|", "\\|")
+                    target = _watchlist_target_theme(it).replace("|", "\\|")
                     reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
-                    rows_text += f"| {term} | {reason} |\n"
+                    rows_text += f"| {term} | {target} | {reason} |\n"
                 st.markdown(rows_text)
-                st.code(
-                    _format_watchlist_for_file(watch),
-                    language="text",
-                )
+                if st.button(f"⚡ Apply all {len(watch)} watchlist terms", key="btn_apply_watch"):
+                    from core.quality_schema import update_keyword_suggestion_status_by_terms
+                    applied, applied_terms = _apply_watchlist_terms(watch)
+                    if applied:
+                        # Mark the rows this evaluation just inserted (matched
+                        # by term — the fresh panel has no row ids).
+                        update_keyword_suggestion_status_by_terms(
+                            supabase, applied_terms, "applied"
+                        )
+                        st.toast(f"Applied {applied} watchlist terms to theme keywords!", icon="⚡")
+                    else:
+                        st.toast("No new watchlist terms to apply (all already keywords).", icon="ℹ️")
+                    st.rerun()
         else:
             st.info("No new watchlist terms were suggested.")
     elif isinstance(kw, dict):
@@ -605,8 +637,8 @@ if _pending_suggestions:
     st.caption(
         "Suggested by past evaluations and classifier runs, stored in "
         "Supabase so they survive app restarts. Apply adds them to the "
-        "theme's keywords (synced to the custom_keywords table); watchlist "
-        "terms are copy-paste into `watch.md`."
+        "theme's keywords (watchlist terms are mapped to the closest theme, "
+        "weight 2); everything is synced to the custom_keywords table."
     )
     _theme_groups: dict = {}
     _watch_rows: list = []
@@ -645,15 +677,25 @@ if _pending_suggestions:
 
     if _watch_rows:
         with st.expander(f"📋 {len(_watch_rows)} pending watchlist term(s)"):
-            _rows_text = "| term | reason |\n|---|---|\n"
+            _rows_text = "| term | target theme | reason |\n|---|---|---|\n"
             _ids = [r.get("id") for r in _watch_rows if r.get("id")]
             for _r in _watch_rows:
                 _term = (_r.get("term") or "").replace("|", "\\|")
+                _target = _watchlist_target_theme(_r).replace("|", "\\|")
                 _reason = (_r.get("reason") or "").replace("|", "\\|").replace("\n", " ")
-                _rows_text += f"| {_term} | {_reason} |\n"
+                _rows_text += f"| {_term} | {_target} | {_reason} |\n"
             st.markdown(_rows_text)
-            st.code(_format_watchlist_for_file(_watch_rows), language="text")
-            if st.button(f"✖ Dismiss all {len(_watch_rows)} watchlist terms", key="btn_pend_dismiss_watch"):
+            _bc1, _bc2 = st.columns(2)
+            if _bc1.button(f"⚡ Apply all {len(_watch_rows)} watchlist terms", key="btn_pend_apply_watch"):
+                _applied, _ = _apply_watchlist_terms(_watch_rows)
+                update_keyword_suggestion_status(supabase, _ids, "applied")
+                _cached_pending_suggestions.clear()
+                if _applied:
+                    st.toast(f"Applied {_applied} watchlist terms to theme keywords!", icon="⚡")
+                else:
+                    st.toast("No new watchlist terms to apply (all already keywords).", icon="ℹ️")
+                st.rerun()
+            if _bc2.button(f"✖ Dismiss all {len(_watch_rows)} watchlist terms", key="btn_pend_dismiss_watch"):
                 update_keyword_suggestion_status(supabase, _ids, "dismissed")
                 _cached_pending_suggestions.clear()
                 st.toast(f"Dismissed {len(_watch_rows)} watchlist suggestions.", icon="✖️")

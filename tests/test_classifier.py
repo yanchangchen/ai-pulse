@@ -112,3 +112,72 @@ class TestFindClosestTheme:
         result = find_closest_theme("completely random text", "weather is nice today")
         assert result == "Agentic Systems & DevTools"
 
+
+class TestWatchlistTermMapping:
+    """Watchlist term → theme mapping for the closed-loop suggestions."""
+
+    @pytest.mark.parametrize("category,expected", [
+        ("Agent frameworks", "Agentic Systems & DevTools"),
+        ("Agent memory", "Agentic Systems & DevTools"),
+        ("RAG & context", "Agentic Systems & DevTools"),
+        ("Models", "Frontier Models & Benchmarks"),
+        ("Open source", "Frontier Models & Benchmarks"),
+        ("Benchmarks", "Frontier Models & Benchmarks"),
+        ("Papers", "Frontier Models & Benchmarks"),
+        ("Hardware", "Hardware, Compute & LLMOps"),
+        ("AI energy", "Hardware, Compute & LLMOps"),
+        ("Regulation", "Governance, Safety & Policy"),
+        ("Supply chain security", "AI Security & Trust"),
+    ])
+    def test_static_map_categories(self, category, expected):
+        from core.classifier import map_watchlist_term_to_theme
+
+        assert map_watchlist_term_to_theme(category, "anything") == expected
+
+    @pytest.mark.parametrize("category", ["Models", "MODELS", "open   source", " Benchmarks "])
+    def test_category_normalisation(self, category):
+        from core.classifier import map_watchlist_term_to_theme
+
+        assert map_watchlist_term_to_theme(category, "anything") == "Frontier Models & Benchmarks"
+
+    def test_rag_and_context_variant(self):
+        from core.classifier import map_watchlist_term_to_theme
+
+        assert map_watchlist_term_to_theme("RAG and context", "anything") == "Agentic Systems & DevTools"
+
+    def test_unknown_category_falls_back_to_keywords(self):
+        """An invented category with a keyword-bearing term routes via
+        find_closest_theme over the category+term text."""
+        from core.classifier import map_watchlist_term_to_theme
+
+        result = map_watchlist_term_to_theme("Robotics", "data center electricity")
+        assert result == "Hardware, Compute & LLMOps"
+
+    def test_unknown_category_no_overlap_hits_default(self):
+        """Documents the accepted default for unknown categories with zero
+        keyword overlap — the UI shows the target theme before applying."""
+        from core.classifier import map_watchlist_term_to_theme
+
+        result = map_watchlist_term_to_theme("Quantum knitting", "wool sweater patterns")
+        assert result == "Agentic Systems & DevTools"
+
+
+class TestParseWatchlistCategory:
+    def test_extracts_bracketed_prefix(self):
+        from core.classifier import parse_watchlist_category
+
+        assert parse_watchlist_category("[Models] hot new term") == "Models"
+
+    def test_no_bracket_returns_empty(self):
+        from core.classifier import parse_watchlist_category
+
+        assert parse_watchlist_category("plain reason") == ""
+        assert parse_watchlist_category("") == ""
+        assert parse_watchlist_category(None) == ""
+
+    def test_edge_cases(self):
+        from core.classifier import parse_watchlist_category
+
+        assert parse_watchlist_category("[] reason") == ""
+        assert parse_watchlist_category("[x] ") == "x"
+

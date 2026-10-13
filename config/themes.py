@@ -293,6 +293,18 @@ def remove_keyword_from_theme(theme_name: str, keyword: str) -> bool:
     return True
 
 
+def get_all_keywords() -> set:
+    """Lowercase set of every keyword across all themes (base + overlay —
+    THEMES is already merged on import).  Used for suggestion dedupe."""
+    terms: set = set()
+    for theme_data in THEMES.values():
+        for kw in theme_data.get("keywords", {}):
+            k = kw.strip().lower()
+            if k:
+                terms.add(k)
+    return terms
+
+
 # Auto-apply any stored custom keywords overlay on import
 _custom = load_custom_keywords()
 for _t_name, _kw_map in _custom.items():
