@@ -91,7 +91,6 @@ TF-IDF synthetic documents. Edit `config/themes.py` to retrain the classifier.
 │  • config/settings.py   (Ollama endpoint, model, lookback, TTL)  │
 │  • config/themes.py     (7 weighted-keyword theme dicts)         │
 │  • config/sources.py    (RSS feeds + web-scrape registry)        │
-│  • watch.md             (user's keyword / engineering blog list) │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

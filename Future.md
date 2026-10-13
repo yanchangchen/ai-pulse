@@ -2,7 +2,7 @@
 
 This document outlines the architectural roadmap for evolving **Sage** from its current character-budgeted prompt-injection mechanism into a production-grade, multi-stage **Retrieval-Augmented Generation (RAG)** intelligence system.
 
-> **Revision note (2026-10):** Roadmap re-reviewed and re-phased for smaller, independently verifiable increments. Added Pillar F (Observability — Langfuse/Phoenix), a Deployment & Operations section, and corrected §4 against the schema that actually exists today. Research sources listed at the end.
+> **Structure (2026-10):** completed phases, their implementation notes, and past decisions live in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md). This file tracks what's ahead and why — keep it lean; record completion details in the history file as work lands.
 
 ---
 
@@ -15,7 +15,7 @@ As the memory archive expands across months and years of daily news runs, tradit
 2. **Coarse-Grained Retrieval**: Answering granular queries (e.g., *"What did Simon Willison say about GPT-6 Astra adapters?"*) requires article-level citations rather than high-level run summaries.
 3. **Temporal Incoherence**: Standard semantic vector search ignores publication chronology, confusing the order in which breakthroughs occurred.
 
-The long-term vision transforms Sage into a **Time-Aware, Multi-Stage Hierarchical RAG Agent** — with two enabling layers added in this revision:
+The long-term vision transforms Sage into a **Time-Aware, Multi-Stage Hierarchical RAG Agent** — with two enabling layers:
 4. **Observability first**: A 3-agent RAG pipeline cannot be debugged without traces. Every LLM call and retrieval stage must be traced and evaluated before Pillars A–E land.
 5. **Decoupled operations**: Ingestion moves out of the Streamlit request thread into a scheduled job, so the UI becomes read-mostly and deployable on free hosting.
 
@@ -34,7 +34,7 @@ The long-term vision transforms Sage into a **Time-Aware, Multi-Stage Hierarchic
                 │  - Temporal entity extraction (dates)    │
                 │  - Theme & keyword routing               │
                 │  - Question intent (Timeline vs Deep)    │
-                └────────────────────┬─────────────────────┘
+                └────────────────────┬────────────────────┘
                                      │
                     ┌────────────────┴────────────────┐
                     │                                 │
@@ -77,8 +77,6 @@ The long-term vision transforms Sage into a **Time-Aware, Multi-Stage Hierarchic
                     └─────────────────────────────────┘
 ```
 
-**Prerequisite fix:** Sage currently calls `core.llm_client.LLMClient` directly, bypassing `core/ai_gateway`. Routing Sage through the gateway is **Phase 0** — everything else (provenance, fallback, usage capture, tracing) builds on it.
-
 ---
 
 ## 3. Key Architectural Pillars
@@ -89,7 +87,7 @@ The long-term vision transforms Sage into a **Time-Aware, Multi-Stage Hierarchic
   - Stored in Supabase using the `pgvector` extension with HNSW indexes.
   - Generates semantic matches for conceptual questions (*"reasoning token overhead"*, *"chip export restrictions"*).
 * **Sparse Retrieval**:
-  - PostgreSQL full-text search (`tsvector` and `tsquery`) with English dictionary stemmer.
+  - PostgreSQL full-text search (`tsvector` and `tsquery`) with English dictionary stemmer. *(The sparse half is live — `match_articles` FTS RPC from the closed Phase 2.)*
   - Matches exact entity names, model releases, and numbers (*"Claude 3.7 Sonnet"*, *"Llama 3.3 70B"*, *"SWE-bench 87.6%"*).
 * **Hybrid Fusion**:
   - Reciprocal Rank Fusion (RRF) combines scores from dense and sparse retrieval to produce the final candidate set.
@@ -128,7 +126,7 @@ News intelligence is inherently chronological. Standard RAG produces hallucinati
    - Sage responses should cite original articles using Markdown hyperlinks retrieved from the `articles.link` column:
      > *"On September 12, OpenAI launched o1 [OpenAI Announcement](https://openai.com/...)."*
 2. **Evidence Popovers**:
-   - In the Streamlit UI, cited runs and articles should be inspectable in an accordion or side-drawer showing the exact article snippet that grounded each claim.
+   - In the Streamlit UI, cited runs and articles should be inspectable in an accordion or side-drawer showing the exact article snippet that grounded each claim. *(Both landed with the closed Phase 2.)*
 
 ### Pillar E: Multi-Agent Synthesis Workflow
 
@@ -139,37 +137,19 @@ For complex research questions, expand Sage from a single LLM call into a 3-agen
 
 **Gate:** this phase lands *last* and only after Pillar F — a 3-agent pipeline without per-agent traces is undebuggable by construction.
 
-### Pillar F: Observability & Evaluation (NEW)
+### Pillar F: Observability & Evaluation
 
 Agent traces are the troubleshooting backbone for everything above.
 
-**Tooling decision (free-first):**
+> **Decision (2026-10): Langfuse Cloud (Hobby, US region)** — chosen free-first; instrumentation is OpenTelemetry-based, so switching backends later means changing the exporter, not the code. The alternatives comparison (AgentOps, Phoenix, self-hosted Langfuse, LangSmith, Helicone) is archived in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
-> **Decision (2026-10): Langfuse Cloud (Hobby).** Alternatives recorded below for future reference; since instrumentation is OpenTelemetry-based, switching backends later means changing the exporter, not the code.
-
-| Option | License | Cost to run | Ops burden | Fit |
-|---|---|---|---|---|
-| **Langfuse Cloud (Hobby)** ✅ chosen | MIT (cloud is SaaS) | Free tier (~50k units/mo, 30-day retention — verify current terms) | None | **Chosen default.** Single-user volume fits easily; prompt management + evals included |
-| **AgentOps** | OSS | Free, self-host dashboard | Low | Runner-up: Python SDK with `agentops.init()` auto-instrumentation, session replay, per-session cost tracking. Best if we ever want fully local tracing with near-zero setup |
-| **Arize Phoenix** | Apache-2.0 | Free, single container | Low | Self-host fallback if data must stay local; strongest RAG/retrieval-trace debugging (UMAP over embeddings) |
-| **Langfuse self-hosted** | MIT | Free, but 6 services (web, worker, Postgres, ClickHouse, Redis, MinIO) | High | Only worth it on a paid VPS with real ops intent; overkill for this project today |
-| LangSmith | Closed | Paid | — | Ruled out |
-| Helicone | Free tier + OSS | Free | Low | Ruled out: proxy/gateway-first — would duplicate the routing/fallback layer `core/ai_gateway` already provides |
-
-*Context: Langfuse was acquired by ClickHouse in Jan 2026; it remains open-source and self-hostable, but production self-hosting grew heavy (the 6-service stack above). Phoenix remains lightweight.*
-
-**Instrumentation plan:**
-1. **Phase 0 requirement — route Sage through `core/ai_gateway`** so every Sage call already produces `Provenance` (provider, model, latency, attempts, fallback, correlation_id).
-2. Extend the gateway contracts (`Provenance`) to carry **token usage** — providers already parse it today but discard it.
-3. Emit **OpenTelemetry spans** for each gateway call and each Sage pipeline stage (context assembly, retrieval, fusion, generation). Export OTLP to Langfuse (or Phoenix). Env-gated (`LANGFUSE_PUBLIC_KEY`/`SECRET_KEY` absent → no-op) so tests and offline runs stay clean; follow the existing conftest pattern of pinning external services off.
-4. **Durable record**: traces are short-lived on free tiers (30-day retention), so mirror every LLM call into a new `llm_calls` Supabase table (timestamp, provider, model, tokens in/out, latency, cost_class, correlation_id, trace_id). This doubles as the cost accounting the project currently lacks entirely.
-5. **Sage evaluation**: the existing eval infra (evaluator agents, `quality_evaluations` table, page 7) covers summaries and classification only. Add a faithfulness-vs-retrieved-context judge for Sage answers, reusing the same plumbing.
+**Instrumentation status:** the Phase 0 items are live — Sage routes through `core/ai_gateway` (provenance on every call), token usage is carried and mirrored into the durable `llm_calls` table, and OTel spans export to Langfuse with `trace_id` linkage. Sage-answer faithfulness judging landed with Phase 2. **Remaining:** input-side coverage tracking (Phase 4.1) — the coverage judge returns aggregate recall only; extend it to name missed articles and pair it with a per-run skipped-articles record so summarisation gaps are observable rather than silent.
 
 ---
 
 ## 4. Supabase Database Schema Additions for Future RAG
 
-> **Corrected 2026-10:** `articles`, `theme_summaries`, and `sage_conversations` **already exist** (see `supabase_schema.sql` + `supabase_migration_sage_conversations.sql` — note the real column is `period_label`, not `period_info` as previously written here). The genuinely new tables are `article_embeddings`, `monthly_syntheses`, `theme_first_seen`, and `llm_calls`.
+> `articles`, `theme_summaries`, and `sage_conversations` **already exist** (see `supabase_schema.sql` + `supabase_migration_sage_conversations.sql` — note the real column is `period_label`, not `period_info`). Also already live from completed phases: `llm_calls` (`supabase_migration_llm_calls.sql`), the `search_vector` FTS column + `match_articles` RPC (`supabase_migration_fts_articles.sql`), and `sage_evaluations` (`supabase_migration_sage_evaluations.sql`). The genuinely new tables are `article_embeddings`, `monthly_syntheses`, and `theme_first_seen`.
 
 ```sql
 -- Enable pgvector
@@ -192,9 +172,6 @@ ON article_embeddings USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_article_embeddings_run_date
 ON article_embeddings (run_date);  -- supports the temporal bounding box
 
--- Sparse retrieval: FTS index on articles (Pillar A, needed from Phase 2)
--- (column + GIN index to be added via migration at Phase 2.3)
-
 -- Monthly macro rollups
 CREATE TABLE IF NOT EXISTS monthly_syntheses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -213,46 +190,20 @@ CREATE TABLE IF NOT EXISTS theme_first_seen (
     evidence_summary TEXT
 );
 
--- Durable LLM call log (Pillar F #4) — cost accounting + trace linkage
-CREATE TABLE IF NOT EXISTS llm_calls (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    task_type VARCHAR(50) NOT NULL,      -- 'sage_chat' | 'summarise' | 'classify' | ...
-    provider VARCHAR(50) NOT NULL,
-    model VARCHAR(100) NOT NULL,
-    tokens_in INT,
-    tokens_out INT,
-    latency_ms INT,
-    cost_class VARCHAR(20),              -- 'low' | 'medium' (matches gateway registry)
-    correlation_id VARCHAR(40),          -- AITaskRequest 8-char correlation id
-    trace_id VARCHAR(100),               -- Langfuse/Phoenix trace id
-    success BOOLEAN NOT NULL DEFAULT TRUE,
-    error_text TEXT
-);
-
--- sage_conversations already exists (period_label column) — nothing to add.
+-- llm_calls is already deployed (supabase_migration_llm_calls.sql; correlation_id
+-- is VARCHAR(40), not UUID, matching the 8-char gateway request ids).
 ```
 
 ---
 
 ## 5. Phased Implementation Roadmap
 
-Phases are deliberately smaller than the original five — each sub-step is independently shippable and verifiable, and most have an explicit evaluation gate before moving on.
+Phases are deliberately small — each sub-step is independently shippable and verifiable, and most have an explicit evaluation gate before moving on.
 
-- [x] **Phase 1 (Completed)**: Fix query order, period selector (Last 7d, 30d, Sep 2026, All Time, Custom), theme filtering in chat, conversation persistence (JSON/Supabase sync), Markdown export.
+**Where we are (2026-10):** Phase 0 foundations are live — Sage is routed through the gateway (fallback + provenance), every LLM call is mirrored to `llm_calls`, and OTel traces land in Langfuse Cloud; the gate was verified end-to-end with a live trace + matching `llm_calls` row. Phase 2 (article-level grounding) is **closed**: Sage answers are grounded in retrieved `articles` via Postgres FTS, citations render as clickable evidence popovers, and a chat-time faithfulness judge writes `sage_evaluations` rows (no pre-2.1 baseline exists — Phase 3 changes are measured against the post-2.3 batch). Direction from here: **embeddings (Phase 3) → full-coverage processing (Phase 4) → hybrid retrieval + temporal awareness (Phase 5) → hierarchical memory (Phase 6) → multi-agent synthesis (Phase 7)**. Full implementation notes for everything landed so far: [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
-### Phase 0 — Foundations: routing + observability (do this before any RAG work)
-- [x] **0.1** Route Sage through `core/ai_gateway` (new `sage_chat` task policy): gains fallback chain, health tracking, provenance chips for free. *(Done 2026-10: `SAGE_CHAT` TaskType, Ollama-primary policy with Gemini fallbacks, `chat_with_sage` rewritten to gateway contract returning `{"response", "provenance"}`, provenance caption in the UI.)*
-- [x] **0.2** Extend `Provenance` to carry token usage; add `llm_calls` table + gateway hook so every call (Sage, summariser, classifier, evaluator) is persisted with tokens/latency/cost_class. *(Done 2026-10: `Provenance.tokens_in/out` populated from provider usage; `core/ai_gateway/call_log.py` fire-and-forget writer; `insert_llm_call` on the Supabase manager; `supabase_migration_llm_calls.sql` — note `correlation_id` is VARCHAR(40), not UUID, matching the 8-char request ids.)*
-- [x] **0.3** Langfuse Cloud Hobby account + OTel span export from the gateway (env-gated no-op when keys absent). Link `trace_id` into `llm_calls`. *(Done 2026-10: `core/ai_gateway/tracing.py` — one span per gateway execution, OTLP HTTP export to `{LANGFUSE_HOST}/api/public/otel/v1/traces` with Basic-auth keys, `gen_ai.*`/`langfuse.observation.*` attributes so LLM calls render as generations, input/output capped at ~2000 chars. `Provenance.trace_id` (32-char hex) flows into the `llm_calls` row. Keys resolve via the `config.settings` chain (`LANGFUSE_PUBLIC_KEY`/`SECRET_KEY`/`HOST`); conftest autouse fixture pins tracing off in tests. Deps: `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http`.)*
+### Phase 0 — Foundations *(0.1–0.3 done, gate verified — one item remains)*
 - [ ] **0.4** (optional but cheap) `Dockerfile` + `docker-compose.yml` (app + nothing else — Supabase stays cloud) for reproducible deploys.
-- **Gate**: a Sage chat produces a visible trace in Langfuse and a row in `llm_calls`. *(Verified 2026-10 with a real US-region Langfuse Hobby project: one live `sage_chat` gateway call exported a span with no OTLP errors and the newest `llm_calls` row carried the matching 32-hex `trace_id`. Project is US-region — `LANGFUSE_HOST = https://us.cloud.langfuse.com` in secrets.toml.)*
-
-### Phase 2 — Article-level grounding (sparse retrieval only, no vectors yet)
-- [x] **2.1** Add `articles` retrieval to Sage context assembly (SQL: recent + keyword match within budget), alongside theme summaries. *(Done 2026-10: `SupabaseManager.get_articles_for_context()` fetches a bounded newest-first candidate window (theme/source/date filters, no SQL keyword matching — that's Phase 2.3 FTS); `core/sage_agent.py` scores candidates against the question client-side (`score_article_relevance`, title ×2) and renders the top `ARTICLE_TOP_K`=15 as an `=== ARTICLE EVIDENCE ===` section within a 30% slice of the char budget, unused budget flowing back to summaries. Local fallback flattens `themed_articles` from history.json. No keyword matches → newest-first, so Sage always has some Tier-1 grounding. Links carried but not rendered (Phase 2.2). Sequencing decision: the faithfulness judge below is a separate follow-up task — no pre-2.1 baseline will be recorded; judge scores start from post-2.1.)*
-- [x] **2.2** Citations: Sage prompt gains article links from `articles.link`; UI renders them (accordion/evidence popover — Pillar D). *(Done 2026-10: `_render_article_section` appends a `Link:` line to each brief and returns the rendered-article list (title/source/date/link/snippet) as `build_wiki_context()["articles"]`; system prompt instructs Sage to attach context links as Markdown hyperlinks and never invent URLs. Links sanitised to http(s) only (`_safe_link`) since scraped URLs are untrusted. `pages/5_History.py` renders a `📰 Article Evidence (N)` accordion under each assistant message — the list is persisted as an `articles` key on the message dict, so popovers survive conversation reload (JSONB-friendly extra key; Supabase + local JSON paths both pass it through).*
-- [x] **2.3** Add `tsvector` column + GIN index on `articles`; switch keyword matching to proper FTS queries. *(Done 2026-10: `supabase_migration_fts_articles.sql` adds a `search_vector` GENERATED ALWAYS tsvector (title weight A, summary weight B — title×2 semantics in SQL) with a GIN index and an invoker-rights `match_articles(query, filters, result_limit)` RPC ranked by `ts_rank` (PostgREST's built-in fts filter can't ORDER BY ts_rank, so a function is the standard pattern; no backfill needed — STORED generation populates existing rows). `get_articles_for_context(query=...)` routes to the RPC when a question is supplied, degrading to the existing newest-first window on RPC failure or empty match — pre-migration databases keep working. `build_wiki_context` passes the raw question (websearch_to_tsquery does its own parsing); `_select_articles` client-side scoring stays the final provider-agnostic ranking step, and the local history.json fallback (no Postgres → no FTS) is unchanged. Riding along: `SAGE_SYSTEM_PROMPT` reworked to answer-first format — Direct Answer → Evidence (chronological for trend questions) → Assessment — with new grounding rules for partial-evidence scope, conflicting-evidence surfacing, and concrete numbers over vague characterisations; all 2.1/2.2 groundedness invariants kept. Sparse half of Pillar A.)*
-- **Gate**: faithfulness judge for Sage answers added to eval infra — baseline scores recorded. *(Done 2026-10: `record_sage_faithfulness()` in `core/evaluator.py` judges each successful Sage reply chat-time, fire-and-forget on a daemon thread (the `llm_calls` pattern — the context string and the answer coexist only at the moment of reply, so judging later would rebuild a drifted context). One `TaskType.EVALUATE` call via `GatewayJudgeLLM` scores the answer against the exact wiki/article context it was given; only successful judgments insert a `sage_evaluations` row (`supabase_migration_sage_evaluations.sql` — per-reply shape, not `quality_evaluations`, which is run-scoped with NOT NULL summary columns), so judge outages skip rows rather than masquerading as hallucination. Page 7 renders the rolling mean, per-reply history, and recent unsupported claims. Baseline caveat, per the recorded sequencing decision: no pre-2.1 baseline exists — scores start from post-2.3, and Phase 3 changes are measured against that batch. **Phase 2 closed.**)*
 
 ### Phase 3 — Embedding pipeline (dense half of Pillar A)
 - [ ] **3.1** Migration: `CREATE EXTENSION vector`, `article_embeddings` table + HNSW + run_date indexes (schema above).
@@ -261,25 +212,36 @@ Phases are deliberately smaller than the original five — each sub-step is inde
 - [ ] **3.4** Resumable, rate-limit-aware backfill script for historical articles (run manually; writes through the same provider path so it's traced too).
 - **Gate**: retrieval hit-rate eval on a small hand-labelled question set (reuse eval infra; store as scores in Langfuse).
 
-### Phase 4 — Hybrid retrieval + temporal awareness
-- [ ] **4.1** Dense top-k search replaces the keyword-overlap relevance scorer in Sage context assembly (keep keyword path as fallback while `article_embeddings` coverage is partial).
-- [ ] **4.2** Sparse + dense candidates fused via Reciprocal Rank Fusion.
-- [ ] **4.3** Query date parsing → temporal bounding box on retrieval (respect the HNSW+filter gotcha in Pillar C); time-decay re-ranking.
-- [ ] **4.4** `theme_first_seen` maintained at ingest; render-time scanning removed.
+### Phase 4 — Full-coverage article processing (input-side)
+*Landed between the embedding pipeline and retrieval work deliberately: the retrieval gates below (hit-rate evals, old-vs-new side-by-side) are confounded if theme-summary coverage is silently drifting, and Tier 2 gaps must be closed before monthly rollups bake them into Tier 3. Situational facts (verified 2026-10): per theme the summariser feeds only the unprocessed articles ranked by theme-keyword relevance, hard-capped at `MAX_ARTICLES_PER_SUMMARY = 12` (`config/settings.py`), then trimmed to a ~59k-char prompt budget — the 12-cap binds at ~10% of that budget, so the context window is not the constraint today. Skipped articles are recorded nowhere; they re-compete next run while inside the 14-day fetch window and otherwise age out silently.*
+
+- [ ] **4.1** Skip visibility: persist the skipped complement (classified-but-not-summarised per theme — the summariser already computes `included_hashes`; persist counts + hashes for the rest) into run metadata / `history.json` / Supabase, and surface it — "12 of 37 articles reflected" caption, missed-article list in History run detail, and the Coverage judge recording *which* articles were missed instead of aggregate-only counts. No dependencies; shippable immediately.
+- [ ] **4.2** Fix the fallback ledger asymmetry: on gateway fallback the non-LLM extractive path marks the whole selected pool processed while surfacing ~3 articles by name — mark only actually-surfaced ones so 4.1's numbers are truthful.
+- [ ] **4.3** Fair drain / backlog carryover: aging boost in the ranking (`_rank_articles_by_relevance`, `core/summariser.py`) per run an article goes unprocessed, plus a times-seen counter on `articles` (small migration — the current upsert on `(content_hash, theme_name)` carries no counter; batch it with the `theme_first_seen` migration in 5.4). Guarantees every article is eventually summarised within its 14-day window or explicitly recorded as aged-out — never a silent loss.
+- [ ] **4.4** Raise effective capacity: make the per-summary article cap budget-aware (fill ranked articles until the prompt budget; cap ~40-60) instead of a flat 12, and consider relaxing the 300-char per-article summary truncation. Eval-gated on coverage score before/after.
+- [ ] **4.5** Chunked overflow summarisation ("eventually ALL"): map-reduce two-pass for themes still over budget — batch → per-batch intermediate summaries → merged final, reusing the prior-run context pattern; cost-checked via `llm_calls`. **Gates 6.1 (monthly rollups).**
+- [ ] **4.6** (optional) Prioritisation refinements: recency weighting and tie-breaks, source diversity (pattern exists in `core/non_llm_summariser.py`), near-duplicate clustering for syndicated volume (relevant with high-cadence sources like MarkTechPost), classification-gate confidence as a signal.
+- **Gate**: rolling Coverage-judge score ≥ threshold with a shrinking named-missed list; aged-out articles exist only as explicit records; `llm_calls` cost delta within budget.
+
+### Phase 5 — Hybrid retrieval + temporal awareness
+- [ ] **5.1** Dense top-k search replaces the keyword-overlap relevance scorer in Sage context assembly (keep keyword path as fallback while `article_embeddings` coverage is partial).
+- [ ] **5.2** Sparse + dense candidates fused via Reciprocal Rank Fusion.
+- [ ] **5.3** Query date parsing → temporal bounding box on retrieval (respect the HNSW+filter gotcha in Pillar C); time-decay re-ranking.
+- [ ] **5.4** `theme_first_seen` maintained at ingest; render-time scanning removed. *(Shares the ingest-metadata migration batch with 4.3's times-seen counter.)*
 - **Gate**: side-by-side eval old-vs-new retrieval on the labelled question set + latency budget check; decision recorded here.
 
-### Phase 5 — Hierarchical memory & monthly rollups
-- [ ] **5.1** `monthly_syntheses` table + monthly rollup job generating Tier 3 syntheses per theme (runs in the scheduled pipeline, not pg_cron — external LLM calls).
-- [ ] **5.2** Tier-aware assembly: macro queries pull Tier 3 rollups; drill down to Tier 1 only for cited milestones.
+### Phase 6 — Hierarchical memory & monthly rollups
+- [ ] **6.1** `monthly_syntheses` table + monthly rollup job generating Tier 3 syntheses per theme (runs in the scheduled pipeline, not pg_cron — external LLM calls). *(Gated on 4.5 chunked summarisation — rolling up incomplete Tier 2 summaries bakes the gaps into Tier 3 permanently.)*
+- [ ] **6.2** Tier-aware assembly: macro queries pull Tier 3 rollups; drill down to Tier 1 only for cited milestones.
 
-### Phase 6 — Multi-agent synthesis (Pillar E; gated on Phase 0 tracing being live)
-- [ ] **6.1** Sage Scout: sub-query generation + retrieval execution (traced as nested spans).
-- [ ] **6.2** Sage Fact-Checker: statement-level faithfulness against retrieved context (reuses the Phase 2 judge).
-- [ ] **6.3** Sage Analyst: final synthesis in AI Pulse voice; full trace visible end-to-end in Langfuse.
+### Phase 7 — Multi-agent synthesis (Pillar E; gated on Phase 0 tracing being live)
+- [ ] **7.1** Sage Scout: sub-query generation + retrieval execution (traced as nested spans).
+- [ ] **7.2** Sage Fact-Checker: statement-level faithfulness against retrieved context (reuses the Phase 2 judge).
+- [ ] **7.3** Sage Analyst: final synthesis in AI Pulse voice; full trace visible end-to-end in Langfuse.
 
 ---
 
-## 6. Deployment & Operations (NEW)
+## 6. Deployment & Operations
 
 ### Verdict on Streamlit
 **Keep Streamlit as the UI.** It is the right tool for a single-user analytics dashboard — a FastAPI+React rewrite would cost weeks and buy nothing at this scale. What *should* change is the operational shape around it:

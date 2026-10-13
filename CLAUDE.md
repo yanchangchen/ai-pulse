@@ -46,7 +46,7 @@ python -m pytest -m integration tests/                                      # op
 
 ## Long-Term Work in Progress
 
-**`Future.md`** is the standing roadmap for evolving Sage into a time-aware, multi-stage hierarchical RAG system (hybrid dense+sparse retrieval, 3-tier memory, pgvector schema, multi-agent synthesis). **Read it before any Sage-related work** and consult it when planning larger changes — the phased roadmap (Phase 1 done; Phases 2–5 pending) tracks where the project is headed. Update the phase checkboxes there as work lands.
+**`Future.md`** is the standing roadmap for evolving Sage into a time-aware, multi-stage hierarchical RAG system (hybrid dense+sparse retrieval, 3-tier memory, pgvector schema, multi-agent synthesis). **Read it before any Sage-related work** and consult it when planning larger changes — the phased roadmap (Phases 0.1–0.3 and Phase 2 done; Phases 0.4 and 3–7 pending) tracks where the project is headed. Update the phase checkboxes there as work lands, and move completed phases' implementation notes into `docs/ROADMAP_HISTORY.md` so Future.md stays lean.
 
 ## Documentation Routing
 
@@ -60,7 +60,7 @@ These docs are NOT auto-loaded — read the relevant one before working in that 
 | Pipeline, `core/bg_refresher.py`, memory system, quota/LLMClient, caching | docs/ARCHITECTURE.md |
 | Evaluation (`core/evaluator.py`, `core/eval_controller.py`, `core/auto_remediation.py`, page 7) | docs/QUALITY_EVALUATION.md |
 | Any page/UI (`pages/*.py`, `app.py`, `core/shared_sidebar.py`, `core/design_system.py`, `core/sage_agent.py`, `core/visualiser.py`) | docs/PAGES.md |
-| Config (`config/settings.py`, secrets, env vars, `custom_settings.json`, `custom_keywords.json`, `watch.md`) | docs/CONFIGURATION.md |
+| Config (`config/settings.py`, secrets, env vars, `custom_settings.json`, `custom_keywords.json`) | docs/CONFIGURATION.md |
 | Supabase (`core/supabase_client.py`, `supabase_*.sql`, schema, migrations, RLS, app_settings) | docs/SUPABASE.md |
 
 Human-facing guides: README.md (quick start), SUPABASE_SETUP_GUIDE.md, SUPABASE_INTEGRATION_README.md. Test-targeting cheat sheet: AGENTS.md.

@@ -8,7 +8,8 @@ Where every setting lives, how it is resolved, and the gotchas. Read this before
 Read by `config/settings.py` `_get_secret()` in order: `st.secrets` → direct TOML parse →
 env vars → default. Keys: `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default
 `nemotron-3-ultra:cloud`), `OLLAMA_API_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL` (default
-`gemini-3.7-flash`; `GEMINI_AVAILABLE_MODELS` lists the switchable set),
+`gemini-3.8-flash`; `GEMINI_AVAILABLE_MODELS` lists the switchable set — stable/GA
+models only),
 and Langfuse tracing: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`,
 `LANGFUSE_HOST` (default `https://cloud.langfuse.com`; US region
 `https://us.cloud.langfuse.com`).
@@ -72,11 +73,6 @@ local filesystem is wiped on every git push. Accessors:
 
 ## `config/custom_keywords.json`
 
-Persisted custom theme keywords (added via the Theme Keyword Manager or the classifier's
-self-improvement loop) — hot-reloaded by the classifier. See
+Persisted custom theme keywords (added via the Theme Keyword Manager, the classifier's
+self-improvement loop, or approved watchlist suggestions) — hot-reloaded by the classifier. See
 [docs/ARCHITECTURE.md](ARCHITECTURE.md#self-improving-keywords).
-
-## `watch.md`
-
-The user's watchlist keywords and engineering blog sources — referenced by the fetcher for
-high-signal targeting.

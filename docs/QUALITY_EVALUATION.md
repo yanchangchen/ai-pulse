@@ -65,7 +65,7 @@ When scores fall below threshold, users fix issues directly in the UI — no bac
 
 3. **⚙️ Faithfulness & Summariser Tuner** — Adjust temperature, max tokens, and toggle strict anti-hallucination grounding mode. Persists to `config/custom_settings.json`.
 
-4. **📌 Watchlist Term Suggestions** — Surfaces high-signal terms for `watch.md` in copy-pasteable blocks.
+4. **📌 Watchlist Term Suggestions** — Surfaces high-signal terms missing from the theme keyword sets; click Apply to map each term into the matching theme's keywords (weight 2, persisted to custom keywords), closing the suggestion loop. Suggestions are deduplicated against existing theme keywords and active `keyword_suggestions` rows before they are stored.
 
 Suggestions persist to the `keyword_suggestions` Supabase table (run `supabase_migration_keywords.sql` once to create it). Set `LLM_DEBUG=1` in `.env` to dump prompts and raw responses for debugging.
 
