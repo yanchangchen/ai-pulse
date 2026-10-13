@@ -166,7 +166,7 @@ def test_gemini_client_escalates_budget_on_max_tokens(mock_post, mock_sleep):
 
     mock_post.side_effect = capture
 
-    client = GeminiClient(api_key="test_key", default_model="gemini-3.5-flash")
+    client = GeminiClient(api_key="test_key", default_model="gemini-3.6-flash")
     result = client.generate_content("write brief", max_output_tokens=2048)
 
     assert result == "complete brief"
@@ -180,7 +180,7 @@ def test_gemini_client_escalates_budget_on_max_tokens(mock_post, mock_sleep):
 def test_gemini_client_returns_last_response_when_escalation_exhausts_attempts(mock_post, mock_sleep):
     mock_post.return_value = _response_with_finish("still truncated", "MAX_TOKENS")
 
-    client = GeminiClient(api_key="test_key", default_model="gemini-3.5-flash")
+    client = GeminiClient(api_key="test_key", default_model="gemini-3.6-flash")
     result = client.generate_content("write brief", max_output_tokens=2048)
 
     # No exception: the caller gets the best-effort (possibly truncated) text
@@ -194,7 +194,7 @@ def test_gemini_client_returns_last_response_when_escalation_exhausts_attempts(m
 def test_gemini_client_thinking_level_in_payload(mock_post, mock_sleep):
     mock_post.return_value = _response_with_finish("OK", "STOP")
 
-    client = GeminiClient(api_key="test_key", default_model="gemini-3.5-flash")
+    client = GeminiClient(api_key="test_key", default_model="gemini-3.6-flash")
     client.generate_content("hi", thinking_level="low")
 
     gen_cfg = mock_post.call_args.kwargs["json"]["generationConfig"]
@@ -206,7 +206,7 @@ def test_gemini_client_thinking_level_in_payload(mock_post, mock_sleep):
 def test_gemini_client_no_thinking_config_by_default(mock_post, mock_sleep):
     mock_post.return_value = _response_with_finish("OK", "STOP")
 
-    client = GeminiClient(api_key="test_key", default_model="gemini-3.5-flash")
+    client = GeminiClient(api_key="test_key", default_model="gemini-3.6-flash")
     client.generate_content("hi")
 
     gen_cfg = mock_post.call_args.kwargs["json"]["generationConfig"]
@@ -231,8 +231,8 @@ def test_save_theme_summary_upserts_on_run_theme_conflict():
         "what_is_happening": "hi", "engineering_tradeoffs": "e",
         "product_impact": "p", "why_it_matters": "w", "what_to_watch": "t",
         "further_reading": "- Deep Dive Article | Src | https://example.com/x",
-        "_source": "gemini:gemini-3.5-flash",
-        "_generation_log": {"model": "gemini-3.5-flash"},
+        "_source": "gemini:gemini-3.6-flash",
+        "_generation_log": {"model": "gemini-3.6-flash"},
     }
     result = manager.save_theme_summary(
         "run-1", "Enterprise Strategy & ROI", summary, article_count=5
@@ -243,7 +243,7 @@ def test_save_theme_summary_upserts_on_run_theme_conflict():
     call = table_mock.upsert.call_args
     assert call.kwargs["on_conflict"] == "run_id,theme_name"
     assert call.args[0]["run_id"] == "run-1"
-    assert call.args[0]["generation_source"] == "gemini:gemini-3.5-flash"
+    assert call.args[0]["generation_source"] == "gemini:gemini-3.6-flash"
     # further_reading must be persisted — the grounding judge reads it back.
     assert call.args[0]["further_reading"] == "- Deep Dive Article | Src | https://example.com/x"
     # No plain insert anywhere on the persistence path
@@ -294,7 +294,7 @@ def test_gemini_provider_has_request_timeout():
     """GeminiProvider should accept and store a request_timeout parameter."""
     from core.ai_gateway.providers.gemini import GeminiProvider
 
-    provider = GeminiProvider(api_key="test_key", model="gemini-3.5-flash", request_timeout=45.0)
+    provider = GeminiProvider(api_key="test_key", model="gemini-3.6-flash", request_timeout=45.0)
     assert provider.request_timeout == 45.0
 
 
@@ -302,5 +302,5 @@ def test_gemini_provider_default_timeout():
     """Default timeout should be 30 seconds."""
     from core.ai_gateway.providers.gemini import GeminiProvider
 
-    provider = GeminiProvider(api_key="test_key", model="gemini-3.5-flash")
+    provider = GeminiProvider(api_key="test_key", model="gemini-3.6-flash")
     assert provider.request_timeout == 30.0

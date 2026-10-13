@@ -96,12 +96,13 @@ OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
 # Google Gemini API configuration (On-Demand Deep Dive Summarisation)
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY: str = _get_secret("GEMINI_API_KEY", "")
-GEMINI_MODEL: str = _get_secret("GEMINI_MODEL", "gemini-3.7-flash")
+GEMINI_MODEL: str = _get_secret("GEMINI_MODEL", "gemini-3.8-flash")
+# Stable (GA) models only per https://ai.google.dev/gemini-api/docs/models —
+# gemini-3.7-flash and gemini-3.5-flash are not on the docs' stable or
+# preview lists and were removed.
 GEMINI_AVAILABLE_MODELS: list[str] = [
     "gemini-3.8-flash",
-    "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
 ]

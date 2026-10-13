@@ -57,7 +57,7 @@ class GeminiClient:
 
     def __init__(self, api_key: Optional[str] = None, default_model: Optional[str] = None):
         self.api_key = api_key if api_key is not None else GEMINI_API_KEY
-        self.default_model = default_model or GEMINI_MODEL or "gemini-3.7-flash"
+        self.default_model = default_model or GEMINI_MODEL or "gemini-3.8-flash"
 
     def is_configured(self) -> bool:
         """Check if an API key is present."""
@@ -79,7 +79,7 @@ class GeminiClient:
         Args:
             prompt: User prompt text.
             system_instruction: Optional system instruction text.
-            model: Model ID (e.g., 'gemini-3.7-flash').
+            model: Model ID (e.g., 'gemini-3.8-flash').
             temperature: Sampling temperature.
             max_output_tokens: Max output tokens in response. Gemini 3 models
                 bill thinking tokens against this budget; truncated responses
