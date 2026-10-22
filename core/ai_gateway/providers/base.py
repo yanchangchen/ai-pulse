@@ -28,6 +28,20 @@ class ProviderAdapter(ABC):
         """
         pass
 
+    async def embed(self, texts, **kwargs) -> Dict[str, Any]:
+        """
+        Generate dense vector embeddings for a batch of texts.
+
+        Returns: {"vectors": [[float, ...], ...], "usage": dict, "model": str}
+
+        Not all providers support embeddings; the default raises
+        ``NotImplementedError`` so a provider that never claims the
+        ``embedding`` task (e.g. Ollama for now) stays unchanged.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support embeddings"
+        )
+
     @abstractmethod
     async def health_check(self) -> Dict[str, Any]:
         """

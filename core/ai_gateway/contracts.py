@@ -27,6 +27,11 @@ class TaskType(Enum):
     # substitute for Sage's voice would be fabrication, so the policy
     # disables the deterministic fallback.
     SAGE_CHAT = "sage_chat"
+    # Dense vector embeddings (Phase 3, core/embedding.py).  The request
+    # carries ``embed_inputs`` (a batch of texts) instead of a single
+    # prompt; there is no prompt template, no output schema, and no
+    # deterministic fallback — a rule-based "embedding" is meaningless.
+    EMBEDDING = "embedding"
 
 
 class QualityLevel(Enum):
@@ -70,9 +75,17 @@ class AITaskRequest:
     # during execution — and the llm_calls row snapshotted from it — links
     # back to the trace.  None when tracing is disabled.
     trace_id: Optional[str] = None
+    # Embedding task inputs (TaskType.EMBEDDING only): the batch of texts to
+    # embed, and the output vector dimensionality.  ``input`` stays empty for
+    # embedding tasks — there is no prompt to build.
+    embed_inputs: Optional[List[str]] = None
+    embedding_dimensions: int = 768
 
     def estimated_input_tokens(self) -> int:
-        """Rough token estimate (3 chars/token)."""
+        """Rough token estimate (3 chars/token), or the batch estimate for
+        embedding tasks where the text lives in ``embed_inputs``."""
+        if self.task == TaskType.EMBEDDING and self.embed_inputs:
+            return sum(len(t) for t in self.embed_inputs) // 3
         return len(self.input) // 3
 
 

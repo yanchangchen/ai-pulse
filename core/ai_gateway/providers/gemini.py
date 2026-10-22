@@ -8,7 +8,7 @@ when event loops were torn down between ``asyncio.run()`` calls.
 """
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .base import ProviderAdapter
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,39 @@ class GeminiProvider(ProviderAdapter):
             )
         return {
             "json": response.text,
+            "usage": self._extract_usage(response),
+            "model": self.model_name,
+        }
+
+    async def embed(self, texts: List[str], **kwargs) -> Dict[str, Any]:
+        """Embed a batch of texts via ``models.embed_content``.
+
+        ``dimensions`` pins the output vector width (768 for AI Pulse's
+        ``article_embeddings.embedding vector(768)`` column; the model's
+        native default is 3072, so the pin is mandatory for schema parity).
+        """
+        config = types.EmbedContentConfig(
+            output_dimensionality=kwargs.get("dimensions", 768)
+        )
+        try:
+            response = await asyncio.wait_for(
+                self.client.aio.models.embed_content(
+                    model=self.model_name,
+                    contents=list(texts),
+                    config=config,
+                ),
+                timeout=self.request_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"GeminiProvider.embed() timed out after {self.request_timeout}s"
+            )
+        vectors = [
+            [float(v) for v in emb.values]
+            for emb in getattr(response, "embeddings", [])
+        ]
+        return {
+            "vectors": vectors,
             "usage": self._extract_usage(response),
             "model": self.model_name,
         }

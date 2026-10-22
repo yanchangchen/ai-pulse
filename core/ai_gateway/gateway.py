@@ -110,6 +110,16 @@ class ModelGateway:
                     "priority": 3,
                     "context_window": 131072,
                 },
+                # Dense embeddings (Phase 3).  gemini-embedding-001 is a
+                # single embedding-only model — it never serves generation
+                # tasks, and generation models never serve embeddings.
+                "gemini-embedding-001": {
+                    "provider": "google",
+                    "model": "gemini-embedding-001",
+                    "tasks": ["embedding"],
+                    "cost_class": "low",
+                    "priority": 1,
+                },
             },
             "routing_policies": {
                 "categorise": {
@@ -185,6 +195,17 @@ class ModelGateway:
                         "gemini-3.6-flash",
                         "gemini-3.8-flash",
                     ],
+                    "deterministic_fallback": False,
+                },
+                # Dense embeddings: Gemini-only for now (no Ollama embedding
+                # provider registered).  Like EVALUATE/SAGE_CHAT there is no
+                # prompt template and no deterministic fallback — a rule-based
+                # embedding is meaningless, so total failure surfaces to the
+                # caller (core/embedding.py), which treats it as a skipped
+                # batch rather than writing garbage vectors.
+                "embedding": {
+                    "primary": "gemini-embedding-001",
+                    "fallback": [],
                     "deterministic_fallback": False,
                 },
             },
@@ -547,6 +568,18 @@ Return JSON: {{"category": "theme name"}}""",
     async def _execute_with_validation(
         self, provider: ProviderAdapter, request: AITaskRequest, model_key: str
     ) -> Any:
+        # Embeddings skip the prompt/schema machinery entirely: there is no
+        # prompt to template and no JSON schema to validate, only a batch of
+        # texts in ``request.embed_inputs``.  The shared health/retry/usage/
+        # provenance wiring in ``_execute_inner`` still applies — only the
+        # provider call + return shape differ here.
+        if request.task is TaskType.EMBEDDING:
+            response = await provider.embed(
+                request.embed_inputs or [],
+                dimensions=request.embedding_dimensions,
+            )
+            return response.get("vectors", []), response.get("usage")
+
         prompt = self._build_prompt(request)
         schema = self._get_schema(request.task)
 

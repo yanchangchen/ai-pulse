@@ -149,6 +149,7 @@ The gateway routes each task type to a primary model with an ordered fallback ch
 | project | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
 | evaluate | gemini-3.5-flash-lite | gemini-3.8-flash | nemotron-3-ultra | gpt-oss-120b | No |
 | sage_chat | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | No |
+| embedding | gemini-embedding-001 | — | — | — | No |
 
 All providers have per-request timeouts:
 - **Gemini:** 30s default (configurable via `GEMINI_REQUEST_TIMEOUT`)
@@ -164,7 +165,7 @@ gateway** (`get_gateway().execute(AITaskRequest(...))`), not raw clients. The le
 classifier/summariser only for backward compatibility and quota state.
 
 - `contracts.py` — `TaskType` (categorise / extract / summarise / synthesise / project /
-  evaluate / sage_chat), `AITaskRequest`, `AITaskResult`, `ErrorType` (retryable / non_retryable /
+  evaluate / sage_chat / embedding), `AITaskRequest`, `AITaskResult`, `ErrorType` (retryable / non_retryable /
   output_failure), and `Provenance` (provider, model, latency, attempts, fallback chain,
   correlation id, provider-reported `tokens_in`/`tokens_out`). `EVALUATE` is the LLM-as-judge task (core/evaluator.py
   `GatewayJudgeLLM` adapter): Gemini-first routing, verbatim prompts (no template
@@ -174,7 +175,12 @@ classifier/summariser only for backward compatibility and quota state.
   conversational agent: Ollama-primary routing (nemotron was Sage's engine), Gemini
   fallbacks, and `deterministic_fallback: False` — a rule-based stand-in for Sage's
   persona would fabricate an "analysis", so total failure surfaces as a friendly
-  notice string.
+  notice string. `EMBEDDING` (Phase 3, `core/embedding.py`) carries a batch of texts in
+  `AITaskRequest.embed_inputs` (the `input` string stays empty), runs
+  `ProviderAdapter.embed()` instead of the prompt/schema path, and pins
+  `embedding_dimensions` (768) for `gemini-embedding-001` — no template, no schema, and
+  `deterministic_fallback: False`, so a failed batch is skipped rather than written as
+  garbage vectors.
 - `gateway.py` — `ModelGateway` singleton via `get_gateway()`. Holds a **model registry +
   per-task routing policies** (primary + ordered fallback chain, currently Gemini flash
   models + Ollama cloud models). Per-model health tracking (3 consecutive failures →
@@ -184,7 +190,8 @@ classifier/summariser only for backward compatibility and quota state.
   final **deterministic fallback** when all LLMs fail. Ollama request timeout defaults to
   180s (`OLLAMA_REQUEST_TIMEOUT`) because cloud models can exceed 60s under load.
 - `providers/` — `GeminiProvider` and `OllamaCloudProvider` async adapters behind
-  `ProviderAdapter`.
+  `ProviderAdapter`. `GeminiProvider` additionally implements `embed()` (Phase 3) calling
+  `models.embed_content` with `output_dimensionality=768` against `gemini-embedding-001`.
 - `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`,
   `keyword_extract`, `statistical_projection`.
 - `tracing.py` — one OpenTelemetry span per gateway execution (`execute()` wraps
@@ -203,8 +210,9 @@ classifier/summariser only for backward compatibility and quota state.
   `llm_calls` is the permanent record upgrade decisions are made from. `trace_id`
   (32-char OTel hex) links each row back to its Langfuse trace when tracing is on.
 - Callers: `core/classifier.py` (pass 3), `core/summariser.py`, `core/evaluator.py`
-  (`GatewayJudgeLLM`), and `core/sage_agent.py` (`chat_with_sage`) call
-  `get_gateway().execute(AITaskRequest(...))` inside `asyncio.run(...)`.
+  (`GatewayJudgeLLM`), `core/sage_agent.py` (`chat_with_sage`), and `core/embedding.py`
+  (embeddings) call `get_gateway().execute(AITaskRequest(...))` inside
+  `asyncio.run(...)`.
 
 ## Dual-Engine Summarization Detail
 

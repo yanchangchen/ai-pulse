@@ -107,6 +107,12 @@ GEMINI_AVAILABLE_MODELS: list[str] = [
     "gemini-3.1-flash-lite",
 ]
 
+# Dense text-embedding model (Phase 3).  gemini-embedding-001 defaults to
+# 3072 dims but is truncatable to 768 via output_dimensionality — the fixed
+# 768 target matches the article_embeddings.embedding vector(768) column.
+# (Do NOT use retired text-embedding-004.)
+GEMINI_EMBEDDING_MODEL: str = _get_secret("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+
 # ---------------------------------------------------------------------------
 # Langfuse Cloud observability (Model Gateway OTel tracing, Phase 0.3)
 # ---------------------------------------------------------------------------
@@ -399,5 +405,30 @@ def update_classification_settings(**kwargs) -> dict:
             data[key] = value
     save_custom_settings(data)
     return data
+
+
+# ---------------------------------------------------------------------------
+# Embedding pipeline (Phase 3)
+# ---------------------------------------------------------------------------
+# Vector width, pinned to match article_embeddings.embedding vector(768).
+EMBEDDING_DIMENSIONS: int = int(_get_secret("EMBEDDING_DIMENSIONS", "768"))
+
+_EMBEDDING_DEFAULTS = {
+    "embedding_enabled": True,       # gate the ingest-time embed step
+    "embedding_batch_size": 50,      # texts per embed_content call
+    "embedding_model": GEMINI_EMBEDDING_MODEL,
+    "embedding_dimensions": EMBEDDING_DIMENSIONS,
+    "embedding_backfill_sleep": 0.5,  # seconds between backfill batches (rate-limit headroom)
+}
+
+
+def get_embedding_settings() -> dict:
+    """Return embedding pipeline settings, merging defaults with custom_settings.json."""
+    custom = load_custom_settings()
+    merged = dict(_EMBEDDING_DEFAULTS)
+    for key in _EMBEDDING_DEFAULTS:
+        if key in custom:
+            merged[key] = custom[key]
+    return merged
 
 

@@ -29,6 +29,7 @@ Run in the SQL Editor, roughly in order:
 8. `supabase_migration_llm_calls.sql` — `llm_calls` append-only observability log
 9. `supabase_migration_fts_articles.sql` — `articles.search_vector` (generated tsvector + GIN) and the `match_articles` FTS RPC (Phase 2.3)
 10. `supabase_migration_sage_evaluations.sql` — `sage_evaluations`, the chat-time Sage faithfulness judge's score store (Phase 2 gate)
+11. `supabase_migration_article_embeddings.sql` — `article_embeddings` (pgvector) + `get_unembedded_articles` / `match_article_embeddings` RPCs (Phase 3). Enables `CREATE EXTENSION vector`.
 
 ## `llm_calls`
 
@@ -61,6 +62,23 @@ runs the judge fire-and-forget on a daemon thread right after each grounded repl
 persists the score, unsupported claims, and the judge/answer models. The Quality Evaluation page
 reads it back with `get_sage_evaluations()`. Judge failures skip the row — never a zero score —
 so a judge outage can't masquerade as hallucination in the trend chart.
+
+## `article_embeddings`
+
+One 768-dim dense vector per article (Phase 3, the storage half of Pillar A). The
+ingest step (`core/embedding.py::embed_unembedded_articles`, wired into
+`core/bg_refresher.py` after persistence) and the manual `backfill_embeddings.py` both
+drain the `get_unembedded_articles` RPC — a LEFT JOIN to `article_embeddings` that
+returns only articles **without** an embedding, so a re-run resumes wherever the
+previous run stopped (the table is the checkpoint, not a cursor file). `chunk_text`
+records the exact `"title summary"` string that was embedded; `embedding_model` records
+which model produced it. `embedding vector(768)` + HNSW (`vector_cosine_ops`) + a
+`run_date` btree index (denormalized from `trend_runs`). `match_article_embeddings` is a
+minimal top-k cosine lookup used only by the Phase 3 hit-rate gate
+(`core/retrieval_eval.py`); the real hybrid retriever is Phase 5. RLS mirrors
+`sage_evaluations`: public SELECT + insert. Embeddings go through the gateway
+(`TaskType.EMBEDDING`, `gemini-embedding-001`), so each batch is traced and mirrored to
+`llm_calls` with `task_type='embedding'`.
 
 ## RLS
 

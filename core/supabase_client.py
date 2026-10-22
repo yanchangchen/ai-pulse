@@ -1017,6 +1017,79 @@ class SupabaseManager:
             logger.error(f"Failed to fetch articles for context: {e}")
             return None
 
+    # ------------------------------------------------------------------
+    # Article Embeddings (Phase 3, dense half of Pillar A)
+    # ------------------------------------------------------------------
+
+    def get_unembedded_articles(self, limit: int = 200) -> List[Dict]:
+        """Return articles that still lack an embedding, oldest first.
+
+        Backed by the ``get_unembedded_articles`` RPC (a LEFT JOIN against
+        ``article_embeddings``), so an article drops out the moment its
+        embedding lands — both the ingest step and the backfill drain the
+        same set and are resumable by re-running.  Returns ``[]`` (never
+        raises) when unavailable, the RPC is missing, or the set is empty.
+        """
+        if not self.available:
+            return []
+        try:
+            response = self.client.rpc(
+                "get_unembedded_articles", {"limit_count": limit}
+            ).execute()
+            rows = []
+            for r in response.data or []:
+                if not r.get("article_id"):
+                    continue
+                r["run_date"] = str(r.get("run_date") or "")
+                rows.append(r)
+            return rows
+        except Exception as e:
+            # Pre-migration databases (no RPC) degrade to "nothing to embed".
+            logger.warning(f"get_unembedded_articles RPC failed: {e}")
+            return []
+
+    def insert_article_embeddings(self, rows: List[Dict]) -> bool:
+        """Insert embedding rows (best-effort, never raises).
+
+        Args:
+            rows: List of dicts with article_id / run_date / chunk_text /
+                embedding (list of 768 floats) / embedding_model.
+
+        Returns:
+            True when the insert succeeded, False otherwise.  Duplicate
+            article_id rows (a race between ingest and backfill) surface as
+            an error and are logged, not raised.
+        """
+        if not self.available or not rows:
+            return False
+        try:
+            self.client.table("article_embeddings").insert(rows).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to insert article embeddings: {e}")
+            return False
+
+    def match_article_embeddings(
+        self, query_embedding: List[float], match_count: int = 10
+    ) -> Optional[List[Dict]]:
+        """Nearest-neighbour lookup for the Phase 3 hit-rate gate.
+
+        Returns the top-k cosine-similar rows, or ``None`` when unavailable
+        or the RPC is missing (the retriever proper is Phase 5; this exists
+        only to measure retrieval quality against a labelled set).
+        """
+        if not self.available or not query_embedding:
+            return None
+        try:
+            response = self.client.rpc(
+                "match_article_embeddings",
+                {"query_embedding": query_embedding, "match_count": match_count},
+            ).execute()
+            return response.data if isinstance(response.data, list) else None
+        except Exception as e:
+            logger.warning(f"match_article_embeddings RPC failed: {e}")
+            return None
+
     def get_keyword_velocity(self, keywords: List[str], limit: int = 30) -> Optional[List[Dict]]:
         """
         Count keyword mentions per run across article titles and summaries.

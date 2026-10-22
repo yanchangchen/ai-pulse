@@ -154,6 +154,18 @@ class BackgroundRefresher:
                         article_fingerprint=fingerprint,
                     )
 
+                    # 4.5 Embed articles (Phase 3) — best-effort: dense
+                    # embeddings are additive and must never fail the run.
+                    try:
+                        from core.embedding import embed_unembedded_articles
+                        embedded = embed_unembedded_articles(limit=200)
+                        if embedded:
+                            cls.update_progress(
+                                f"[EMBED] Embedded {embedded} article(s) into article_embeddings"
+                            )
+                    except Exception as embed_err:
+                        logger.warning("Article embedding failed: %s", embed_err)
+
                     # Clear Streamlit cache so that subsequent normal loads get the fresh data
                     try:
                         import streamlit as st
