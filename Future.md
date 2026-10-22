@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS theme_first_seen (
 
 Phases are deliberately small — each sub-step is independently shippable and verifiable, and most have an explicit evaluation gate before moving on.
 
-**Where we are (2026-10):** Phase 0 foundations are live — Sage is routed through the gateway (fallback + provenance), every LLM call is mirrored to `llm_calls`, and OTel traces land in Langfuse Cloud; the gate was verified end-to-end with a live trace + matching `llm_calls` row. Phase 2 (article-level grounding) is **closed**: Sage answers are grounded in retrieved `articles` via Postgres FTS, citations render as clickable evidence popovers, and a chat-time faithfulness judge writes `sage_evaluations` rows (no pre-2.1 baseline exists — Phase 3 changes are measured against the post-2.3 batch). Direction from here: **embeddings (Phase 3) → full-coverage processing (Phase 4) → hybrid retrieval + temporal awareness (Phase 5) → hierarchical memory (Phase 6) → multi-agent synthesis (Phase 7)**. Full implementation notes for everything landed so far: [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
+**Where we are (2026-10):** Phase 0 foundations are live — Sage is routed through the gateway (fallback + provenance), every LLM call is mirrored to `llm_calls`, and OTel traces land in Langfuse Cloud; the gate was verified end-to-end with a live trace + matching `llm_calls` row. Phase 2 (article-level grounding) is **closed**: Sage answers are grounded in retrieved `articles` via Postgres FTS, citations render as clickable evidence popovers, and a chat-time faithfulness judge writes `sage_evaluations` rows (no pre-2.1 baseline exists — Phase 3 changes are measured against the post-2.3 batch). Direction from here: **embeddings (Phase 3) → full-coverage processing (Phase 4) → hybrid retrieval + temporal awareness (Phase 5) → hierarchical memory (Phase 6) → multi-agent synthesis (Phase 7) → closed-loop agent improvement (Phase 8)**. Full implementation notes for everything landed so far: [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
 ### Phase 0 — Foundations *(0.1–0.3 done, gate verified — one item remains)*
 - [ ] **0.4** (optional but cheap) `Dockerfile` + `docker-compose.yml` (app + nothing else — Supabase stays cloud) for reproducible deploys.
@@ -238,6 +238,16 @@ Phases are deliberately small — each sub-step is independently shippable and v
 - [ ] **7.1** Sage Scout: sub-query generation + retrieval execution (traced as nested spans).
 - [ ] **7.2** Sage Fact-Checker: statement-level faithfulness against retrieved context (reuses the Phase 2 judge).
 - [ ] **7.3** Sage Analyst: final synthesis in AI Pulse voice; full trace visible end-to-end in Langfuse.
+
+### Phase 8 — Sage improvement loop (evaluate → *improve* the agent)
+
+Phase 0 and Phase 2 measure Sage — traces, and a per-reply faithfulness score with named `unsupported_claims`. Nothing yet feeds that signal back into the agent that produces the answers, so evaluation is currently descriptive, not corrective. This phase closes the loop, giving Sage the same "evaluate → remediate → re-measure" cycle the summariser already has via `core/auto_remediation.py`.
+
+- [ ] **8.1** Eval-driven exemplar memory: persist high-scoring Sage answers (and their context) as positive few-shot exemplars, and `sage_evaluations.unsupported_claims` as negative exemplars, injected into the Sage prompt's few-shot preamble — size- and recency-bounded (pattern: `core/summariser.py`'s prior-run context).
+- [ ] **8.2** Grounding guard: when rolling Sage faithfulness drops below its threshold, tighten Sage's grounding mode (strict cite-or-drop, temperature floor) — the agent-side counterpart to the summariser's strict anti-hallucination remediation; reversible and bounded, state held in `app_settings`.
+- [ ] **8.3** Human-feedback signal: add a rating/correction affordance on Sage replies and feed it into the same improvement corpus (the Feedback page 8 already surfaces general feedback), so the loop learns from people as well as the judge.
+- [ ] **8.4** Regression gate: any change to Sage context assembly or prompts is gated on the accumulated `sage_evaluations` baseline before shipping — no silent eval regression.
+- **Gate**: rolling Sage faithfulness ≥ Phase-2 baseline with the named unsupported-claims list shrinking; every loop action recorded in `llm_calls` / `app_settings` for audit.
 
 ---
 

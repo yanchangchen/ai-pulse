@@ -1,0 +1,402 @@
+"""
+Centralized settings for AI Pulse.
+Single source of truth for Ollama configuration, API keys, and app constants.
+
+Resolution order: st.secrets → os.environ → defaults (fail gracefully).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import logging
+import time
+from pathlib import Path
+from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _find_in_mapping(mapping, key: str):
+    """Look for ``key`` at the top level of ``mapping``, then one level down
+    inside nested sections.  secrets.toml commonly nests keys under a section
+    header such as ``[general]``, which a plain top-level ``get()`` misses."""
+    try:
+        value = mapping.get(key)
+    except Exception:
+        value = None
+    if value:
+        return value
+    try:
+        for section in mapping.values():
+            if isinstance(section, dict):
+                value = section.get(key)
+                if value:
+                    return value
+    except Exception:
+        pass
+    return None
+
+
+def _get_secret(key: str, default: str = "") -> str:
+    """Read a config value from Streamlit secrets, then .toml file, then env vars, then default."""
+    # 1. Streamlit secrets (only available at runtime inside a Streamlit app)
+    try:
+        import streamlit as st
+        # This will fail or return empty if not running via 'streamlit run'
+        value = _find_in_mapping(st.secrets, key)
+        if value:
+            return str(value)
+    except Exception:
+        pass
+
+    # 2. Direct TOML parse fallback (for CLI/Tests/Scripts)
+    try:
+        from pathlib import Path
+        # Look for .streamlit/secrets.toml relative to project root
+        secrets_path = Path(__file__).resolve().parent.parent / ".streamlit" / "secrets.toml"
+        if secrets_path.exists():
+            import toml
+            secrets = toml.load(secrets_path)
+            value = _find_in_mapping(secrets, key)
+            if value:
+                return str(value)
+    except Exception:
+        # Fallback to manual line parsing if toml package is missing
+        try:
+            with open(secrets_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().startswith(key):
+                        # Simple "KEY = VALUE" parser
+                        parts = line.split("=", 1)
+                        if len(parts) == 2:
+                            val = parts[1].strip().strip('"').strip("'")
+                            if val:
+                                return val
+        except Exception:
+            pass
+
+    # 3. Environment variable
+    value = os.environ.get(key)
+    if value:
+        return value
+
+    # 4. Default
+    return default
+
+
+# ---------------------------------------------------------------------------
+# Ollama Cloud configuration
+# ---------------------------------------------------------------------------
+OLLAMA_BASE_URL: str = _get_secret("OLLAMA_BASE_URL", "https://api.ollama.com")
+OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "nemotron-3-ultra:cloud")
+OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Google Gemini API configuration (On-Demand Deep Dive Summarisation)
+# ---------------------------------------------------------------------------
+GEMINI_API_KEY: str = _get_secret("GEMINI_API_KEY", "")
+GEMINI_MODEL: str = _get_secret("GEMINI_MODEL", "gemini-3.7-flash")
+GEMINI_AVAILABLE_MODELS: list[str] = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+]
+
+# ---------------------------------------------------------------------------
+# Langfuse Cloud observability (Model Gateway OTel tracing, Phase 0.3)
+# ---------------------------------------------------------------------------
+# Tracing is env-gated: with either key absent, the gateway emits no spans
+# and every trace_id stays None, so offline runs and tests stay quiet.
+LANGFUSE_PUBLIC_KEY: str = _get_secret("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY: str = _get_secret("LANGFUSE_SECRET_KEY", "")
+# Data region base URL (EU default; US: https://us.cloud.langfuse.com, ...)
+LANGFUSE_HOST: str = _get_secret("LANGFUSE_HOST", "https://cloud.langfuse.com")
+
+# ---------------------------------------------------------------------------
+# App-level constants
+# ---------------------------------------------------------------------------
+DAYS_LOOKBACK: int = 14
+CACHE_TTL_SECONDS: int = 12 * 3600  # 12 hours
+
+# Maximum concurrent fetch workers
+FETCH_WORKERS: int = 8
+
+# Per-feed RSS fetch timeout (seconds).  Each feed gets up to 2 retries on
+# transient errors before being skipped.
+RSS_FETCH_TIMEOUT: int = 10
+RSS_FETCH_RETRIES: int = 2
+RSS_SUMMARY_MAX_CHARS: int = int(_get_secret("RSS_SUMMARY_MAX_CHARS", "1500"))
+
+# ---------------------------------------------------------------------------
+# Weekly quality evaluation
+# ---------------------------------------------------------------------------
+# Default threshold (0..1).  The Quality Evaluation page exposes a slider that
+# can override this per-run; the chosen value is stored on the resulting row.
+QUALITY_THRESHOLD: float = 0.80
+# How many articles per run to send to the Categoriser judge LLM.
+EVALUATION_SAMPLE_SIZE: int = 20
+# Cap on the number of historical runs evaluated in a single weekly check.
+EVALUATION_MAX_RUNS: int = 7
+# Judge model selection for LLM-as-judge evaluations.  Keys are Model
+# Gateway registry keys; the Quality Evaluation page lets the user pin
+# every judge call to ONE model so scores stay comparable across runs.
+# "Auto" (no pin) uses the gateway's default Gemini-first routing chain.
+EVALUATION_JUDGE_MODELS: dict[str, str] = {
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
+    "nemotron-3-ultra": "Nemotron 3 Ultra (Ollama)",
+    "gpt-oss-120b": "GPT-OSS 120B (Ollama)",
+}
+# How often the WeeklyEvaluator background thread wakes up to check whether
+# it should run (seconds).  1 hour is plenty — evaluations are weekly.
+EVALUATION_CHECK_INTERVAL_SECONDS: int = 3600
+# Retry cadence (seconds) when the final quality_evaluations insert fails
+# because Supabase is unavailable — the finished report waits in the
+# on-disk checkpoint until the database recovers.
+EVAL_DB_RETRY_SECONDS: int = 20
+# Minimum interval (seconds) between checkpoint disk writes during a run;
+# successful judge items are otherwise saved after every item.
+EVAL_CHECKPOINT_MIN_SAVE_INTERVAL: float = 1.0
+
+# ---------------------------------------------------------------------------
+# Evaluation judge budgets
+# ---------------------------------------------------------------------------
+# Character budgets for text truncation in the evaluation judges.
+# These control how much text each judge sees per LLM call.
+EVAL_CATEGORISER_SUMMARY_CHARS: int = 500
+EVAL_FAITHFULNESS_SUMMARY_CHARS: int = 2000
+EVAL_FAITHFULNESS_ARTICLE_BUDGET: int = 6000
+# Sage faithfulness judge: how much of the wiki/article context string the
+# judge prompt carries (Phase 2 gate — chat-time judging).
+EVAL_SAGE_CONTEXT_CHARS: int = 8000
+EVAL_OVERLAP_TEXT_CHARS: int = 1500
+
+# Heuristic Jaccard overlap thresholds for the uniqueness judge.
+# Below LOW → accept heuristic as overlap score (skip LLM).
+# Above HIGH → accept heuristic as overlap score (skip LLM).
+# Between LOW and HIGH → delegate to LLM for semantic scoring.
+EVAL_HEURISTIC_LOW: float = 0.05
+EVAL_HEURISTIC_HIGH: float = 0.85
+EVAL_HEURISTIC_MAX_CHARS: int = 4000
+
+# Keyword suggestion budgets
+EVAL_KEYWORD_MAX_ARTICLES: int = 15
+EVAL_KEYWORD_REASON_CHARS: int = 300
+
+# Known fallback strings produced by the summariser when it fails or has
+# insufficient data.  The faithfulness judge skips these instead of
+# scoring them 1.0 (which would inflate the metric).
+EVAL_FAITHFULNESS_SKIP_STRINGS: tuple = (
+    "No engineering tradeoffs analyzed.",
+    "No product impact analyzed.",
+    "Refer to previous summaries.",
+    "Unable to analyze due to error.",
+    "Unable to generate summary.",
+    "Limited news signal this week.",
+    "No new developments to report.",
+    "Unable to generate significance analysis.",
+)
+
+# ---------------------------------------------------------------------------
+# LLM context window - MODEL AWARE
+# ---------------------------------------------------------------------------
+# Context window sizes per model (tokens).  Ollama Cloud models have specific
+# context limits; using the wrong num_ctx truncates input and causes empty responses.
+OLLAMA_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "nemotron-3-super:cloud": 262144,      # 256K context
+    "nemotron-3-super": 262144,
+    "nemotron-3-ultra:cloud": 262144,      # If available
+    "nemotron-3-ultra": 262144,
+    "gpt-oss:120b-cloud": 131072,          # 128K context
+    "gpt-oss:120b": 131072,
+    "gpt-oss:20b-cloud": 131072,
+    "gpt-oss:20b": 131072,
+    "nemotron-3-nano:30b": 131072,
+    "minimax-m3:cloud": 32768,             # Previous model
+    "minimax-m3": 32768,
+}
+
+def get_ollama_num_ctx(model: str = None) -> int:
+    """Get appropriate num_ctx for the current model."""
+    if model is None:
+        model = OLLAMA_MODEL
+    return OLLAMA_MODEL_CONTEXT_WINDOWS.get(model, 32768)  # Default 32K
+
+# Backward compatibility - compute dynamically for current model
+OLLAMA_NUM_CTX: int = get_ollama_num_ctx()
+MAX_ARTICLES_PER_SUMMARY: int = 12
+MAX_ARTICLES_PER_GEMINI_SUMMARY: int = 75
+# Rough chars-per-token ratio.  Used to budget the input side of num_ctx.
+# 3 chars/token is a conservative estimate that errs on the side of
+# truncation rather than overflow.
+CHARS_PER_TOKEN: int = 3
+# Fraction of num_ctx reserved for input (rest is for system + output).
+INPUT_BUDGET_FRACTION: float = 0.6
+
+# How close together (in minutes) two runs with the same article fingerprint
+# must be for the later one to be treated as a duplicate and skipped.
+DUPLICATE_RUN_WINDOW_MINUTES: int = 30
+
+# ---------------------------------------------------------------------------
+# Dynamic Summariser & Faithfulness Tuning (In-App Editing Support)
+# ---------------------------------------------------------------------------
+# The overlay is Supabase-backed: see the persistence block below.
+CUSTOM_SETTINGS_FILE = Path(__file__).parent / "custom_settings.json"
+# Key used in the Supabase app_settings table (see
+# supabase_migration_app_settings.sql).
+CUSTOM_SETTINGS_KEY = "custom_settings"
+
+# ---------------------------------------------------------------------------
+# Supabase-backed persistence for the custom settings overlay
+# ---------------------------------------------------------------------------
+# The overlay holds evaluation-driven config (summariser tuner, classification
+# mode, auto-remediation flag).  The local file alone does not survive app
+# redeploys (Streamlit Cloud starts with a clean filesystem on every git
+# push), so the overlay is loaded remote-first and written through to the
+# app_settings table on every save.  The remote *fetch* result is cached for
+# a short TTL so page reruns (every ~2s while an evaluation runs) don't query
+# the database each time; local-file reads are never cached, which keeps
+# read-after-write semantics for tests that swap CUSTOM_SETTINGS_FILE.
+
+_REMOTE_NOT_FETCHED = object()
+_CUSTOM_SETTINGS_REMOTE_CACHE_TTL = 30.0
+_custom_settings_remote: Dict = {"result": _REMOTE_NOT_FETCHED, "fetched_at": 0.0}
+
+
+def _get_supabase_manager():
+    """Lazy import — supabase_client reads env vars this module may export
+    via st.secrets, so importing it at module level would be circular."""
+    from core.supabase_client import get_supabase_manager
+    return get_supabase_manager()
+
+
+def _load_custom_settings_from_supabase() -> Optional[dict]:
+    """Fetch the custom_settings row from Supabase (TTL-cached), or None on
+    miss / unavailable / table-missing.  Never raises."""
+    now = time.monotonic()
+    if (
+        _custom_settings_remote["result"] is not _REMOTE_NOT_FETCHED
+        and (now - _custom_settings_remote["fetched_at"]) < _CUSTOM_SETTINGS_REMOTE_CACHE_TTL
+    ):
+        return _custom_settings_remote["result"]
+    result: Optional[dict] = None
+    try:
+        manager = _get_supabase_manager()
+        if manager.is_available():
+            result = manager.get_app_setting(CUSTOM_SETTINGS_KEY)
+    except Exception as exc:
+        logger.warning("Failed to load custom settings from Supabase: %s", exc)
+    _custom_settings_remote["result"] = result
+    _custom_settings_remote["fetched_at"] = now
+    return result
+
+
+def _reset_custom_settings_remote_cache() -> None:
+    """Drop the remote-fetch cache (test hook; also used after saves)."""
+    _custom_settings_remote["result"] = _REMOTE_NOT_FETCHED
+    _custom_settings_remote["fetched_at"] = 0.0
+
+
+def load_custom_settings() -> dict:
+    """Load the custom settings overlay.
+
+    Supabase app_settings is authoritative when it has a row (that's the
+    copy that survives restarts and redeploys); a remote hit also refreshes
+    the local JSON file so offline runs stay current.  Falls back to the
+    local file when Supabase is unavailable or has no row yet.
+    """
+    remote = _load_custom_settings_from_supabase()
+    if isinstance(remote, dict) and remote:
+        try:
+            CUSTOM_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(CUSTOM_SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(remote, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass  # local cache refresh is best-effort
+        return dict(remote)
+    if CUSTOM_SETTINGS_FILE.exists():
+        try:
+            with open(CUSTOM_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_custom_settings(data: dict) -> None:
+    """Persist the overlay to the local JSON file AND Supabase app_settings
+    (write-through — the remote copy is what survives redeploys).  A failed
+    remote sync only warns; the local file remains the offline fallback.
+    """
+    with open(CUSTOM_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    try:
+        manager = _get_supabase_manager()
+        if manager.is_available():
+            manager.upsert_app_setting(CUSTOM_SETTINGS_KEY, data)
+    except Exception as exc:
+        logger.warning("Failed to sync custom settings to Supabase: %s", exc)
+    # Drop the remote-fetch cache (do NOT populate it with the saved data:
+    # a module-level cache holding local writes leaks across test files,
+    # and the next load re-fetching is correct anyway).
+    _reset_custom_settings_remote_cache()
+
+
+def get_summariser_settings() -> dict:
+    """Return active summariser parameters, merging defaults with custom settings."""
+    defaults = {
+        "temperature": 0.3,
+        "max_tokens": 1500,
+        "strict_faithfulness_mode": False,
+    }
+    defaults.update(load_custom_settings())
+    return defaults
+
+
+def update_summariser_settings(
+    temperature: float, max_tokens: int, strict_faithfulness_mode: bool
+) -> dict:
+    """Update active summariser parameters and persist to custom_settings.json."""
+    data = load_custom_settings()
+    data["temperature"] = float(temperature)
+    data["max_tokens"] = int(max_tokens)
+    data["strict_faithfulness_mode"] = bool(strict_faithfulness_mode)
+    save_custom_settings(data)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Classification Mode & Gate Stats
+# ---------------------------------------------------------------------------
+_CLASSIFICATION_DEFAULTS = {
+    "classification_mode": "hybrid",       # "hybrid" | "deterministic"
+    "gate3_auto_disable_threshold": 0.05,  # switch when Gate 3 rate < 5%
+    "gate_stats_history": [],              # last 20 run snapshots
+}
+
+
+def get_classification_settings() -> dict:
+    """Return classification settings, merging defaults with custom_settings.json."""
+    custom = load_custom_settings()
+    merged = dict(_CLASSIFICATION_DEFAULTS)
+    # Overlay any classification keys from custom_settings
+    for key in _CLASSIFICATION_DEFAULTS:
+        if key in custom:
+            merged[key] = custom[key]
+    return merged
+
+
+def update_classification_settings(**kwargs) -> dict:
+    """Update classification settings and persist to custom_settings.json."""
+    data = load_custom_settings()
+    for key, value in kwargs.items():
+        if key in _CLASSIFICATION_DEFAULTS:
+            data[key] = value
+    save_custom_settings(data)
+    return data
+
+
