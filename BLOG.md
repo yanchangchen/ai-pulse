@@ -4,6 +4,32 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-10-22 to 2026-10-26 — Phase 3: Dense vector embeddings on articles, and the pgvector gate
+
+**Problem**: FTS on Postgres (`match_articles` via `tsvector`) solved exact keyword search, but it had a semantic blind spot. A user asking Sage about "reasoning token overhead" or "test-time compute trade-offs" would get zero hits if the source articles used different phrasing (e.g., "thinking budget" or "inference-time scaling"). Sage needed dense semantic retrieval to bridge conceptual synonyms, but on Supabase's Free Tier (500 MB DB, micro compute RAM), we couldn't blindly chunk raw web pages or blow RAM on unconstrained index graphs.
+
+**What happened**:
+
+1. **pgvector on articles (Phase 3.1).** We enabled `vector` in Postgres and added `article_embeddings` (`supabase_migration_article_embeddings.sql`) with 768-dimensional vectors matching `gemini-embedding-001`. Key design decisions:
+   - **One embedding per article (for now)**: Because article summaries are curated and bounded (≤1500 chars), full-text chunking was deferred. `UNIQUE(article_id)` enforces a clean 1:1 relationship while preserving storage.
+   - **Auditable provenance**: Every row stores `chunk_text` (the exact title + summary string embedded) and `embedding_model`, making vectors auditable and re-derivable if models rotate.
+   - **Denormalized `run_date`**: Coalesced from `trend_runs` at write time so Phase 5's temporal bounding box can filter dates without costly table joins.
+   - **HNSW index & invoker RPC**: Indexed with `vector_cosine_ops`. Nearest-neighbour lookup is exposed via `match_article_embeddings` with invoker rights (RLS public read policy handles access).
+
+2. **Embedding through the Model Gateway (Phases 3.2–3.3).** Vector generation isn't an ad-hoc script — it is a first-class citizen in the gateway. A new `TaskType.EMBEDDING` routes through `core/embedding.py` to `GeminiProvider.embed()` (with fallback to Ollama `nomic-embed-text`). Requests carry token estimates, respect batching limits (100 texts/call), log into `llm_calls`, and emit OTel spans to Langfuse. Ingestion hooks in `core/bg_refresher.py` automatically embed new articles at pipeline run, so the index stays fresh without manual steps.
+
+3. **The database-as-cursor backfill and the Phase 3 gate (Phase 3.4).** We created `backfill_embeddings.py` backed by a `get_unembedded_articles` SQL RPC. Instead of fragile local cursor files or offset pagination, the database is the state machine: a `LEFT JOIN` excludes articles with existing embedding rows. If a backfill is interrupted, re-running simply resumes where it left off.
+   - **The Phase 3 Gate (`core/retrieval_eval.py`)**: To gate Phase 5 before writing hybrid retrieval code, we benchmarked dense retrieval against a hand-labelled question set (`data/eval_retrieval_questions.json`). The eval embeds questions, executes `match_article_embeddings`, and measures Recall@10 against expected conceptual keywords. Running against the backfilled live database scored a **mean Recall@10 of 0.510 across all 8 test questions**, automatically persisting a durable baseline record into Supabase's `app_settings` under `retrieval_eval_latest`.
+
+**Also shipped**:
+
+- 12 unit tests in `tests/test_embedding.py` covering embedding token estimates, gateway dispatch bypass of prompt templates, batching, RPC normalization, and backfill loop guards.
+- Verified live on Supabase: 100 historical articles embedded with zero rate-limit errors, RPCs healthy (HTTP 200), and all embedding calls fully traced in Langfuse with `llm_calls` audit records.
+
+**Result**: Articles in Supabase now carry 768-dim dense vector embeddings alongside their sparse FTS vectors. With dense retrieval verified and gated at Recall@10 = 0.51, the storage half of Pillar A is complete. **Phase 3 closed.**
+
+---
+
 ## 2026-10-08 to 2026-10-12 — Phase 2.3: keyword matching moves into Postgres, and Sage learns to answer first
 
 **Problem**: Two gaps. Retrieval: Sage's article evidence drew its candidate pool from the newest 300 rows — anything relevant-but-older was invisible, and the Python scorer wasn't word-aware (no stemming, no ranking, `LIKE`-style substring thinking). Answering: the persona forced every reply to open as a chronological walk, so a direct factual question ("what did Anthropic ship in September?") buried its answer under a timeline.
