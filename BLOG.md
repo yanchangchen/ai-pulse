@@ -4,6 +4,34 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-10-26 to 2026-10-27 — Phase 4.1–4.2: Making article coverage observable, and fixing the extractive ledger lie
+
+**Problem**: The summariser processes only a ranked subset of classified articles per theme (capped at `MAX_ARTICLES_PER_SUMMARY = 12`), but until now, the skipped articles — the ones classified but never fed to the LLM — were invisible. No count, no list, no signal. They quietly re-competed each run inside their 14-day fetch window and then aged out. Worse, on extractive fallback (gateway failure or user-selected Non-LLM mode), the non-LLM path stamped *all* input articles as "processed" despite only surfacing ~3–5 by name. The backlog silently drained, and the LLM would never revisit those articles even after recovery — a ledger asymmetry that made any future coverage metric deceptive by construction.
+
+**What happened**:
+
+1. **Skip visibility (Phase 4.1).** Every summary — LLM, extractive fallback, or all-articles-already-seen skip — now records the **skipped complement**: `total_articles`, `included_count`, `skipped_count`, `skipped_hashes`, and a `skipped_articles` payload (title, source, link, hash) per article that was classified-for-theme but not included in the prompt. This data is computed at the point of truth — inside `generate_theme_summary_gateway` and `extractive_theme_summary` — and propagated into `_generation_log`, run metadata, and Supabase persistence.
+
+   The UI surfaces this in three places: **Overview** and **Deep Dive** pages show an `"X of Y articles reflected (Z in backlog)"` caption beneath each theme brief, so coverage gaps are visible at a glance. The **History** page renders an expandable missed-article list per theme per run, so you can inspect exactly which articles were skipped and why they ranked lower. The **Quality Evaluation** Coverage judge was extended to record *which* articles were missed (not just aggregate counts), feeding directly into the 4.3 fair-drain priority queue.
+
+   *Lesson: a metric you can't inspect is a metric you can't trust. The coverage judge was already computing aggregate recall — the gap was that nobody could see the named articles behind the number, so the number couldn't drive action.*
+
+2. **The extractive ledger asymmetry fix (Phase 4.2).** Root cause in one line: `extractive_theme_summary()` did `included_hashes = [article_hash(a) for a in articles]` — every article passed in, regardless of whether it appeared in the summary text, was stamped as processed. With 35 articles and extractive fallback, all 35 were marked done while only ~3 lead articles and ~5 further-reading articles were actually cited. Result: 4.1's caption would read `"35 of 35 reflected (0 in backlog)"` — a lie.
+
+   The fix has two parts. In `core/non_llm_summariser.py`, `generate_non_llm_theme_summary()` now tracks `_surfaced_articles` — the deduplicated union of the Section 1 lead articles (`top_articles`, ≤3) and the Section 6 further-reading pool (`reading_pool`, ≤5). In `core/summariser.py`, `extractive_theme_summary()` reads `_surfaced_articles` from the returned dict and builds `included_hashes` from only those. The remaining articles flow into `skipped_hashes` and `skipped_articles` — truthful numbers that match what the reader actually sees. The user-selected Non-LLM mode path now also calls `mark_processed()` with only the surfaced hashes.
+
+   *Lesson: when a fallback path is "good enough to ship", its accounting must be as honest as the primary path. A silent `for a in articles` in a fallback is the kind of one-liner that makes every downstream metric fiction.*
+
+**Also shipped**:
+
+- 3 targeted Phase 4.2 tests in `tests/test_summariser.py`: `test_extractive_fallback_marks_only_surfaced_articles` (20 articles → ≤8 included, never 20), `test_extractive_fallback_surfaced_articles_are_in_summary_text` (every included hash has its title in `what_is_happening` or `further_reading`), and `test_non_llm_mode_backlog_carryover` (unsurfaced articles remain eligible via `filter_unprocessed`).
+- Implementation plan for 4.2 documented in `docs/PLAN_PHASE_4_2.md` (Option B design with file-by-file steps) before coding, then marked complete post-implementation.
+- 4.1's skip complement tests in `test_summariser.py::test_skip_complement_recorded_in_summary` (15 articles via gateway → `skipped_count ≥ 3`, payload lengths match).
+
+**Result**: Coverage is observable — the UI shows exactly how many articles each theme brief reflects and which ones were left out. The extractive fallback no longer silently drains the backlog, so articles that missed the cut during a gateway outage remain eligible for full LLM synthesis on the next healthy run. **Phases 4.1 and 4.2 closed.**
+
+---
+
 ## 2026-10-22 to 2026-10-26 — Phase 3: Dense vector embeddings on articles, and the pgvector gate
 
 **Problem**: FTS on Postgres (`match_articles` via `tsvector`) solved exact keyword search, but it had a semantic blind spot. A user asking Sage about "reasoning token overhead" or "test-time compute trade-offs" would get zero hits if the source articles used different phrasing (e.g., "thinking budget" or "inference-time scaling"). Sage needed dense semantic retrieval to bridge conceptual synonyms, but on Supabase's Free Tier (500 MB DB, micro compute RAM), we couldn't blindly chunk raw web pages or blow RAM on unconstrained index graphs.
