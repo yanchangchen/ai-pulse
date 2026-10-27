@@ -8,7 +8,9 @@ from core.summariser import (
     parse_further_reading,
     format_articles_for_prompt,
     _summary_contains_failure_text,
+    extractive_theme_summary,
 )
+import core.processed_articles as processed_articles
 
 
 class TestParseFurtherReading:
@@ -279,3 +281,86 @@ Enterprise adoption is accelerating.
         assert len(summary["skipped_hashes"]) == summary["skipped_count"]
         assert "_generation_log" in summary
         assert summary["_generation_log"]["skipped_count"] == summary["skipped_count"]
+
+
+class TestExtractiveFallbackLedgerFix:
+    """Phase 4.2: Verify extractive fallback only marks surfaced articles as processed."""
+
+    @staticmethod
+    def _make_articles(n: int):
+        """Create n distinct test articles with unique titles and links."""
+        return [
+            {
+                "title": f"Article {i}: AI Breakthrough in Testing",
+                "summary": f"Summary {i} about frontier models and benchmarks for testing.",
+                "link": f"https://example.com/article-{i}",
+                "source_name": f"Source {chr(65 + (i % 26))}",
+                "content_hash": f"hash_{i:04d}",
+            }
+            for i in range(n)
+        ]
+
+    def test_extractive_fallback_marks_only_surfaced_articles(self):
+        """With 20 articles, included_hashes should be ≤8 (3 leads + 5 reading), never 20."""
+        articles = self._make_articles(20)
+        summary, included_hashes = extractive_theme_summary(
+            "Frontier Models & Benchmarks", articles
+        )
+
+        assert len(included_hashes) <= 8, (
+            f"Expected at most 8 surfaced hashes but got {len(included_hashes)}"
+        )
+        assert len(included_hashes) < 20, (
+            "All 20 articles were marked as processed — ledger asymmetry not fixed"
+        )
+        assert summary["included_count"] == len(included_hashes)
+        assert summary["skipped_count"] == 20 - len(included_hashes)
+        assert summary["total_articles"] == 20
+        assert len(summary["skipped_articles"]) == summary["skipped_count"]
+        assert len(summary["skipped_hashes"]) == summary["skipped_count"]
+
+    def test_extractive_fallback_surfaced_articles_are_in_summary_text(self):
+        """Every included hash corresponds to an article whose title appears
+        in either what_is_happening or further_reading."""
+        articles = self._make_articles(15)
+        summary, included_hashes = extractive_theme_summary(
+            "Frontier Models & Benchmarks", articles
+        )
+
+        combined_text = (
+            summary.get("what_is_happening", "")
+            + "\n"
+            + summary.get("further_reading", "")
+        )
+
+        # Build hash-to-title lookup
+        hash_to_title = {
+            processed_articles.article_hash(a): a["title"] for a in articles
+        }
+
+        for h in included_hashes:
+            title = hash_to_title.get(h, "")
+            assert title in combined_text, (
+                f"Surfaced article '{title}' (hash={h}) not found in summary text"
+            )
+
+    def test_non_llm_mode_backlog_carryover(self):
+        """Simulates a run with 15 articles: the unsurfaced articles remain
+        eligible for future processing via filter_unprocessed."""
+        articles = self._make_articles(15)
+        _, included_hashes = extractive_theme_summary(
+            "Frontier Models & Benchmarks", articles
+        )
+
+        # Simulate marking only surfaced hashes as processed
+        # (use a fresh local-only store to avoid side effects)
+        theme = "__test_backlog_carryover__"
+        processed_articles.mark_processed(theme, included_hashes)
+
+        remaining = processed_articles.filter_unprocessed(theme, articles)
+        assert len(remaining) == 15 - len(included_hashes), (
+            f"Expected {15 - len(included_hashes)} remaining but got {len(remaining)}"
+        )
+        assert len(remaining) >= 7, (
+            "Too few articles remain in backlog — surfaced set unexpectedly large"
+        )

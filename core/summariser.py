@@ -885,28 +885,60 @@ def extractive_theme_summary(theme_name: str, articles: List[Dict]) -> Tuple[Dic
     Provenance: the returned dict carries `_source = "extractive_fallback"`
     so the UI can render an honest chip above the brief.
 
+    Phase 4.2: Only articles explicitly surfaced in Section 1 (leads) or
+    Section 5 (further reading) are marked as processed.  The remainder
+    stay in the backlog for future LLM synthesis.
+
     Returns:
         Tuple of ``(summary_dict, included_article_hashes)``.
     """
     from core.non_llm_summariser import generate_non_llm_theme_summary
     summary = generate_non_llm_theme_summary(theme_name, articles)
-    included_hashes = [processed_articles.article_hash(a) for a in articles]
+
+    # Phase 4.2: Only mark articles that were explicitly surfaced by name
+    surfaced_articles = summary.get("_surfaced_articles")
+    if surfaced_articles is None:
+        # Safe fallback: at least the top 3 by relevance
+        surfaced_articles = articles[:3]
+
+    included_hashes = [
+        processed_articles.article_hash(a) for a in surfaced_articles
+    ]
+
+    # Compute the truthful skipped complement
+    surfaced_hash_set = set(included_hashes)
+    skipped_articles = [
+        a for a in articles if processed_articles.article_hash(a) not in surfaced_hash_set
+    ]
+    skipped_hashes = [
+        processed_articles.article_hash(a) for a in skipped_articles
+    ]
+    skipped_payload = [
+        {
+            "title": a.get("title", ""),
+            "source": a.get("source_name", a.get("source", "")),
+            "link": a.get("link", ""),
+            "hash": processed_articles.article_hash(a),
+        }
+        for a in skipped_articles
+    ]
+
     summary = _with_provenance(
         summary, source="extractive_fallback",
         model=None, article_count=len(articles),
         total_articles=len(articles),
         included_count=len(included_hashes),
-        skipped_count=0,
-        skipped_hashes=[],
-        skipped_articles=[],
+        skipped_count=len(skipped_articles),
+        skipped_hashes=skipped_hashes,
+        skipped_articles=skipped_payload,
         note="non_llm_extractive",
     )
     summary["article_count"] = len(articles)
     summary["total_articles"] = len(articles)
     summary["included_count"] = len(included_hashes)
-    summary["skipped_count"] = 0
-    summary["skipped_hashes"] = []
-    summary["skipped_articles"] = []
+    summary["skipped_count"] = len(skipped_articles)
+    summary["skipped_hashes"] = skipped_hashes
+    summary["skipped_articles"] = skipped_payload
     return summary, included_hashes
 
 
@@ -960,6 +992,8 @@ async def _generate_all_summaries_async(
             logger.info("User selected Non-LLM Extractive Only mode. Generating LexRank/Luhn summary for %s", theme)
             summary, included = extractive_theme_summary(theme, articles)
             summaries[theme] = summary
+            if included:
+                processed_articles.mark_processed(theme, included)
             processed_per_theme[theme] = included
             any_synthesised = True
             continue

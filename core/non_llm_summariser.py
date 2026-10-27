@@ -448,13 +448,25 @@ def generate_non_llm_theme_summary(theme_name: str, articles: List[Dict]) -> Dic
         )
     further_reading = "\n\n".join(reading_items)
 
+    # Phase 4.2: Track which articles were actually surfaced by name/link
+    # in the brief (Section 1 leads + Section 6 further reading).  The
+    # caller uses this to mark only these as processed, leaving the rest
+    # in the backlog for future LLM synthesis.
+    surfaced_map = {}
+    for a in top_articles + reading_pool:
+        h = a.get("content_hash") or f"{a.get('title')}:{a.get('link')}"
+        if h not in surfaced_map:
+            surfaced_map[h] = a
+    surfaced_articles = list(surfaced_map.values())
+
     return {
         "what_is_happening": what_happening,
         "engineering_tradeoffs": eng_text,
         "product_impact": prod_text,
         "why_it_matters": why_matters,
         "what_to_watch": what_to_watch,
-        "further_reading": further_reading
+        "further_reading": further_reading,
+        "_surfaced_articles": surfaced_articles,
     }
 
 

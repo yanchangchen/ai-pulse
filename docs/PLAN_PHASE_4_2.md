@@ -1,7 +1,7 @@
 # Implementation Plan: Phase 4.2 — Fallback Ledger Asymmetry Fix
 
 **Selected Design**: **Option B** (Union of Section 1 lead articles + Section 5 Further Reading articles).  
-**Status**: Ready for implementation (saved for execution).  
+**Status**: ✅ **Implemented** (2026-10-27).  
 **Tracking Issue**: [Future.md](../Future.md) — Item 4.2.
 
 ---
@@ -181,8 +181,8 @@ Expected execution time: `< 2.5s`.
 
 ## 4. Post-Implementation Checklist
 
-- [ ] Apply edits to `core/non_llm_summariser.py`
-- [ ] Apply edits to `core/summariser.py`
-- [ ] Add tests to `tests/test_summariser.py`
-- [ ] Run targeted pytest suite
-- [ ] Update checkbox `4.2` in [Future.md](../Future.md)
+- [x] Apply edits to `core/non_llm_summariser.py`
+- [x] Apply edits to `core/summariser.py`
+- [x] Add tests to `tests/test_summariser.py`
+- [x] Run targeted pytest suite
+- [x] Update checkbox `4.2` in [Future.md](../Future.md)
