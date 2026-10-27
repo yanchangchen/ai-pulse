@@ -94,12 +94,23 @@ def main() -> None:
                 summary = ensure_extractive_summary(summaries[theme], articles=entry.get("themed_articles", {}).get(theme, []))
                 color = THEME_COLORS.get(theme, "#666")
                 count = counts.get(theme, 0)
+                gen_log_loc = summary.get("_generation_log") or summary.get("generation_log") or {}
+                if isinstance(gen_log_loc, str):
+                    try:
+                        import json as _json
+                        gen_log_loc = _json.loads(gen_log_loc)
+                    except Exception:
+                        gen_log_loc = {}
+                inc_loc = summary.get("included_count") if summary.get("included_count") is not None else gen_log_loc.get("included_count")
+                tot_loc = summary.get("total_articles") or gen_log_loc.get("total_articles") or count
+                label_loc = f"📰 {inc_loc} of {tot_loc} reflected" if inc_loc is not None and tot_loc > 0 and inc_loc < tot_loc else f"📰 {count} articles"
+                skipped_loc = summary.get("skipped_articles") or gen_log_loc.get("skipped_articles") or []
 
                 with cols[col_idx % len(cols)]:
                     st.markdown(f"""
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px;">
                         <span class="theme-pill" style="background-color: {color};">{theme}</span>
-                        <span style="font-size: 12px; color: #aaa;">📰 {count} articles</span>
+                        <span style="font-size: 12px; color: #aaa;">{label_loc}</span>
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -111,6 +122,15 @@ def main() -> None:
 
                     st.markdown("**WATCHLIST**")
                     st.write(summary.get('what_to_watch', 'No items.'))
+
+                    if skipped_loc:
+                        with st.expander(f"⏳ Missed / Backlog Articles ({len(skipped_loc)})"):
+                            for sk in skipped_loc:
+                                st.markdown(f"• **{sk.get('title', 'Unknown')}**")
+                                if sk.get("source"):
+                                    st.caption(f"Source: {sk['source']}")
+                                if sk.get("link"):
+                                    st.markdown(f"&nbsp;&nbsp;[Read link →]({sk['link']})")
                     st.divider()
 
                 col_idx += 1
@@ -593,10 +613,29 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
                     if article_count == 0:
                         article_count = len(articles)
 
-                    with st.expander(f"🔹 {theme} ({article_count} articles)"):
+                    gen_log = s.get("_generation_log") or s.get("generation_log") or {}
+                    if isinstance(gen_log, str):
+                        try:
+                            import json as _json
+                            gen_log = _json.loads(gen_log)
+                        except Exception:
+                            gen_log = {}
+
+                    inc_count = s.get("included_count") if s.get("included_count") is not None else gen_log.get("included_count")
+                    tot_count = s.get("total_articles") or gen_log.get("total_articles") or article_count or len(articles)
+                    skipped_list = s.get("skipped_articles") or gen_log.get("skipped_articles") or []
+
+                    if inc_count is not None and tot_count > 0 and inc_count < tot_count:
+                        expander_title = f"🔹 {theme} ({inc_count} of {tot_count} articles reflected)"
+                    else:
+                        expander_title = f"🔹 {theme} ({article_count} articles)"
+
+                    with st.expander(expander_title):
                         col_details, col_articles = st.columns([2, 1])
 
                         with col_details:
+                            if inc_count is not None and tot_count > 0 and inc_count < tot_count:
+                                st.caption(f"ℹ️ **{inc_count} of {tot_count}** classified articles reflected in this summary ({tot_count - inc_count} in backlog).")
                             st.markdown("**WHAT HAPPENED**")
                             st.markdown(sanitize_summary_html(s.get('what_is_happening', 'No data.')))
 
@@ -616,6 +655,17 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
                                         st.markdown(f"&nbsp;&nbsp;[Read link →]({a['link']})")
                             else:
                                 st.write("No matching articles tracked in this run.")
+
+                            if skipped_list:
+                                st.markdown("---")
+                                st.markdown(f"**⏳ MISSED / BACKLOG ARTICLES ({len(skipped_list)})**")
+                                st.caption("Classified under this theme but omitted from summary due to budget/ranking limits.")
+                                for sk in skipped_list:
+                                    st.markdown(f"• **{sk.get('title', 'Unknown')}**")
+                                    if sk.get("source"):
+                                        st.caption(f"Source: {sk['source']}")
+                                    if sk.get("link"):
+                                        st.markdown(f"&nbsp;&nbsp;[Read link →]({sk['link']})")
             st.markdown("<br>", unsafe_allow_html=True)
 
         # Pagination footer

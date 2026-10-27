@@ -64,12 +64,26 @@ def main() -> None:
         color1 = THEME_COLORS.get(theme1, '#1f77b4')
         summary1 = summaries.get(theme1, {})
         articles1 = themed_articles.get(theme1, [])
+        gen_log1 = summary1.get("_generation_log") or summary1.get("generation_log") or {}
+        if isinstance(gen_log1, str):
+            try:
+                import json as _json
+                gen_log1 = _json.loads(gen_log1)
+            except Exception:
+                gen_log1 = {}
+        inc1 = summary1.get("included_count") if summary1.get("included_count") is not None else gen_log1.get("included_count")
+        tot1 = summary1.get("total_articles") or gen_log1.get("total_articles") or len(articles1)
+        meta1 = (
+            f"📰 <b>{inc1} of {tot1}</b> articles reflected"
+            if inc1 is not None and tot1 > 0 and inc1 < tot1
+            else f"📰 <b>{len(articles1)}</b> articles tracked this period"
+        )
 
         with col1:
             st.markdown(f"""
             <div class="theme-card" style="border-top: 3px solid {color1} !important;">
                 <div class="card-title" style="color: {color1};">{theme1}</div>
-                <div class="card-meta">📰 <b>{len(articles1)}</b> articles tracked this period</div>
+                <div class="card-meta">{meta1}</div>
                 {render_provenance_chip(summary1)}
                 <div style="margin-top: 14px;">
                     <div class="card-section-label" style="color: {color1};">THE LATEST SIGNAL</div>
@@ -90,12 +104,26 @@ def main() -> None:
             color2 = THEME_COLORS.get(theme2, '#9467bd')
             summary2 = summaries.get(theme2, {})
             articles2 = themed_articles.get(theme2, [])
+            gen_log2 = summary2.get("_generation_log") or summary2.get("generation_log") or {}
+            if isinstance(gen_log2, str):
+                try:
+                    import json as _json
+                    gen_log2 = _json.loads(gen_log2)
+                except Exception:
+                    gen_log2 = {}
+            inc2 = summary2.get("included_count") if summary2.get("included_count") is not None else gen_log2.get("included_count")
+            tot2 = summary2.get("total_articles") or gen_log2.get("total_articles") or len(articles2)
+            meta2 = (
+                f"📰 <b>{inc2} of {tot2}</b> articles reflected"
+                if inc2 is not None and tot2 > 0 and inc2 < tot2
+                else f"📰 <b>{len(articles2)}</b> articles tracked this period"
+            )
 
             with col2:
                 st.markdown(f"""
                 <div class="theme-card" style="border-top: 3px solid {color2} !important;">
                     <div class="card-title" style="color: {color2};">{theme2}</div>
-                    <div class="card-meta">📰 <b>{len(articles2)}</b> articles tracked this period</div>
+                    <div class="card-meta">{meta2}</div>
                     {render_provenance_chip(summary2)}
                     <div style="margin-top: 14px;">
                         <div class="card-section-label" style="color: {color2};">THE LATEST SIGNAL</div>

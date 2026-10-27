@@ -239,3 +239,43 @@ Enterprise adoption is accelerating.
         # Should keep the LLM output, not the extractive fallback
         assert summary.get("_source") != "extractive_fallback"
         assert "Open-source models" in (summary.get("what_is_happening") or "")
+
+    def test_skip_complement_recorded_in_summary(self):
+        from core.summariser import generate_theme_summary_gateway
+        from core.ai_gateway import AITaskResult
+
+        # Create 15 articles to exceed MAX_ARTICLES_PER_SUMMARY (12)
+        articles = [
+            {"title": f"Article {i}", "summary": f"Summary {i}", "link": f"https://example.com/{i}", "source_name": "Test"}
+            for i in range(15)
+        ]
+
+        fake_result = MagicMock(spec=AITaskResult)
+        fake_result.is_success.return_value = True
+        fake_result.result = "## 1. WHAT IS HAPPENING\nSignal.\n## 2. ENGINEERING TRADEOFFS\nTradeoffs.\n## 3. PRODUCT IMPACT\nImpact.\n## 4. ACTIONABLE WATCHLIST\n- Item\n## 5. STRATEGIC FURTHER READING\n- Art | Src | url"
+        fake_prov = MagicMock()
+        fake_prov.method = "llm"
+        fake_prov.provider = "ollama"
+        fake_prov.model = "nemotron-3-ultra"
+        fake_prov.task = "summarise"
+        fake_prov.latency_ms = 100
+        fake_prov.attempts = 1
+        fake_prov.fallback_used = False
+        fake_prov.to_dict.return_value = {}
+        fake_result.provenance = fake_prov
+
+        fake_gateway = MagicMock()
+        fake_gateway.execute = AsyncMock(return_value=fake_result)
+
+        with patch("core.summariser.get_gateway", return_value=fake_gateway):
+            summary, included = asyncio.run(
+                generate_theme_summary_gateway("Frontier Models & Benchmarks", articles)
+            )
+
+        assert summary["total_articles"] == 15
+        assert summary["included_count"] <= 12
+        assert summary["skipped_count"] >= 3
+        assert len(summary["skipped_articles"]) == summary["skipped_count"]
+        assert len(summary["skipped_hashes"]) == summary["skipped_count"]
+        assert "_generation_log" in summary
+        assert summary["_generation_log"]["skipped_count"] == summary["skipped_count"]

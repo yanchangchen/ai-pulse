@@ -1004,6 +1004,10 @@ class TestDeterministicJudges:
         assert score == 0.5  # 1 out of 2 covered
         assert raw["covered"] == 1
         assert raw["total"] == 2
+        assert raw["missed_count"] == 1
+        assert len(raw["missed_articles"]) == 1
+        assert raw["missed_articles"][0]["title"] == "Kubernetes GPU Deployment Techniques"
+        assert raw["missed_articles"][0]["theme"] == "Frontier Models & Benchmarks"
 
     def test_coverage_ignores_generic_stopword_matches(self):
         """A lone generic token ("model") must not mark an article covered —

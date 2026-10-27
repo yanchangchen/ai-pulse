@@ -777,6 +777,19 @@ else:
         _score_tile(c6, "Coverage (Article Recall)", latest.get("coverage_score", 1.0), threshold, skipped=cov_sk)
         _score_tile(c7, "Temporal Coherence", latest.get("temporal_coherence_score", 1.0), threshold, skipped=temp_sk)
 
+        cov_raw_data = raw_m_latest.get("coverage", {}) if isinstance(raw_m_latest, dict) else {}
+        missed_articles = cov_raw_data.get("missed_articles", [])
+        if missed_articles:
+            with st.expander(f"⚠️ Coverage Missed Articles ({len(missed_articles)} unmentioned)"):
+                st.caption("Articles classified into themes whose key concepts/entities were not detected in generated summaries.")
+                for m in missed_articles:
+                    theme_badge = f"`{m.get('theme')}`" if m.get("theme") else ""
+                    st.markdown(f"• **{m.get('title', 'Unknown')}** {theme_badge}")
+                    if m.get("source"):
+                        st.caption(f"Source: {m['source']}")
+                    if m.get("link"):
+                        st.markdown(f"&nbsp;&nbsp;[Read source article →]({m['link']})")
+
     st.caption(
         f"Generated at: {latest['generated_at']}  •  "
         f"Lookback: {latest.get('lookback_days', '?')} day(s)  •  "

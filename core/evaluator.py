@@ -1518,6 +1518,7 @@ def coverage_judge(
     titles that yield fewer than two).
     """
     covered, total, unmeasurable = 0, 0, 0
+    missed_articles = []
     for run_id, summaries in summaries_by_run.items():
         all_articles = articles_by_run.get(run_id, [])
         for theme, sections in summaries.items():
@@ -1539,12 +1540,24 @@ def coverage_judge(
                 required = min(2, len(words))
                 if matched >= required:
                     covered += 1
+                else:
+                    missed_articles.append({
+                        "title": title,
+                        "theme": theme,
+                        "run_id": run_id,
+                        "source": art.get("source_name", art.get("source", "")),
+                        "link": art.get("link", ""),
+                        "matched_tokens": matched,
+                        "required_tokens": required,
+                    })
 
     score = covered / total if total > 0 else 1.0
     return round(score, 4), {
         "covered": covered,
         "total": total,
         "unmeasurable": unmeasurable,
+        "missed_count": len(missed_articles),
+        "missed_articles": missed_articles,
     }
 
 
@@ -1644,9 +1657,16 @@ def generate_recommendations(report: EvaluationReport) -> List[str]:
         )
 
     if not cov_skipped and report.coverage_score < threshold:
+        cov_raw_dict = raw.get("coverage", {}) if isinstance(raw, dict) else {}
+        missed_list = cov_raw_dict.get("missed_articles", [])
+        if missed_list:
+            sample_missed = ", ".join(f"'{m.get('title')}'" for m in missed_list[:2])
+            suffix = f" — {len(missed_list)} article(s) missed (e.g. {sample_missed})"
+        else:
+            suffix = ""
         recs.append(
             f"⚠️ Coverage score {report.coverage_score:.0%} < "
-            f"{threshold:.0%}. Action: many source articles were missing from output summaries. "
+            f"{threshold:.0%}. Action: source articles were missing from output summaries{suffix}. "
             f"Use the '⚙️ Faithfulness & Summariser Tuner' tab below to increase the Max Predict Token Budget slider (e.g. to 2000+ tokens)."
         )
 

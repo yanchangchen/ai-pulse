@@ -94,15 +94,29 @@ def main() -> None:
     st.divider()
 
     # Summary header tile
+    gen_log = theme_summary.get("_generation_log") or theme_summary.get("generation_log") or {}
+    if isinstance(gen_log, str):
+        try:
+            import json as _json
+            gen_log = _json.loads(gen_log)
+        except Exception:
+            gen_log = {}
+    inc_count = theme_summary.get("included_count") if theme_summary.get("included_count") is not None else gen_log.get("included_count")
+    tot_count = theme_summary.get("total_articles") or gen_log.get("total_articles") or len(theme_articles)
+
     col_header, col_count = st.columns([3, 1])
     with col_header:
         st.markdown(f"<h2 style='color: {theme_color}; margin-top:0;'>{selected_theme}</h2>", unsafe_allow_html=True)
         st.markdown(render_provenance_chip(theme_summary), unsafe_allow_html=True)
+        if inc_count is not None and tot_count > 0 and inc_count < tot_count:
+            st.caption(f"📰 **{inc_count} of {tot_count}** articles reflected in this brief ({tot_count - inc_count} in backlog / awaiting next cycle)")
     with col_count:
+        metric_val = f"{inc_count} / {tot_count}" if inc_count is not None and tot_count > 0 and inc_count < tot_count else f"{len(theme_articles)}"
+        metric_meta = "Articles Reflected" if inc_count is not None and tot_count > 0 and inc_count < tot_count else "Articles Tracked"
         st.markdown(f"""
         <div class="metric-card" style="text-align: center; border-color: {theme_color}40 !important;">
-            <div style="font-size: 30px; font-weight: bold; color: {theme_color};">{len(theme_articles)}</div>
-            <div class="card-meta">Articles Tracked</div>
+            <div style="font-size: 26px; font-weight: bold; color: {theme_color};">{metric_val}</div>
+            <div class="card-meta">{metric_meta}</div>
         </div>
         """, unsafe_allow_html=True)
 

@@ -248,17 +248,45 @@ Writing style rules:
             included_hashes = [
                 processed_articles.article_hash(a) for a in included_articles
             ]
-            return _with_provenance(
+            inc_set = set(included_hashes)
+            skipped_articles = [
+                a for a in articles if processed_articles.article_hash(a) not in inc_set
+            ]
+            skipped_hashes = [
+                processed_articles.article_hash(a) for a in skipped_articles
+            ]
+            skipped_payload = [
+                {
+                    "title": a.get("title", ""),
+                    "source": a.get("source_name", a.get("source", "")),
+                    "link": a.get("link", ""),
+                    "hash": processed_articles.article_hash(a),
+                }
+                for a in skipped_articles
+            ]
+            summary_dict = _with_provenance(
                 parsed,
                 source=source_str,
                 model=prov.model or "deterministic",
                 article_count=len(articles),
+                total_articles=len(articles),
+                included_count=len(included_hashes),
+                skipped_count=len(skipped_hashes),
+                skipped_hashes=skipped_hashes,
+                skipped_articles=skipped_payload,
                 note="live_synthesis" if prov.method == "llm" else "deterministic_fallback",
                 latency_ms=prov.latency_ms,
                 attempts=prov.attempts,
                 fallback_used=prov.fallback_used,
                 provenance=prov.to_dict(),
-            ), included_hashes
+            )
+            summary_dict["article_count"] = len(articles)
+            summary_dict["total_articles"] = len(articles)
+            summary_dict["included_count"] = len(included_hashes)
+            summary_dict["skipped_count"] = len(skipped_hashes)
+            summary_dict["skipped_hashes"] = skipped_hashes
+            summary_dict["skipped_articles"] = skipped_payload
+            return summary_dict, included_hashes
         else:
             raise Exception(result.provenance.error or "Unknown error")
 
@@ -862,12 +890,23 @@ def extractive_theme_summary(theme_name: str, articles: List[Dict]) -> Tuple[Dic
     """
     from core.non_llm_summariser import generate_non_llm_theme_summary
     summary = generate_non_llm_theme_summary(theme_name, articles)
+    included_hashes = [processed_articles.article_hash(a) for a in articles]
     summary = _with_provenance(
         summary, source="extractive_fallback",
         model=None, article_count=len(articles),
+        total_articles=len(articles),
+        included_count=len(included_hashes),
+        skipped_count=0,
+        skipped_hashes=[],
+        skipped_articles=[],
         note="non_llm_extractive",
     )
-    included_hashes = [processed_articles.article_hash(a) for a in articles]
+    summary["article_count"] = len(articles)
+    summary["total_articles"] = len(articles)
+    summary["included_count"] = len(included_hashes)
+    summary["skipped_count"] = 0
+    summary["skipped_hashes"] = []
+    summary["skipped_articles"] = []
     return summary, included_hashes
 
 
@@ -939,12 +978,34 @@ async def _generate_all_summaries_async(
                 "what_to_watch": "Monitor for new articles.",
                 "further_reading": ""
             }
-            summaries[theme] = _with_provenance(
+            all_hashes = [processed_articles.article_hash(a) for a in articles]
+            all_skipped_payload = [
+                {
+                    "title": a.get("title", ""),
+                    "source": a.get("source_name", a.get("source", "")),
+                    "link": a.get("link", ""),
+                    "hash": processed_articles.article_hash(a),
+                }
+                for a in articles
+            ]
+            skipped_summary = _with_provenance(
                 skipped_summary,
                 source="gateway:skipped",
                 model="none", article_count=len(articles),
+                total_articles=len(articles),
+                included_count=0,
+                skipped_count=len(articles),
+                skipped_hashes=all_hashes,
+                skipped_articles=all_skipped_payload,
                 note="no_new_articles_skip",
             )
+            skipped_summary["article_count"] = len(articles)
+            skipped_summary["total_articles"] = len(articles)
+            skipped_summary["included_count"] = 0
+            skipped_summary["skipped_count"] = len(articles)
+            skipped_summary["skipped_hashes"] = all_hashes
+            skipped_summary["skipped_articles"] = all_skipped_payload
+            summaries[theme] = skipped_summary
             continue
 
         # If we have only a handful of unprocessed articles, pad with the most
@@ -980,6 +1041,35 @@ async def _generate_all_summaries_async(
             if info_prefix not in orig_text:
                 extractive["what_is_happening"] = f"{info_prefix}\n\n{orig_text}"
             summaries[theme] = extractive
+
+        # Synchronize skipped complement against the full set of classified articles for this theme
+        inc_set = set(included)
+        theme_skipped_arts = [a for a in articles if processed_articles.article_hash(a) not in inc_set]
+        theme_skipped_hashes = [processed_articles.article_hash(a) for a in theme_skipped_arts]
+        theme_skipped_payload = [
+            {
+                "title": a.get("title", ""),
+                "source": a.get("source_name", a.get("source", "")),
+                "link": a.get("link", ""),
+                "hash": processed_articles.article_hash(a),
+            }
+            for a in theme_skipped_arts
+        ]
+        summaries[theme]["total_articles"] = len(articles)
+        summaries[theme]["included_count"] = len(included)
+        summaries[theme]["skipped_count"] = len(theme_skipped_arts)
+        summaries[theme]["skipped_hashes"] = theme_skipped_hashes
+        summaries[theme]["skipped_articles"] = theme_skipped_payload
+
+        gen_log = summaries[theme].get("_generation_log")
+        if isinstance(gen_log, dict):
+            gen_log.update({
+                "total_articles": len(articles),
+                "included_count": len(included),
+                "skipped_count": len(theme_skipped_arts),
+                "skipped_hashes": theme_skipped_hashes,
+                "skipped_articles": theme_skipped_payload,
+            })
 
         if included:
             processed_articles.mark_processed(theme, included)

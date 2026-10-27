@@ -113,12 +113,17 @@ def save_run_to_history(
     # that keeps enough runs for get_recent_context() to work.
     MAX_LOCAL_RUNS = 5
     history_data = load_full_history()
+    skipped_per_theme = {
+        theme: summaries.get(theme, {}).get("skipped_articles", [])
+        for theme in summaries
+    }
     history_data[timestamp] = {
         "date": date_key,
         "summaries": summaries,
         "counts": article_counts,
         "full_articles": full_articles,
         "themed_articles": themed_articles,
+        "skipped_per_theme": skipped_per_theme,
         "article_fingerprint": article_fingerprint,
     }
 
@@ -137,8 +142,12 @@ def save_run_to_history(
     new_entry = f"\n## ⚡ AI Pulse Run: {timestamp}\n"
     for theme, summary in summaries.items():
         count = article_counts.get(theme, 0)
+        inc_count = summary.get("included_count", count)
         src = summary.get("_source", "unknown")
-        new_entry += f"### {theme} ({count} articles)\n"
+        if inc_count is not None and inc_count < count:
+            new_entry += f"### {theme} ({inc_count} of {count} articles reflected)\n"
+        else:
+            new_entry += f"### {theme} ({count} articles)\n"
         new_entry += f"*Source:* `{src}`\n\n"
         new_entry += f"**What is happening:** {summary.get('what_is_happening', '')}\n\n"
         new_entry += f"**Why it matters:** {summary.get('why_it_matters', '')}\n\n"
