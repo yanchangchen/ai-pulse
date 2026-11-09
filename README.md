@@ -15,6 +15,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 ## ✨ Key Features
 
 - **Multi-model AI gateway** — task-typed LLM calls routed across Gemini and Ollama Cloud with fallback chains, health tracking, context-fit checks, and per-request timeouts. [Architecture details →](docs/ARCHITECTURE.md#routing-policies)
+- **Dense article embeddings** — 768-dim vectors in Supabase pgvector with per-article model provenance. Today Gemini-only; free hosted alternatives (Cloudflare, Jina) and a self-deployed Render service are documented in [Embedding providers →](docs/EMBEDDING_PROVIDERS.md)
 - **Deterministic classification** — 4-pass waterfall (keywords → TF-IDF → optional LLM → heuristic). The LLM gate can be disabled entirely once keyword coverage matures. [Modes explained →](docs/ARCHITECTURE.md#classification-modes)
 - **Self-improving keywords** — after each run, missing keywords are heuristically extracted from LLM/heuristic articles and auto-applied if they appear in 3+ articles. [How it works →](docs/ARCHITECTURE.md#self-improving-keywords)
 - **Non-LLM fallback** — LexRank + Luhn extractive engine produces 5-section briefs in <50ms, zero tokens, 100% faithful.
@@ -36,6 +37,11 @@ OLLAMA_MODEL    = "nemotron-3-ultra:cloud"
 OLLAMA_API_KEY  = "your-ollama-api-key"
 GEMINI_API_KEY  = "your-gemini-api-key"
 ```
+
+Embeddings currently use `GEMINI_API_KEY` / `gemini-embedding-001`. Moving to a free hosted
+open-model provider (Cloudflare Workers AI or Jina) or a self-deployed Render embedding
+service is documented, but not wired, in
+[docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md).
 
 ### 2. Export Environment Variables (optional tuning)
 
@@ -126,6 +132,7 @@ See [test files](tests/) for the full suite.
 | [Pages](docs/PAGES.md) | Per-page reference for all 8 pages, app.py, Sage agent internals |
 | [Configuration](docs/CONFIGURATION.md) | Secrets/env resolution, settings constants, custom_settings/custom_keywords, gateway tunables |
 | [Supabase](docs/SUPABASE.md) | Schema, migrations, RLS, app_settings KV store, test isolation |
+| [Embedding Providers](docs/EMBEDDING_PROVIDERS.md) | Current Gemini-only pipeline, free hosted alternatives (Cloudflare, Jina), self-deployed Render service, adapter/re-embed runbook |
 | [BLOG.md](BLOG.md) | Engineering lessons learned, dated entries grouped by 2-week blocks |
 
 ## 📈 Performance & Monitoring

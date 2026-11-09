@@ -80,6 +80,16 @@ minimal top-k cosine lookup used only by the Phase 3 hit-rate gate
 (`TaskType.EMBEDDING`, `gemini-embedding-001`), so each batch is traced and mirrored to
 `llm_calls` with `task_type='embedding'`.
 
+**Dimension and model-space contract.** `embedding vector(768)` and the
+`match_article_embeddings(query_embedding vector(768), …)` signature are fixed together. A
+replacement embedding model must emit 768 dims, or the column type, RPC signature, HNSW
+index, and every stored row must change in one migration. Vectors from *different* models
+are not comparable even at equal width, so a provider swap requires re-embedding the whole
+table; `embedding_model` is the audit column that makes a partial migration visible.
+`insert_article_embeddings()` is append-only (a duplicate `article_id` is logged, not
+upserted), so re-embedding needs a delete-or-upsert path first. Provider options and the
+re-embed runbook: [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
+
 ## RLS
 
 RLS is enabled with read-only public access (`app_settings` / `custom_keywords` allow

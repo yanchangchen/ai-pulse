@@ -9,7 +9,7 @@ Read by `config/settings.py` `_get_secret()` in order: `st.secrets` → direct T
 env vars → default. Keys: `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default
 `nemotron-3-ultra:cloud`), `OLLAMA_API_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL` (default
 `gemini-3.8-flash`; `GEMINI_AVAILABLE_MODELS` lists the switchable set — stable/GA
-models only),
+models only), `GEMINI_EMBEDDING_MODEL` (default `gemini-embedding-001`),
 and Langfuse tracing: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`,
 `LANGFUSE_HOST` (default `https://cloud.langfuse.com`; US region
 `https://us.cloud.langfuse.com`).
@@ -17,6 +17,42 @@ and Langfuse tracing: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`,
 ## `.env`
 
 Optional Supabase persistence: `SUPABASE_URL`, `SUPABASE_KEY`. See [docs/SUPABASE.md](SUPABASE.md).
+
+## Embedding pipeline (Phase 3)
+
+Settings are read through `get_embedding_settings()` (`config/settings.py`), which merges
+`config/custom_settings.json` over these defaults. Never hardcode them.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `embedding_enabled` | `true` | Gates the ingest-time embed step |
+| `embedding_batch_size` | `50` | Texts per embedding call |
+| `embedding_model` | `GEMINI_EMBEDDING_MODEL` | **Gateway provider key** (not a raw model id). `core/embedding.py::_preferred_embedding_model()` ignores values not registered in `get_gateway().providers` and silently falls back to the routing default |
+| `embedding_dimensions` | `768` | Must match `article_embeddings.embedding vector(768)`; `EMBEDDING_DIMENSIONS` env/secret overrides the default |
+| `embedding_backfill_sleep` | `0.5` | Seconds between backfill batches (rate-limit headroom) |
+
+Provider credentials today: `GEMINI_API_KEY`. The only registered embedding route is
+`gemini-embedding-001` (no fallback).
+
+**Not implemented yet.** Moving to a free hosted provider — Cloudflare Workers AI, Jina AI,
+or a self-deployed Render service — adds these credentials through the same
+`config.settings` chain:
+
+| Provider | New keys |
+|---|---|
+| Cloudflare Workers AI | `CF_ACCOUNT_ID`, `CF_API_TOKEN` |
+| Jina AI | `JINA_API_KEY` |
+| Render service | `EMBEDDING_SERVICE_URL`, `EMBEDDING_SERVICE_TOKEN` |
+
+> **Safe switch:** the implementation plan adds an explicit `EMBEDDING_PROVIDER` setting
+> (default `gemini`) so credentials alone do not switch the live route. Flip it as the first
+> step of a controlled migration window, then re-embed every existing row and drain the
+> backlog before enabling retrieval. Do not leave it half-switched: old Gemini and new BGE
+> vectors in one index make distances meaningless.
+
+See [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md) for models, free tiers, the adapter
+contract, and the re-embed runbook. `embedding_dimensions` stays `768` for all three options;
+only a non-768 model would require a migration.
 
 ## Gateway provider init
 

@@ -151,6 +151,34 @@ The gateway routes each task type to a primary model with an ordered fallback ch
 | sage_chat | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | No |
 | embedding | gemini-embedding-001 | — | — | — | No |
 
+> **Embedding provider note (2026-11):** `gemini-embedding-001` is the only registered
+> embedding model and the only adapter implementing `embed()`. The selected replacement is
+> **Option A — Cloudflare Workers AI** (`@cf/baai/bge-base-en-v1.5`); it is not wired yet.
+> Keep the `embedding` fallback chain empty unless the fallback serves the *same* model,
+> because vectors from different models are not comparable.
+
+#### Embedding provider fallbacks (retained for Option A limits)
+
+Keep these two options documented so a Cloudflare limitation can be handled without
+re-discovering the design. Both are 768-dim, so **neither needs a schema/RPC/HNSW
+migration**; they differ in whether the stored vectors remain valid.
+
+| Option | Model | Dims | Same vector space as A? | Switch cost | Use when |
+|---|---|---|---|---|---|
+| **B — Jina AI** | `jina-embeddings-v5-omni-nano` | 768 | **No** (different weights) | Full re-embed of every row | Cloudflare quota/latency persists; or multilingual / long-context quality becomes a requirement |
+| **C — Render self-hosted** | `BAAI/bge-base-en-v1.5` via `fastembed` (ONNX) | 768 | **Yes** (identical weights to A) | New service + routing change; **no re-embed** | First fallback for Cloudflare daily-quota, rate-limit, latency, outage, or terms/pricing limits |
+
+**Why C precedes B as a fallback:** A and C serve the *same model*, so their vectors share a
+space — switching is a gateway routing change, and existing embeddings stay valid. B serves
+different weights, so switching to Jina requires re-embedding the whole table (same workflow
+as the Gemini→Cloudflare migration). B is the better choice only when its longer context or
+multilingual quality is the actual driver, not a generic quota fallback.
+
+Trigger metrics and thresholds (quota headroom, error rate, p95 latency, backlog, model
+uniformity, hit-rate regression) are in [Future.md Phase 3.6](../Future.md#phase-3--embedding-pipeline-dense-half-of-pillar-a).
+Implementation details for both fallbacks — including the Render Docker/`render.yaml`
+reference — are in [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md) §3–4.
+
 All providers have per-request timeouts:
 - **Gemini:** 30s default (configurable via `GEMINI_REQUEST_TIMEOUT`)
 - **Ollama:** 180s default (configurable via `OLLAMA_REQUEST_TIMEOUT`) — cloud models like nemotron can exceed 60s under load, which used to trip premature fallbacks
@@ -178,12 +206,14 @@ classifier/summariser only for backward compatibility and quota state.
   notice string. `EMBEDDING` (Phase 3, `core/embedding.py`) carries a batch of texts in
   `AITaskRequest.embed_inputs` (the `input` string stays empty), runs
   `ProviderAdapter.embed()` instead of the prompt/schema path, and pins
-  `embedding_dimensions` (768) for `gemini-embedding-001` — no template, no schema, and
+  `embedding_dimensions` (768) to match the `vector(768)` column — no template, no schema, and
   `deterministic_fallback: False`, so a failed batch is skipped rather than written as
-  garbage vectors.
+  garbage vectors. `gemini-embedding-001` is the sole registered embedding model today;
+  provider options are in [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
 - `gateway.py` — `ModelGateway` singleton via `get_gateway()`. Holds a **model registry +
-  per-task routing policies** (primary + ordered fallback chain, currently Gemini flash
-  models + Ollama cloud models). Per-model health tracking (3 consecutive failures →
+  per-task routing policies** (primary + ordered fallback chain: Gemini flash models +
+  Ollama cloud models for generation, plus `gemini-embedding-001` for the embedding route).
+  Per-model health tracking (3 consecutive failures →
   degraded, 5 → unavailable, with the circuit-breaker auto-reset described above),
   context-fit check (input must fit ~60% of the model's window), exponential-backoff
   retries, JSON-schema validation, WARNING-level logs on every fallback transition, and a
@@ -192,6 +222,11 @@ classifier/summariser only for backward compatibility and quota state.
 - `providers/` — `GeminiProvider` and `OllamaCloudProvider` async adapters behind
   `ProviderAdapter`. `GeminiProvider` additionally implements `embed()` (Phase 3) calling
   `models.embed_content` with `output_dimensionality=768` against `gemini-embedding-001`.
+  `OllamaCloudProvider` does not implement `embed()` (it inherits the default
+  `NotImplementedError`), and Ollama Cloud's hosted API does not document an embeddings
+  endpoint, so the existing Ollama key cannot be reused for embeddings. Vetted free hosted
+  alternatives and the adapter contract are in
+  [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
 - `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`,
   `keyword_extract`, `statistical_projection`.
 - `tracing.py` — one OpenTelemetry span per gateway execution (`execute()` wraps

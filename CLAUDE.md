@@ -62,5 +62,6 @@ These docs are NOT auto-loaded — read the relevant one before working in that 
 | Any page/UI (`pages/*.py`, `app.py`, `core/shared_sidebar.py`, `core/design_system.py`, `core/sage_agent.py`, `core/visualiser.py`) | docs/PAGES.md |
 | Config (`config/settings.py`, secrets, env vars, `custom_settings.json`, `custom_keywords.json`) | docs/CONFIGURATION.md |
 | Supabase (`core/supabase_client.py`, `supabase_*.sql`, schema, migrations, RLS, app_settings) | docs/SUPABASE.md |
+| Embedding providers (`core/embedding.py`, gateway `embedding` route, `article_embeddings`) | docs/EMBEDDING_PROVIDERS.md |
 
 Human-facing guides: README.md (quick start), SUPABASE_SETUP_GUIDE.md, SUPABASE_INTEGRATION_README.md. Test-targeting cheat sheet: AGENTS.md.
