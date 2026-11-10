@@ -553,9 +553,9 @@ class TestLLMDebugDump:
 
         fake_resp = MagicMock()
         fake_resp.status_code = 200
-        fake_resp.json.return_value = {"response": ""}
+        fake_resp.json.return_value = {"choices": [{"message": {"content": ""}}]}
         fake_resp.text = ""
-        fake_resp.url = "http://test/api/generate"
+        fake_resp.url = "http://test/chat/completions"
         fake_resp.headers = {"content-type": "application/json"}
         fake_req = MagicMock()
         fake_req.headers = {"Authorization": "Bearer should-not-appear"}
@@ -580,9 +580,9 @@ class TestLLMDebugDump:
 
         fake_resp = MagicMock()
         fake_resp.status_code = 200
-        fake_resp.json.return_value = {"response": ""}
-        fake_resp.text = '{"response": "", "error": "model cold"}'
-        fake_resp.url = "http://test/api/generate"
+        fake_resp.json.return_value = {"choices": [{"message": {"content": ""}}]}
+        fake_resp.text = '{"choices": [{"message": {"content": ""}}], "error": "model cold"}'
+        fake_resp.url = "http://test/chat/completions"
         fake_resp.headers = {"content-type": "application/json"}
         fake_req = MagicMock()
         fake_req.headers = {"Authorization": "Bearer SECRET-TOKEN"}
@@ -612,7 +612,7 @@ class TestLLMDebugDump:
         fake_resp = MagicMock()
         fake_resp.status_code = 503
         fake_resp.text = "upstream overloaded"
-        fake_resp.url = "http://test/api/generate"
+        fake_resp.url = "http://test/chat/completions"
         fake_resp.headers = {"content-type": "text/plain"}
         fake_req = MagicMock()
         fake_req.headers = {}
@@ -678,7 +678,7 @@ class TestKeywordSuggestions:
 
     The LLM is replaced with a MagicMock that returns a fixed JSON payload
     so the tests verify the wiring (dedup, weight coercion, watchlist
-    parser, schema) without actually calling Ollama.
+    parser, schema) without actually calling Qwen Cloud.
     """
 
     def _make_llm(self, payload: str) -> MagicMock:
@@ -1444,7 +1444,7 @@ class TestSageFaithfulnessJudge:
                         answer="Claude shipped.",
                         context="=== WIKI CONTEXT ===\nClaude shipped.",
                         conversation_id="conv-1",
-                        answer_model="nemotron-3-ultra:cloud",
+                        answer_model="qwen3.8-flash",
                     )
                     thread.join(timeout=5)
 
@@ -1452,7 +1452,7 @@ class TestSageFaithfulnessJudge:
         assert row["question"] == "What shipped?"
         assert row["score"] == 1.0
         assert row["conversation_id"] == "conv-1"
-        assert row["answer_model"] == "nemotron-3-ultra:cloud"
+        assert row["answer_model"] == "qwen3.8-flash"
 
     def test_record_skips_row_on_judge_failure(self):
         from core.evaluator import record_sage_faithfulness

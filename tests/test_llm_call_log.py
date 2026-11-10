@@ -26,12 +26,12 @@ class FakeProvider:
         self.error = error
 
     def get_capabilities(self):
-        return {"provider": "ollama", "model": "fake:cloud", "context_window": 131072}
+        return {"provider": "qwen", "model": "qwen3.8-flash", "context_window": 1_000_000}
 
     async def generate(self, prompt, **kwargs):
         if self.error:
             raise self.error
-        return {"text": self.text, "usage": self.usage, "model": "fake:cloud"}
+        return {"text": self.text, "usage": self.usage, "model": "qwen3.8-flash"}
 
     async def generate_structured(self, prompt, schema, **kwargs):
         if self.error:
@@ -47,8 +47,8 @@ def _gateway_with(provider) -> ModelGateway:
     gw = ModelGateway(routing_config={
         "model_registry": {
             "m1": {
-                "provider": "ollama",
-                "model": "fake:cloud",
+                "provider": "qwen",
+                "model": "qwen3.8-flash",
                 "tasks": ["sage_chat"],
                 "cost_class": "medium",
             },
@@ -58,7 +58,7 @@ def _gateway_with(provider) -> ModelGateway:
         },
     })
     gw.providers = {"m1": provider}
-    gw.health = {"m1": ModelHealth(provider="ollama", model="fake:cloud")}
+    gw.health = {"m1": ModelHealth(provider="qwen", model="qwen3.8-flash")}
     return gw
 
 
@@ -69,7 +69,7 @@ def _gateway_with(provider) -> ModelGateway:
 class TestProvenanceTokens:
     def test_roundtrip(self):
         prov = Provenance(
-            task="sage_chat", method="llm", provider="ollama",
+            task="sage_chat", method="llm", provider="qwen",
             model="m", tokens_in=11, tokens_out=7,
         )
         d = prov.to_dict()
@@ -114,8 +114,8 @@ class TestGatewayUsagePropagation:
 class TestRecordCall:
     def _prov(self, **kw):
         return Provenance(
-            task="sage_chat", method="llm", provider="ollama",
-            model="nemotron-3-ultra:cloud", latency_ms=1500,
+            task="sage_chat", method="llm", provider="qwen",
+            model="qwen3.8-flash", latency_ms=1500,
             correlation_id="abc12345", **kw,
         )
 
@@ -134,8 +134,8 @@ class TestRecordCall:
 
         row = manager.insert_llm_call.call_args.args[0]
         assert row["task_type"] == "sage_chat"
-        assert row["provider"] == "ollama"
-        assert row["model"] == "nemotron-3-ultra:cloud"
+        assert row["provider"] == "qwen"
+        assert row["model"] == "qwen3.8-flash"
         assert row["tokens_in"] == 10
         assert row["tokens_out"] == 20
         assert row["latency_ms"] == 1500

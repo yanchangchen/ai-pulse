@@ -1,7 +1,8 @@
 """
 LLM client wrapper for AI Pulse.
-Provides a single reusable interface to the Ollama Cloud API with
-exponential-backoff retries and structured error handling.
+Provides a single reusable interface to Qwen Cloud's OpenAI-compatible
+chat completions API with exponential-backoff retries and structured error
+handling.
 """
 
 import logging
@@ -12,7 +13,7 @@ from typing import Callable, Optional
 
 import requests
 
-from config.settings import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_API_KEY, get_ollama_num_ctx
+from config.settings import QWEN_BASE_URL, QWEN_MODEL, QWEN_API_KEY
 
 from core.logger import setup_logger
 
@@ -45,8 +46,8 @@ class LLMQuotaExceededError(LLMClientError):
 
 
 # Two distinct causes the LLM client may be unusable:
-#   * quota_429     — Ollama returned HTTP 429 (weekly usage limit)
-#   * empty_response — Ollama returned 200 with an empty body, repeatedly
+#   * quota_429     — Qwen Cloud returned HTTP 429 (usage/rate limit)
+#   * empty_response — Qwen Cloud returned 200 with an empty body, repeatedly
 # Both states prevent live synthesis, but they mean different things to the
 # user.  Downstream UI consults ``get_degradation_cause()`` to render an
 # honest banner; ``is_quota_exceeded()`` continues to return True for BOTH
@@ -71,15 +72,15 @@ _EMPTY_FAIL_COUNTER = "_aipulse_llm_empty_fail_streak"
 
 
 class LLMClient:
-    """Thin wrapper around the Ollama Cloud /api/generate endpoint."""
+    """Thin wrapper around Qwen Cloud's ``/chat/completions`` endpoint."""
 
     _api_lock = threading.Semaphore(3)
 
     def __init__(
         self,
-        base_url: str = OLLAMA_BASE_URL,
-        model: str = OLLAMA_MODEL,
-        api_key: str = OLLAMA_API_KEY,
+        base_url: str = QWEN_BASE_URL,
+        model: str = QWEN_MODEL,
+        api_key: str = QWEN_API_KEY,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -96,8 +97,8 @@ class LLMClient:
         "Quota exceeded" is the legacy name; in practice the flag covers two
         distinct causes tracked separately via :func:`get_degradation_cause`:
 
-        * ``quota_429``     — Ollama returned HTTP 429 (weekly usage limit)
-        * ``empty_response`` — Ollama returned 200 with an empty body repeatedly
+        * ``quota_429``     — Qwen Cloud returned HTTP 429 (usage/rate limit)
+        * ``empty_response`` — Qwen Cloud returned 200 with an empty body repeatedly
 
         Both states mean "skip live LLM, fall back to extractive" so the
         summariser / evaluator / Sage all consult this single boolean.
@@ -117,8 +118,8 @@ class LLMClient:
 
         One of:
             * ``"none"``            — LLM is healthy, no degradation in effect
-            * ``"quota_429"``       — Ollama returned HTTP 429 (weekly usage limit)
-            * ``"empty_response"``  — Ollama repeatedly returned 200 with empty body
+            * ``"quota_429"``       — Qwen Cloud returned HTTP 429 (usage/rate limit)
+            * ``"empty_response"``  — Qwen Cloud repeatedly returned 200 with empty body
 
         The cause survives :func:`reset_quota_status` only when explicitly
         re-marked.  This lets the sidebar render an honest banner ("quota
@@ -136,7 +137,7 @@ class LLMClient:
     def mark_quota_exceeded(cls, msg: str = "") -> None:
         """Mark the LLM as unusable due to a real 429 / quota response.
 
-        Use this for genuine HTTP 429 / weekly-limit responses.  For
+        Use this for genuine HTTP 429 / usage-limit responses.  For
         empty-body degradation, prefer :func:`mark_degraded_empty_response`
         so the UI can distinguish the cause.
         """
@@ -147,8 +148,8 @@ class LLMClient:
         """Mark the LLM as unusable because it keeps returning empty bodies.
 
         Distinct from :func:`mark_quota_exceeded` so the UI can show an
-        honest "live Ollama LLM returning empty responses" banner rather
-        than blaming quota.  ``is_quota_exceeded()`` still returns True so
+        honest "live Qwen Cloud LLM returning empty responses" banner
+        rather than blaming quota.  ``is_quota_exceeded()`` still returns True so
         the summariser, evaluator and Sage all skip live synthesis.
         """
         cls._mark_degraded(_DEGRADATION_CAUSE_EMPTY, msg)
@@ -176,30 +177,52 @@ class LLMClient:
         setattr(sys, _EMPTY_FAIL_COUNTER, 0)
         logger.info("LLM Quota Exceeded status reset.")
 
+    def _probe_endpoint(self) -> "requests.Response":
+        """Return a probe response without generating text when possible.
+
+        QwenCloud's docs guarantee ``/chat/completions`` but do not document a
+        model-listing endpoint, while OpenAI-compatible deployments usually
+        expose ``GET /models``.  Try the free listing first; only if the
+        deployment answers 404/405 do we spend one 1-token chat request.
+        """
+        headers = self._auth_headers()
+        resp = requests.get(
+            f"{self.base_url}/models",
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code not in (404, 405):
+            return resp
+        return requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=headers,
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+                "stream": False,
+            },
+            timeout=20,
+        )
+
     @classmethod
     def probe_quota_status(cls) -> bool:
-        """Active health probe against the Ollama /api/tags endpoint.
+        """Active health probe against the Qwen Cloud API.
 
         Intended to be called before triggering a refresh, so the user does
-        not have to wait out the 1-hour auto-cooldown if Ollama quota has
-        already been refreshed upstream.
+        not have to wait out the 1-hour auto-cooldown if a Qwen Cloud rate
+        limit has already been refreshed upstream.
 
         Logic:
-            * 200 from /api/tags    → quota is back; call reset_quota_status() and return True
-            * 429 / quota keyword   → quota still exceeded; refresh the timestamp + message
-                                      so is_quota_exceeded() keeps returning True
-            * transport / other err → cannot confirm; leave the flag as-is and return False
+            * 200                  → API is back; call reset_quota_status() and return True
+            * 429 / quota keyword  → quota still exceeded; refresh the timestamp + message
+                                     so is_quota_exceeded() keeps returning True
+            * transport / other    → cannot confirm; leave the flag as-is and return False
 
         Returns True if the LLM is confirmed available, False otherwise.
         """
         try:
-            client = cls()
-            headers = client._auth_headers()
-            resp = requests.get(
-                f"{client.base_url}/api/tags",
-                headers=headers,
-                timeout=10,
-            )
+            resp = cls()._probe_endpoint()
         except Exception as exc:
             logger.warning(
                 "LLM quota probe could not reach %s: %s",
@@ -210,7 +233,7 @@ class LLMClient:
         if resp.status_code == 200:
             if getattr(sys, _QUOTA_EXCEEDED_FLAG, False):
                 logger.info(
-                    "LLM quota probe: /api/tags returned 200 — quota is back, "
+                    "LLM quota probe: endpoint returned 200 — quota is back, "
                     "resetting quota-exceeded flag."
                 )
             cls.reset_quota_status()
@@ -222,7 +245,7 @@ class LLMClient:
             resp.status_code == 429
             or any(
                 kw in resp.text.lower()
-                for kw in ["usage limit", "weekly limit", "quota", "upgrade for higher limits"]
+                for kw in _QUOTA_KEYWORDS
             )
         )
         if is_quota_response:
@@ -260,7 +283,7 @@ class LLMClient:
 
     @classmethod
     def _probe_recovery_available(cls) -> bool:
-        """Single-shot /api/tags probe to see if a fresh request would succeed.
+        """Single-shot /models probe to see if a fresh request would succeed.
 
         Called from inside :func:`generate` after an empty-200 response.  A
         200 here means the upstream endpoint is healthy enough to retry
@@ -269,13 +292,7 @@ class LLMClient:
         degraded for now and the streak should advance.
         """
         try:
-            client = cls()
-            headers = client._auth_headers()
-            resp = requests.get(
-                f"{client.base_url}/api/tags",
-                headers=headers,
-                timeout=10,
-            )
+            resp = cls()._probe_endpoint()
         except Exception as exc:
             logger.warning(
                 "Empty-response recovery probe failed (%s); counting toward streak.",
@@ -292,24 +309,21 @@ class LLMClient:
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Return True if the Ollama Cloud endpoint is reachable and quota is active.
+        """Return True if the Qwen Cloud endpoint is reachable and quota is active.
 
-        A 200 response from /api/tags is proof-of-life that the upstream quota
+        A 200 response from /models is proof-of-life that the upstream quota
         has been refreshed — even if our local flag was left over from a prior
         run, a healthy 200 wins.  We self-heal by calling ``reset_quota_status()``
         so every downstream ``is_quota_exceeded()`` consult sees the fresh state
         for the rest of the session.  This is intentionally safer than waiting
         for the 1-hour cooldown, because the user-visible signal (Fetch &
         Refresh, weekly quota reset) is best-effort and the user has no other
-        way to push the system back to Ollama other than a process restart.
+        way to push the system back to Qwen Cloud other than a process restart.
         """
         if self.is_quota_exceeded():
             return False
         try:
-            headers = self._auth_headers()
-            resp = requests.get(
-                f"{self.base_url}/api/tags", headers=headers, timeout=10
-            )
+            resp = self._probe_endpoint()
         except Exception:
             return False
         if resp.status_code != 200:
@@ -339,52 +353,52 @@ class LLMClient:
         Raises LLMClientError if call fails or returns empty content.
         """
         if self.is_quota_exceeded():
-            msg = self.get_quota_message() or "Ollama Cloud weekly usage limit reached (HTTP 429)."
+            msg = self.get_quota_message() or "Qwen Cloud usage limit reached (HTTP 429)."
             raise LLMQuotaExceededError(f"Quota exceeded: {msg}")
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
 
         payload = {
             "model": self.model,
-            "prompt": (
-                f"System: {system}\n\nUser: {prompt}" if system else prompt
-            ),
+            "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-                "num_ctx": get_ollama_num_ctx(self.model),
-            },
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         headers = self._auth_headers()
 
         last_error: Optional[Exception] = None
         for attempt in range(1, MAX_RETRIES + 1):
             if self.is_quota_exceeded():
-                msg = self.get_quota_message() or "Ollama Cloud weekly usage limit reached (HTTP 429)."
+                msg = self.get_quota_message() or "Qwen Cloud usage limit reached (HTTP 429)."
                 raise LLMQuotaExceededError(f"Quota exceeded: {msg}")
 
             if attempt == 2:
-                payload["options"]["temperature"] = max(0.5, temperature)
-                payload["options"]["num_predict"] = max_tokens + 100
+                payload["temperature"] = max(0.5, temperature)
+                payload["max_tokens"] = max_tokens + 100
             elif attempt == 3:
-                payload["options"]["temperature"] = max(0.7, temperature + 0.3)
-                payload["options"]["num_predict"] = max_tokens + 200
+                payload["temperature"] = max(0.7, temperature + 0.3)
+                payload["max_tokens"] = max_tokens + 200
             else:
-                payload["options"]["temperature"] = temperature
-                payload["options"]["num_predict"] = max_tokens
+                payload["temperature"] = temperature
+                payload["max_tokens"] = max_tokens
             t0 = time.monotonic()
             try:
                 with self._api_lock:
                     resp = requests.post(
-                        f"{self.base_url}/api/generate",
+                        f"{self.base_url}/chat/completions",
                         json=payload,
                         headers=headers,
                         timeout=120,
                     )
                 latency_ms = int((time.monotonic() - t0) * 1000)
 
-                # Check for HTTP 429 or quota limit error strings
+                # Check for HTTP 429 or quota/rate-limit error strings
                 is_429 = resp.status_code == 429
-                is_quota_msg = any(kw in resp.text.lower() for kw in ["usage limit", "weekly limit", "quota", "upgrade for higher limits"])
+                is_quota_msg = any(kw in resp.text.lower() for kw in _QUOTA_KEYWORDS)
 
                 if is_429 or is_quota_msg:
                     err_text = resp.text[:300] if resp.text else f"HTTP {resp.status_code}"
@@ -405,14 +419,14 @@ class LLMClient:
                     raise last_error
 
                 if resp.status_code == 200:
-                    result = resp.json().get("response", "").strip()
+                    result = _extract_content(resp)
                     if result:
                         LLMClient._reset_empty_response_counter()
                         if event_sink is not None:
                             event_sink(latency_ms, True, "")
                         return result
                     else:
-                        last_error = LLMClientError("Ollama returned an empty response.")
+                        last_error = LLMClientError("Qwen Cloud returned an empty response.")
                         if _LLM_DEBUG:
                             _dump_failure(
                                 label="empty_response",
@@ -424,14 +438,14 @@ class LLMClient:
                             )
                         # Self-heal: an empty 200 often means the upstream
                         # model is briefly wedged, not that the model is
-                        # gone.  Hit /api/tags once to see if a fresh
+                        # gone.  Hit /models once to see if a fresh
                         # request would succeed.  Only on probe-fail do we
                         # count this toward the per-run degradation streak
                         # and (at the threshold) flip the degraded flag.
                         if LLMClient._probe_recovery_available():
                             logger.info(
                                 "Empty 200 on attempt %d/%d for model=%s — "
-                                "/api/tags probe returned 200; will retry the "
+                                "/models probe returned 200; will retry the "
                                 "original prompt without bumping streak.",
                                 attempt, MAX_RETRIES, self.model,
                             )
@@ -440,7 +454,7 @@ class LLMClient:
                             if attempt == MAX_RETRIES:
                                 LLMClient.mark_degraded_empty_response(
                                     f"Empty 200 on all {MAX_RETRIES} attempts; "
-                                    f"/api/tags probe did not confirm recovery."
+                                    f"/models probe did not confirm recovery."
                                 )
                 else:
                     last_error = LLMClientError(
@@ -459,7 +473,7 @@ class LLMClient:
                 if event_sink is not None:
                     event_sink(latency_ms, False, str(last_error))
                 logger.warning(
-                    "Ollama API issue [model=%s, attempt=%d/%d, latency=%dms, prompt_len=%d]: %s",
+                    "Qwen Cloud API issue [model=%s, attempt=%d/%d, latency=%dms, prompt_len=%d]: %s",
                     self.model,
                     attempt,
                     MAX_RETRIES,
@@ -481,7 +495,7 @@ class LLMClient:
                         prompt[:_DEBUG_PROMPT_CHARS],
                     )
                 logger.warning(
-                    "Ollama API request failed [model=%s, attempt=%d/%d, latency=%dms]: %s",
+                    "Qwen Cloud API request failed [model=%s, attempt=%d/%d, latency=%dms]: %s",
                     self.model,
                     attempt,
                     MAX_RETRIES,
@@ -494,7 +508,7 @@ class LLMClient:
                 time.sleep(backoff)
 
         logger.error(
-            "Ollama API error: All %d attempts failed for model=%s [prompt_len=%d]. Last error: %s",
+            "Qwen Cloud API error: All %d attempts failed for model=%s [prompt_len=%d]. Last error: %s",
             MAX_RETRIES,
             self.model,
             len(prompt),
@@ -515,6 +529,32 @@ class LLMClient:
         return headers
 
 
+# Matches both HTTP 429 bodies and provider-specific quota/limit messages.
+_QUOTA_KEYWORDS = (
+    "usage limit",
+    "weekly limit",
+    "rate limit",
+    "quota",
+    "insufficient_quota",
+    "insufficient balance",
+    "arrearage",
+    "upgrade for higher limits",
+)
+
+
+def _extract_content(resp: "requests.Response") -> str:
+    """Pull ``choices[0].message.content`` out of an OpenAI-compatible body."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return ""
+    choices = data.get("choices") or []
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {}
+    return (message.get("content") or "").strip()
+
+
 def _dump_failure(
     *,
     label: str,
@@ -526,11 +566,16 @@ def _dump_failure(
 ) -> None:
     """Log a structured dump of an LLM call failure (LLM_DEBUG mode).
 
-    Sanitizes the Authorization header so the bearer token never lands in
-    the log file.  Truncates the prompt and response body to keep the
-    log readable.
+    Sanitizes the returned request's Authorization header so the bearer token
+    never lands in the log file.  Truncates the prompt and response body to
+    keep the log readable.
     """
-    prompt_text = payload.get("prompt", "") or ""
+    messages = payload.get("messages") or []
+    prompt_text = ""
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            prompt_text = message.get("content", "") or ""
+            break
     response_text = ""
     try:
         response_text = resp.text or ""
@@ -564,7 +609,10 @@ def _dump_failure(
     logger.warning(
         "LLM_DEBUG [%s] payload_options=%s",
         label,
-        payload.get("options"),
+        {
+            "temperature": payload.get("temperature"),
+            "max_tokens": payload.get("max_tokens"),
+        },
     )
     logger.warning(
         "LLM_DEBUG [%s] prompt[:%d]=%r",

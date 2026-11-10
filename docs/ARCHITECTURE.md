@@ -62,8 +62,8 @@ TF-IDF synthetic documents. Edit `config/themes.py` to retrain the classifier.
 │  Core Intelligence Layer                                         │
 │  • AI Gateway    (multi-model routing, fallback chains, health   │
 │                   tracking, deterministic fallback, provenance;  │
-│                   Ollama primary for summarise/synthesise/       │
-│                   project, Gemini fallback)                        │
+│                   Qwen Cloud primary for summarise/synthesise/  │
+│                   project, Gemini fallback)                       │
 │  • Fetcher       (concurrent RSS + web scraping)                 │
 │  • Classifier    (4-pass waterfall: keywords → TF-IDF → optional │
 │                   LLM → soft-match; gate counters tracked;        │
@@ -77,8 +77,8 @@ TF-IDF synthetic documents. Edit `config/themes.py` to retrain the classifier.
 │  • Cache         (st.cache_data 12h TTL + .cache/ disk JSON)     │
 │  • BG Refresher  (daemon thread, non-blocking pipeline)          │
 │  • Shared Sidebar (consistency across all pages)               │
-│  • LLM Client    (legacy Ollama wrapper — quota flags with       │
-│                   self-healing probe, backoff retries, LLM_DEBUG)│
+│  • LLM Client    (legacy Qwen Cloud wrapper — quota flags with    │
+│                   self-healing probe, backoff retries, LLM_DEBUG) │
 │  • Gemini Client (on-demand Google Gemini synthesis + fallback)  │
 │  • Sage Agent    (Memory Wiki chat — chronological citations;    │
 │                   routed through the Model Gateway `sage_chat`   │
@@ -88,7 +88,7 @@ TF-IDF synthetic documents. Edit `config/themes.py` to retrain the classifier.
 │  • Design System (shared CSS tokens for visual consistency)      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Configuration Layer                                             │
-│  • config/settings.py   (Ollama endpoint, model, lookback, TTL)  │
+│  • config/settings.py   (Qwen endpoint, model, lookback, TTL)    │
 │  • config/themes.py     (7 weighted-keyword theme dicts)         │
 │  • config/sources.py    (RSS feeds + web-scrape registry)        │
 └─────────────────────────────────────────────────────────────────┘
@@ -108,11 +108,11 @@ flowchart TD
         Themed --> ModeCheck{"Engine Mode"}
 
         ModeCheck -- "LLM Synthesis (Default)" --> Gateway["Model Gateway\n(routing, health, retries, context-fit)"]
-        Gateway --> Ollama["Ollama Cloud models\n(primary for summarise/synthesise/project)"]
-        Gateway --> Gemini["Google Gemini models\n(fallback for summarise/synthesise/project; primary for categorise/extract)"]
-        Ollama -- "Success" --> StructOut["Structured 5-Section Brief\n+ Provenance chip"]
+        Gateway --> Qwen["Qwen Cloud models\n(primary for summarise/synthesise/project/sage_chat)"]
+        Gateway --> Gemini["Google Gemini models\n(fallback for summarise/synthesise/project/sage_chat; primary for categorise/extract/evaluate)"]
+        Qwen -- "Success" --> StructOut["Structured 5-Section Brief\n+ Provenance chip"]
         Gemini -- "Success" --> StructOut
-        Ollama -- "Timeout / errors" --> Gemini
+        Qwen -- "Timeout / errors" --> Gemini
         Gemini -- "All LLMs failed" --> NonLLMFallback["⚡ Non-LLM Extractive Engine"]
 
         ModeCheck -- "Non-LLM Extractive Only" --> NonLLMFallback
@@ -142,13 +142,13 @@ The gateway routes each task type to a primary model with an ordered fallback ch
 
 | Task | Primary | Fallback 1 | Fallback 2 | Fallback 3 | Deterministic |
 |---|---|---|---|---|---|
-| categorise | gemini-3.5-flash-lite | gemini-3.8-flash | nemotron-3-ultra | gpt-oss-120b | Yes |
-| extract | gemini-3.5-flash-lite | gemini-3.8-flash | nemotron-3-ultra | gpt-oss-120b | Yes |
-| summarise | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
-| synthesise | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
-| project | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
-| evaluate | gemini-3.5-flash-lite | gemini-3.8-flash | nemotron-3-ultra | gpt-oss-120b | No |
-| sage_chat | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | No |
+| categorise | gemini-3.5-flash-lite | gemini-3.8-flash | qwen3.8-flash | — | Yes |
+| extract | gemini-3.5-flash-lite | gemini-3.8-flash | qwen3.8-flash | — | Yes |
+| summarise | qwen3.8-flash | gemini-3.6-flash | gemini-3.8-flash | — | Yes |
+| synthesise | qwen3.8-flash | gemini-3.6-flash | gemini-3.8-flash | — | Yes |
+| project | qwen3.8-flash | gemini-3.6-flash | gemini-3.8-flash | — | Yes |
+| evaluate | gemini-3.5-flash-lite | gemini-3.8-flash | qwen3.8-flash | — | No |
+| sage_chat | qwen3.8-flash | gemini-3.6-flash | gemini-3.8-flash | — | No |
 | embedding | gemini-embedding-001 (default) / cloudflare-bge-base-en-v1.5 | — | — | — | No |
 
 > **Embedding provider note (2026-11):** two embedding routes are registered —
@@ -187,7 +187,7 @@ reference — are in [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md) §3�
 
 All providers have per-request timeouts:
 - **Gemini:** 30s default (configurable via `GEMINI_REQUEST_TIMEOUT`)
-- **Ollama:** 180s default (configurable via `OLLAMA_REQUEST_TIMEOUT`) — cloud models like nemotron can exceed 60s under load, which used to trip premature fallbacks
+- **Qwen Cloud:** 180s default (configurable via `QWEN_REQUEST_TIMEOUT`) — large summary prompts can exceed 60s under load, which used to trip premature fallbacks
 
 When a provider times out or fails, the gateway classifies the error (retryable vs non-retryable), records the failure for health tracking, and moves to the next model in the chain (each fallback logs a WARNING naming the failed model and error). Health latches: 3 consecutive failures → degraded, 5 → unavailable. An unavailable model is not skipped forever — a circuit-breaker auto-reset retries it in half-open state after a cooldown (`GATEWAY_HEALTH_RESET_SECONDS`, default 300s), and a successful `health_check_all()` probe clears the latch immediately. If all LLMs fail, the deterministic fallback uses `extractive_summarise_from_text()` for SUMMARISE/SYNTHESISE tasks and rule-based extraction for CATEGORISE/EXTRACT.
 
@@ -206,7 +206,7 @@ classifier/summariser only for backward compatibility and quota state.
   wrapping), no output schema, and `deterministic_fallback: False` — a rule-based judge
   verdict is meaningless, so failures surface and samples are excluded. `SAGE_CHAT`
   (core/sage_agent.py) follows the same verbatim-prompt contract for the Sage
-  conversational agent: Ollama-primary routing (nemotron was Sage's engine), Gemini
+  conversational agent: Qwen Cloud-primary routing (qwen3.8-flash), Gemini
   fallbacks, and `deterministic_fallback: False` — a rule-based stand-in for Sage's
   persona would fabricate an "analysis", so total failure surfaces as a friendly
   notice string. `EMBEDDING` (Phase 3, `core/embedding.py`) carries a batch of texts in
@@ -221,24 +221,23 @@ classifier/summariser only for backward compatibility and quota state.
   [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
 - `gateway.py` — `ModelGateway` singleton via `get_gateway()`. Holds a **model registry +
   per-task routing policies** (primary + ordered fallback chain: Gemini flash models +
-  Ollama cloud models for generation, plus the selected embedding-only model). Per-model
+  Qwen Cloud models for generation, plus the selected embedding-only model). Per-model
   health tracking (3 consecutive failures →
   degraded, 5 → unavailable, with the circuit-breaker auto-reset described above),
   context-fit check (input must fit ~60% of the model's window; **bypassed for
   `EMBEDDING`**, whose provider caps apply per text rather than to the batch sum),
   exponential-backoff
   retries, JSON-schema validation, WARNING-level logs on every fallback transition, and a
-  final **deterministic fallback** when all LLMs fail. Ollama request timeout defaults to
-  180s (`OLLAMA_REQUEST_TIMEOUT`) because cloud models can exceed 60s under load.
-- `providers/` — `GeminiProvider`, `OllamaCloudProvider` and `CloudflareProvider` async
+  final **deterministic fallback** when all LLMs fail. Qwen Cloud request timeout defaults to
+  180s (`QWEN_REQUEST_TIMEOUT`) because large prompts can exceed 60s under load.
+- `providers/` — `GeminiProvider`, `QwenCloudProvider` and `CloudflareProvider` async
   adapters behind `ProviderAdapter`. `GeminiProvider` implements `embed()` (Phase 3) calling
   `models.embed_content` with `output_dimensionality=768` against `gemini-embedding-001`;
   `CloudflareProvider` implements `embed()` against Cloudflare Workers AI's
   OpenAI-compatible endpoint (`@cf/baai/bge-base-en-v1.5`, 768 dims) and rejects partial or
   malformed batches. Both are embedding-only where applicable — generation methods raise
-  `NotImplementedError`. `OllamaCloudProvider` does not implement `embed()`, and Ollama
-  Cloud's hosted API does not document an embeddings endpoint, so the existing Ollama key
-  cannot be reused for embeddings. Vetted free hosted
+  `NotImplementedError`. `QwenCloudProvider` calls QwenCloud's OpenAI-compatible
+  `/chat/completions` endpoint and does not implement `embed()`. Vetted free hosted
   alternatives and the adapter contract are in
   [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
 - `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`,
@@ -271,7 +270,7 @@ classifier/summariser only for backward compatibility and quota state.
   Product Impact / Actionable Watchlist / Strategic Further Reading**, with length
   instructions scaled to article count.
 - Articles are relevance-ranked (`_rank_articles_by_relevance`) and truncated to a char
-  budget derived from `num_ctx`.
+  budget derived from the primary model's context window (`QWEN_NUM_CTX`).
 - Themes whose article hashes were all seen before are skipped (`gateway:skipped`) —
   summaries are skipped entirely when article content hashes are unchanged
   (`get_articles_hash()` / `_get_existing_article_hashes()`).
@@ -293,19 +292,19 @@ the UI suggests switching to another model from `GEMINI_AVAILABLE_MODELS`.
 ### Provenance
 
 Every summary dict carries provenance via `_with_provenance()`: `_source` token (e.g.
-`"google:gemini-3.6-flash"`, `"ollama:…"`, `"extractive_fallback"`, `"gateway:error"`),
+`"google:gemini-3.6-flash"`, `"qwen:qwen3.8-flash"`, `"extractive_fallback"`, `"gateway:error"`),
 `_generation_log`, and optionally the full `_provenance` dict. `core/provenance.py` maps
 `_source` to the coloured UI chip; Supabase persists it in
 `theme_summaries.generation_source` / `generation_log`.
 
 ## Quota Management (`core/llm_client.py`)
 
-Legacy Ollama wrapper, still the shared client for the summariser/classifier legacy
+Legacy Qwen Cloud wrapper, still the shared client for the summariser/classifier legacy
 paths and quota state (Sage no longer uses it — it routes through the Model Gateway).
 Quota exhaustion
 is tracked process-wide via flags on the `sys` module (`_aipulse_llm_quota_exceeded` …);
 `LLMClient.is_quota_exceeded()` / `mark_quota_exceeded()` / `reset_quota_status()` manage
-it, and `probe_quota_status()` hits `/api/tags` to self-heal the flag instantly when quota
+it, and `probe_quota_status()` hits `/models` to self-heal the flag instantly when quota
 recovers (called before refresh runs). A process-local empty-response streak counter lets
 the summariser degrade the rest of a run to the extractive engine instead of burning
 retries. Set `LLM_DEBUG=1` to log prompts/responses on failures.

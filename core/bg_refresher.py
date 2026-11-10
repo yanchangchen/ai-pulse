@@ -83,7 +83,7 @@ class BackgroundRefresher:
     def _run_pipeline(cls) -> None:
         try:
             from core.llm_client import LLMClient
-            # Probe Ollama before doing anything: if quota is back, reset the
+            # Probe Qwen Cloud before doing anything: if quota is back, reset the
             # flag now so the per-theme loop does not silently fall back to
             # extractive summarisation.  Probe is the single source of truth —
             # do NOT call reset_quota_status() unconditionally (would mask a
@@ -199,7 +199,7 @@ def check_and_show_bg_status() -> None:
         cause = LLMClient.get_degradation_cause()
         if cause == "empty_response":
             st.info(
-                "**Active Non-LLM Extractive Engine**: Live Ollama LLM kept returning empty responses, "
+                "**Active Non-LLM Extractive Engine**: Live Qwen Cloud LLM kept returning empty responses, "
                 "so executive summaries are automatically & deterministically compiled using "
                 "LexRank & Luhn extractive NLP (0-cost, sub-second & 100% faithful). "
                 "Click **⚡ Fetch & Refresh Now** in the sidebar to retry the live LLM.",
@@ -207,7 +207,7 @@ def check_and_show_bg_status() -> None:
             )
         else:
             st.info(
-                "**Active Non-LLM Extractive Engine**: Live Ollama LLM quota limit reached (HTTP 429). "
+                "**Active Non-LLM Extractive Engine**: Live Qwen Cloud LLM quota limit reached (HTTP 429). "
                 "Executive summaries are automatically & deterministically compiled using LexRank & Luhn extractive NLP (0-cost, sub-second & 100% faithful).",
                 icon="⚡"
             )

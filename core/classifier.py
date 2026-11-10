@@ -134,7 +134,7 @@ async def classify_with_gateway(title: str, summary: str) -> Optional[str]:
     return None
 
 
-def classify_with_ollama(title: str, summary: str) -> Optional[str]:
+def classify_with_llm(title: str, summary: str) -> Optional[str]:
     """Synchronous wrapper for backward compatibility."""
     return asyncio.run(classify_with_gateway(title, summary))
 

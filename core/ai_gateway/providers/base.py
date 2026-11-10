@@ -36,7 +36,7 @@ class ProviderAdapter(ABC):
 
         Not all providers support embeddings; the default raises
         ``NotImplementedError`` so a provider that never claims the
-        ``embedding`` task (e.g. Ollama for now) stays unchanged.
+        ``embedding`` task (e.g. Qwen for now) stays unchanged.
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not support embeddings"

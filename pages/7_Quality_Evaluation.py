@@ -252,9 +252,8 @@ def _render_evaluation_result(report, events: list) -> None:
         tot = gates["total"]
         p1 = gates.get("gate_1_keyword", 0)
         p2 = gates.get("gate_2_tfidf", 0)
-        # NB: the classifier emits "gate_3_llm" (renamed from
-        # gate_3_ollama in e1b7a7d) — reading the old key silently
-        # rendered Pass 3 as 0.
+        # NB: the classifier emits "gate_3_llm" — reading the old
+        # key silently rendered Pass 3 as 0.
         p3 = gates.get("gate_3_llm", 0)
         p4 = gates.get("gate_4_heuristic", 0)
 
@@ -750,11 +749,11 @@ else:
         cat_raw_latest.get("quota_exceeded") or cat_raw_latest.get("no_gateway_providers")
     ):
         reason = (
-            "The Ollama Cloud weekly rate limit was reached and no gateway provider "
+            "The Qwen Cloud rate limit was reached and no gateway provider "
             "could serve the judges."
             if cat_raw_latest.get("quota_exceeded")
             else "The Model Gateway has no providers configured (check GEMINI_API_KEY / "
-                 "OLLAMA_API_KEY in secrets.toml or the environment)."
+                 "QWEN_API_KEY in secrets.toml or the environment)."
         )
         st.warning(
             f"**LLM Evaluation Judges Skipped**: {reason} "

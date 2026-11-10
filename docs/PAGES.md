@@ -32,7 +32,7 @@ Full source list with links.
 Three tabs:
 
 - **🔮 Ask Sage** — conversational agent grounded in wiki data (`core/sage_agent.py`),
-  routed through the Model Gateway (`sage_chat` policy: Ollama primary, Gemini
+  routed through the Model Gateway (`sage_chat` policy: Qwen Cloud primary, Gemini
   fallbacks, per-model health tracking). Each reply is captioned with the engine
   provenance (provider/model, latency, fallback flag) and the grounding stats
   (summaries/dates plus article-evidence count).

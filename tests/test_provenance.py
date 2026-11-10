@@ -26,6 +26,10 @@ class TestClassify:
         assert _classify("gateway:limited_coverage") == "gateway:limited_coverage"
         assert _classify("gateway:skipped") == "gateway:skipped"
 
+    def test_qwen_prefix(self):
+        assert _classify("qwen:qwen3.8-flash") == "qwen"
+        assert _classify("qwen:error") == "qwen"
+
     def test_ollama_prefix(self):
         assert _classify("ollama:qwen3-coder:30b") == "ollama"
         assert _classify("ollama:minimax-m3:cloud") == "ollama"
@@ -50,6 +54,9 @@ class TestFormatLabel:
         assert _format_label("extractive_fallback") == "Non-LLM fallback"
         assert _format_label("gateway:error") == "LLM error"
 
+    def test_qwen_model_unwraps(self):
+        assert _format_label("qwen:qwen3.8-flash") == "Qwen · qwen3.8-flash"
+
     def test_ollama_model_unwraps(self):
         assert _format_label("ollama:qwen3-coder:30b") == "Ollama · qwen3-coder:30b"
 
@@ -69,6 +76,16 @@ class TestRenderProvenanceChip:
         # warning amber palette
         assert "#8a4b00" in chip
         assert "#fff4e5" in chip
+
+    def test_qwen_synthesis_emits_qwen_color(self):
+        chip = render_provenance_chip({
+            "_source": "qwen:qwen3.8-flash",
+            "_generation_log": {"model": "qwen3.8-flash", "article_count": 12},
+        })
+        assert "Qwen" in chip
+        assert "qwen3.8-flash" in chip
+        assert "🧠" in chip
+        assert "#3a1d8a" in chip
 
     def test_ollama_synthesis_emits_ollama_color(self):
         chip = render_provenance_chip({

@@ -5,8 +5,8 @@ The evaluation suite (`core/evaluator.py`) runs **7 automated checks** to ensure
 ## Execution Architecture
 
 - **3 Concurrent LLM Judges**: Run inside a `ThreadPoolExecutor` (3 workers), each routed
-  through the **Model Gateway** (`TaskType.EVALUATE` — Gemini-first, Ollama fallback,
-  no deterministic fallback), so an Ollama quota outage no longer disables them:
+  through the **Model Gateway** (`TaskType.EVALUATE` — Gemini-first, Qwen Cloud fallback,
+  no deterministic fallback), so a Qwen Cloud quota outage no longer disables them:
   - *Categoriser Judge* (fresh theme re-classification sample)
   - *Faithfulness Judge* (fact-checking summary claims against source articles)
   - *Uniqueness Judge* (pairwise summary overlap across themes and runs)
@@ -21,7 +21,7 @@ The evaluation suite (`core/evaluator.py`) runs **7 automated checks** to ensure
 
 LLM judge calls that error out or return unparseable responses are **excluded** from the
 metric and counted in `raw_metrics` (`infra_errors` / `parse_failures` / `unmatched` /
-`failed_pairs`) — never scored as zeros. An Ollama outage must not masquerade as mass
+`failed_pairs`) — never scored as zeros. A Qwen Cloud outage must not masquerade as mass
 hallucination (faithfulness) or as perfectly distinct summaries (uniqueness). A judge that
 could score nothing at all is marked `skipped`; the Score History chart renders skipped
 points as gaps instead of the persisted 1.0 placeholder.

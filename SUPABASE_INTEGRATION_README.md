@@ -178,9 +178,9 @@ Or manually add the code from `core/supabase_ui.py`.
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-anon-key
 
-# Existing Ollama configuration
-OLLAMA_API_KEY=your-api-key
-OLLAMA_MODEL=qwen3.5:cloud
+# Existing Qwen Cloud configuration
+QWEN_API_KEY=your-api-key
+QWEN_MODEL=qwen3.8-flash
 ```
 
 ### Disabling Supabase

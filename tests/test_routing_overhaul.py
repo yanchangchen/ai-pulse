@@ -13,23 +13,23 @@ from core.ai_gateway.contracts import TaskType
 # ---------------------------------------------------------------------------
 
 class TestRoutingPolicies:
-    def test_summarise_primary_is_ollama(self):
-        """Summarise tasks should default to Ollama (nemotron) as primary."""
+    def test_summarise_primary_is_qwen(self):
+        """Summarise tasks should default to Qwen Cloud (qwen3.8-flash) as primary."""
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.SUMMARISE)
-        assert policy["primary"] == "nemotron-3-ultra"
+        assert policy["primary"] == "qwen3.8-flash"
 
-    def test_synthesise_primary_is_ollama(self):
-        """Synthesise tasks should default to Ollama as primary."""
+    def test_synthesise_primary_is_qwen(self):
+        """Synthesise tasks should default to Qwen Cloud as primary."""
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.SYNTHESISE)
-        assert policy["primary"] == "nemotron-3-ultra"
+        assert policy["primary"] == "qwen3.8-flash"
 
-    def test_project_primary_is_ollama(self):
-        """Project tasks should default to Ollama as primary."""
+    def test_project_primary_is_qwen(self):
+        """Project tasks should default to Qwen Cloud as primary."""
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.PROJECT)
-        assert policy["primary"] == "nemotron-3-ultra"
+        assert policy["primary"] == "qwen3.8-flash"
 
     def test_categorise_primary_is_gemini(self):
         """Categorise tasks should keep Gemini flash-lite as primary (lightweight)."""
@@ -50,15 +50,13 @@ class TestRoutingPolicies:
         assert "gemini-3.6-flash" in policy["fallback"]
         assert "gemini-3.8-flash" in policy["fallback"]
 
-    def test_summarise_ollama_before_gemini(self):
-        """Ollama models should come before Gemini in the summarise fallback chain."""
+    def test_summarise_qwen_before_gemini(self):
+        """Qwen should lead the full summarise chain, with Gemini behind it."""
         gw = ModelGateway()
         policy = gw._get_routing_policy(TaskType.SUMMARISE)
-        fallback = policy["fallback"]
-        ollama_positions = [i for i, m in enumerate(fallback) if "gemini" not in m]
-        gemini_positions = [i for i, m in enumerate(fallback) if "gemini" in m]
-        if ollama_positions and gemini_positions:
-            assert min(ollama_positions) < min(gemini_positions)
+        chain = [policy["primary"], *policy["fallback"]]
+        assert chain[0] == "qwen3.8-flash"
+        assert chain[1:] and all("gemini" in m for m in chain[1:])
 
 
 # ---------------------------------------------------------------------------

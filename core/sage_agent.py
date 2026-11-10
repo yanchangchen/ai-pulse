@@ -688,7 +688,7 @@ def chat_with_sage(
 
     Routing through the gateway gives Sage the same machinery as the
     summariser/classifier: per-model health tracking, retries, an ordered
-    fallback chain (Ollama primary, Ollama + Gemini fallbacks), and a
+    fallback chain (Qwen Cloud primary, Gemini fallbacks), and a
     ``Provenance`` record for every call.
 
     Returns:

@@ -84,9 +84,9 @@ def test_gemini_client_429_never_retried(mock_post, mock_sleep):
 def test_settings_find_in_mapping_nested_sections():
     from config.settings import _find_in_mapping
 
-    nested = {"general": {"GEMINI_API_KEY": "abc123", "OLLAMA_MODEL": "m"}}
+    nested = {"general": {"GEMINI_API_KEY": "abc123", "QWEN_MODEL": "m"}}
     assert _find_in_mapping(nested, "GEMINI_API_KEY") == "abc123"
-    assert _find_in_mapping(nested, "OLLAMA_MODEL") == "m"
+    assert _find_in_mapping(nested, "QWEN_MODEL") == "m"
 
     flat = {"GEMINI_API_KEY": "top-level"}
     assert _find_in_mapping(flat, "GEMINI_API_KEY") == "top-level"
@@ -107,16 +107,16 @@ def test_settings_resolves_keys_nested_under_general_section():
         pytest.skip("no local secrets.toml present")
 
     sections = toml.load(secrets_path)
-    if "general" not in sections or "OLLAMA_BASE_URL" not in sections["general"]:
+    if "general" not in sections or "QWEN_BASE_URL" not in sections["general"]:
         pytest.skip("secrets.toml does not use the [general] layout")
 
     import os
-    saved = os.environ.pop("OLLAMA_BASE_URL", None)
+    saved = os.environ.pop("QWEN_BASE_URL", None)
     try:
-        assert _get_secret("OLLAMA_BASE_URL", "") == sections["general"]["OLLAMA_BASE_URL"]
+        assert _get_secret("QWEN_BASE_URL", "") == sections["general"]["QWEN_BASE_URL"]
     finally:
         if saved is not None:
-            os.environ["OLLAMA_BASE_URL"] = saved
+            os.environ["QWEN_BASE_URL"] = saved
 
 
 def test_gateway_provider_builds_config_with_thinking():

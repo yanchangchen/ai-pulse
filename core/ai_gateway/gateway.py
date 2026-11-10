@@ -19,7 +19,7 @@ from .contracts import (
     Provenance,
     ValidationResult,
 )
-from .providers import CloudflareProvider, GeminiProvider, OllamaCloudProvider
+from .providers import CloudflareProvider, GeminiProvider, QwenCloudProvider
 from .providers.base import ProviderAdapter
 from .deterministic import (
     rule_categorise,
@@ -28,10 +28,9 @@ from .deterministic import (
     statistical_projection,
 )
 from config.settings import (
-    get_ollama_num_ctx,
     GEMINI_API_KEY,
-    OLLAMA_API_KEY,
-    OLLAMA_BASE_URL,
+    QWEN_API_KEY,
+    QWEN_BASE_URL,
     EMBEDDING_PROVIDER,
     EMBEDDING_ROUTE_PRIMARY,
     CF_ACCOUNT_ID,
@@ -64,7 +63,7 @@ class ModelGateway:
         self.health: Dict[str, ModelHealth] = {}
         # Circuit-breaker cooldown: a model latched 'unavailable' is retried
         # (half-open) this many seconds after its last failure, so a transient
-        # Ollama Cloud outage doesn't permanently demote the primary model for
+        # Qwen Cloud outage doesn't permanently demote the primary model for
         # the rest of the process lifetime.
         self.health_reset_seconds = float(
             os.getenv("GATEWAY_HEALTH_RESET_SECONDS", "300")
@@ -99,21 +98,13 @@ class ModelGateway:
                     "priority": 3,
                     "thinking_level": "medium",
                 },
-                "nemotron-3-ultra": {
-                    "provider": "ollama",
-                    "model": "nemotron-3-ultra:cloud",
-                    "tasks": ["summarise", "synthesise", "project", "extract", "evaluate", "sage_chat"],
-                    "cost_class": "medium",
-                    "priority": 2,
-                    "context_window": 262144,
-                },
-                "gpt-oss-120b": {
-                    "provider": "ollama",
-                    "model": "gpt-oss:120b-cloud",
-                    "tasks": ["summarise", "synthesise", "project", "extract", "evaluate", "sage_chat"],
-                    "cost_class": "medium",
-                    "priority": 3,
-                    "context_window": 131072,
+                "qwen3.8-flash": {
+                    "provider": "qwen",
+                    "model": "qwen3.8-flash",
+                    "tasks": ["categorise", "extract", "summarise", "synthesise", "project", "evaluate", "sage_chat"],
+                    "cost_class": "low",
+                    "priority": 1,
+                    "context_window": 1_000_000,
                 },
                 # Dense embeddings (Phase 3).  gemini-embedding-001 is a
                 # single embedding-only model — it never serves generation
@@ -141,8 +132,7 @@ class ModelGateway:
                     "primary": "gemini-3.5-flash-lite",
                     "fallback": [
                         "gemini-3.8-flash",
-                        "nemotron-3-ultra",
-                        "gpt-oss-120b",
+                        "qwen3.8-flash",
                     ],
                     "deterministic_fallback": True,
                 },
@@ -150,40 +140,36 @@ class ModelGateway:
                     "primary": "gemini-3.5-flash-lite",
                     "fallback": [
                         "gemini-3.8-flash",
-                        "nemotron-3-ultra",
-                        "gpt-oss-120b",
+                        "qwen3.8-flash",
                     ],
                     "deterministic_fallback": True,
                 },
                 "summarise": {
-                    "primary": "nemotron-3-ultra",
+                    "primary": "qwen3.8-flash",
                     "fallback": [
-                        "gpt-oss-120b",
                         "gemini-3.6-flash",
                         "gemini-3.8-flash",
                     ],
                     "deterministic_fallback": True,
                 },
                 "synthesise": {
-                    "primary": "nemotron-3-ultra",
+                    "primary": "qwen3.8-flash",
                     "fallback": [
-                        "gpt-oss-120b",
                         "gemini-3.6-flash",
                         "gemini-3.8-flash",
                     ],
                     "deterministic_fallback": True,
                 },
                 "project": {
-                    "primary": "nemotron-3-ultra",
+                    "primary": "qwen3.8-flash",
                     "fallback": [
-                        "gpt-oss-120b",
                         "gemini-3.6-flash",
                         "gemini-3.8-flash",
                     ],
                     "deterministic_fallback": True,
                 },
-                # LLM-as-judge evaluation: Gemini-first (an Ollama quota
-                # outage must not disable the quality judges), Ollama as
+                # LLM-as-judge evaluation: Gemini-first (a Qwen Cloud quota
+                # outage must not disable the quality judges), Qwen Cloud as
                 # fallback, and NO deterministic fallback — a rule-based
                 # substitute for a judge verdict is meaningless, so total
                 # failure surfaces to the evaluator, which excludes the
@@ -192,21 +178,19 @@ class ModelGateway:
                     "primary": "gemini-3.5-flash-lite",
                     "fallback": [
                         "gemini-3.8-flash",
-                        "nemotron-3-ultra",
-                        "gpt-oss-120b",
+                        "qwen3.8-flash",
                     ],
                     "deterministic_fallback": False,
                 },
-                # Sage conversational chat: Ollama-primary (matches the old
-                # direct-LLMClient behaviour — nemotron was Sage's engine),
+                # Sage conversational chat: Qwen Cloud-primary (matches the
+                # old direct-LLMClient behaviour — Qwen is Sage's engine),
                 # Gemini as the safety net, and NO deterministic fallback —
                 # a rule-based stand-in for Sage's persona would fabricate
                 # an "analysis", so total failure surfaces as a friendly
                 # notice string instead.
                 "sage_chat": {
-                    "primary": "nemotron-3-ultra",
+                    "primary": "qwen3.8-flash",
                     "fallback": [
-                        "gpt-oss-120b",
                         "gemini-3.6-flash",
                         "gemini-3.8-flash",
                     ],
@@ -263,21 +247,29 @@ class ModelGateway:
             except ImportError as e:
                 logger.warning(f"Gemini provider not available: {e}")
 
-        # Ollama Cloud
-        ollama_key = OLLAMA_API_KEY
-        ollama_url = OLLAMA_BASE_URL
-        if ollama_key:
+        # Qwen Cloud (OpenAI-compatible chat completions)
+        qwen_key = QWEN_API_KEY
+        qwen_url = QWEN_BASE_URL
+        if qwen_key:
             for name, cfg in self.routing_config["model_registry"].items():
-                if cfg["provider"] == "ollama":
-                    self.providers[name] = OllamaCloudProvider(
-                        base_url=ollama_url,
-                        api_key=ollama_key,
+                if cfg["provider"] == "qwen":
+                    self.providers[name] = QwenCloudProvider(
+                        base_url=qwen_url,
+                        api_key=qwen_key,
                         model=cfg["model"],
-                        request_timeout=float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "180")),
+                        request_timeout=float(os.getenv("QWEN_REQUEST_TIMEOUT", "180")),
+                        context_window=cfg.get("context_window", 131072),
                     )
                     self.health[name] = ModelHealth(
-                        provider="ollama", model=cfg["model"]
+                        provider="qwen", model=cfg["model"]
                     )
+        else:
+            logger.warning(
+                "QWEN_API_KEY is not configured; Qwen Cloud primaries "
+                "(summarise/synthesise/project/sage_chat) will be skipped and "
+                "every task will fall back to Gemini. Add QWEN_API_KEY (or "
+                "DASHSCOPE_API_KEY) to secrets.toml or the environment."
+            )
 
         # Cloudflare Workers AI (embedding-only, Phase 3.5 Option A).
         # Registering the adapter is NOT the same as selecting it: the
@@ -532,7 +524,7 @@ Return JSON: {{"category": "theme name"}}""",
                     f"({detail}); auto-resets {self.health_reset_seconds:.0f}s "
                     f"after the last failure"
                 )
-                # Make primary skips loud — this is why nemotron silently
+                # Make primary skips loud — this is why qwen3.8-flash silently
                 # stops being used once it latches off.
                 if model_key == policy.get("primary"):
                     logger.warning(msg)

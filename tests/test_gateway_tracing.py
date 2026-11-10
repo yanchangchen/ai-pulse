@@ -136,13 +136,13 @@ class TestEnabledTracing:
         assert span.name == "gateway.sage_chat"
         attrs = span.attributes
         assert attrs["langfuse.observation.type"] == "generation"
-        assert attrs["gen_ai.request.model"] == "fake:cloud"
-        assert attrs["gen_ai.response.model"] == "fake:cloud"
+        assert attrs["gen_ai.request.model"] == "qwen3.8-flash"
+        assert attrs["gen_ai.response.model"] == "qwen3.8-flash"
         assert attrs["gen_ai.usage.input_tokens"] == 123
         assert attrs["gen_ai.usage.output_tokens"] == 45
         assert attrs["langfuse.observation.input"] == "hello"
         assert attrs["langfuse.observation.output"] == "ok."
-        assert attrs["langfuse.observation.metadata.provider"] == "ollama"
+        assert attrs["langfuse.observation.metadata.provider"] == "qwen"
         assert attrs["langfuse.observation.metadata.method"] == "llm"
         assert attrs["gen_ai.request.temperature"] == 0.3
 
@@ -201,13 +201,13 @@ class TestEnabledTracing:
         exporter = _enable_in_memory(monkeypatch)
         # Categorise with no working providers -> deterministic fallback.
         gw = ModelGateway(routing_config={
-            "model_registry": {"m1": {"provider": "ollama", "model": "f", "cost_class": "low"}},
+            "model_registry": {"m1": {"provider": "qwen", "model": "f", "cost_class": "low"}},
             "routing_policies": {
                 "categorise": {"primary": "m1", "fallback": [], "deterministic_fallback": True}
             },
         })
         gw.providers = {"m1": FakeProvider(error=RuntimeError("500 boom"))}
-        gw.health = {"m1": ModelHealth(provider="ollama", model="f")}
+        gw.health = {"m1": ModelHealth(provider="qwen", model="f")}
         result = asyncio.run(gw.execute(AITaskRequest(task=TaskType.CATEGORISE, input="Some article text about AI")))
 
         assert result.is_success()

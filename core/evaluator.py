@@ -361,9 +361,9 @@ class GatewayJudgeLLM:
     Judges call ``.generate(prompt, temperature, max_tokens, event_sink)``
     and expect raw text back, or ``LLMClientError``.  Routing through the
     gateway gives the judges per-model health tracking, retries, an
-    ordered Gemini-first fallback chain, and provenance — so an Ollama
+    ordered Gemini-first fallback chain, and provenance — so a Qwen Cloud
     quota outage no longer disables the LLM judges (previously they were
-    wired to the Ollama-only legacy ``LLMClient``).
+    wired to the legacy ``LLMClient``).
 
     Deterministic fallback is disabled end-to-end: a rule-based substitute
     for a judge verdict is meaningless, so total failure raises
@@ -435,9 +435,9 @@ def _gateway_has_providers() -> bool:
     """Cheap readiness check: has the Model Gateway any configured providers?
 
     Used to degrade an evaluation to deterministic-only judges when no LLM
-    backend is wired up (missing API keys), replacing the old Ollama-quota
-    gate — with Gemini-first EVALUATE routing, an Ollama quota outage no
-    longer means the LLM judges can't run.
+    backend is wired up (missing API keys), replacing the old quota
+    gate — with Gemini-first EVALUATE routing, a Qwen Cloud quota outage
+    no longer means the LLM judges can't run.
     """
     try:
         from core.ai_gateway.gateway import get_gateway
@@ -501,7 +501,7 @@ def _extract_json(text: str) -> Optional[Dict]:
 
 
 # Common alternate keys the model may use instead of "score".  Picked from
-# observed drift across the Ollama Cloud model in use.
+# observed drift across the Qwen Cloud model in use.
 _SCORE_KEY_ALIASES = ("score", "faithfulness", "rating", "value", "s", "n")
 
 
@@ -667,7 +667,7 @@ def _judge_single_classification(
     ``None`` on a judged sample, ``"infra_error"`` when the LLM call
     failed, or ``"unmatched"`` when the response couldn't be mapped to a
     canonical theme.  Failed samples are EXCLUDED from the accuracy
-    denominator by the caller — an Ollama outage must not masquerade as
+    denominator by the caller — a Qwen Cloud outage must not masquerade as
     mass misclassification.
     """
     run_id = article.get("run_id", "")
@@ -1985,14 +1985,14 @@ def _execute_judges_and_build_report(
     """
     quota_exceeded_before = LLMClient.is_quota_exceeded()
     # LLM judges route through the Model Gateway (Gemini-first EVALUATE
-    # policy), so an Ollama quota outage no longer disables them — only a
+    # policy), so a Qwen Cloud quota outage no longer disables them — only a
     # gateway with zero configured providers does.
     gateway_ready = (
         _gateway_has_providers() if judge_selection in ("all", "llm") else False
     )
     if judge_selection in ("all", "llm") and not gateway_ready:
         logger.warning(
-            "Model Gateway has no providers configured (ollama_quota_exceeded=%s). "
+            "Model Gateway has no providers configured (qwen_quota_exceeded=%s). "
             "Disabling LLM judges and enforcing deterministic judges.",
             quota_exceeded_before,
         )

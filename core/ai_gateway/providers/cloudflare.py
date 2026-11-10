@@ -152,7 +152,7 @@ class CloudflareProvider(ProviderAdapter):
     async def generate(self, prompt: str, **kwargs) -> Dict[str, Any]:
         raise NotImplementedError(
             "CloudflareProvider is embedding-only; route generation tasks to "
-            "a Gemini/Ollama model"
+            "a Gemini/Qwen model"
         )
 
     async def generate_structured(
@@ -160,7 +160,7 @@ class CloudflareProvider(ProviderAdapter):
     ) -> Dict[str, Any]:
         raise NotImplementedError(
             "CloudflareProvider is embedding-only; route structured tasks to "
-            "a Gemini/Ollama model"
+            "a Gemini/Qwen model"
         )
 
     # ------------------------------------------------------------------

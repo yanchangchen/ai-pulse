@@ -1,7 +1,7 @@
 """Tests for the EVALUATE task type and the GatewayJudgeLLM adapter.
 
-The evaluation judges were migrated from the Ollama-only legacy LLMClient
-to the Model Gateway so an Ollama quota outage no longer disables them
+The evaluation judges were migrated from the legacy LLMClient
+to the Model Gateway so a Qwen Cloud quota outage no longer disables them
 (EVALUATE routes Gemini-first).  These tests pin:
 
 - the EVALUATE routing policy (Gemini-first, no deterministic fallback)
@@ -50,8 +50,8 @@ class TestEvaluateRouting:
         policy = gw._get_routing_policy(TaskType.EVALUATE)
         assert policy["primary"] == "gemini-3.5-flash-lite"
         assert "gemini-3.8-flash" in policy["fallback"]
-        # Ollama models remain in the chain as fallbacks.
-        assert "nemotron-3-ultra" in policy["fallback"]
+        # Qwen remains in the chain as a fallback.
+        assert "qwen3.8-flash" in policy["fallback"]
 
     def test_evaluate_has_no_deterministic_fallback(self):
         gw = ModelGateway()
@@ -98,37 +98,37 @@ class TestPreferredModelPinning:
         from core.ai_gateway.gateway import ModelHealth
 
         gw = ModelGateway()
-        nemotron, gemini = _FakeProvider(), _FakeProvider()
+        qwen, gemini = _FakeProvider(), _FakeProvider()
         gw.providers = {
-            "nemotron-3-ultra": nemotron,
+            "qwen3.8-flash": qwen,
             "gemini-3.5-flash-lite": gemini,
         }
         gw.health = {
-            "nemotron-3-ultra": ModelHealth(provider="ollama", model="nemotron-3-ultra:cloud"),
+            "qwen3.8-flash": ModelHealth(provider="qwen", model="qwen3.8-flash"),
             "gemini-3.5-flash-lite": ModelHealth(provider="google", model="gemini-3.5-flash-lite"),
         }
-        return gw, nemotron, gemini
+        return gw, qwen, gemini
 
     def test_pinned_model_is_used_exclusively(self):
         import asyncio
 
-        gw, nemotron, gemini = self._gateway_with_fakes()
+        gw, qwen, gemini = self._gateway_with_fakes()
         req = AITaskRequest(
             task=TaskType.EVALUATE,
             input="JUDGE PROMPT",
             allow_deterministic_fallback=False,
-            preferred_model="nemotron-3-ultra",
+            preferred_model="qwen3.8-flash",
         )
         result = asyncio.run(gw.execute(req))
         assert result.is_success()
-        assert nemotron.calls == 1
+        assert qwen.calls == 1
         assert gemini.calls == 0  # no cross-model fallback when pinned
-        assert result.provenance.model == "nemotron-3-ultra:cloud"
+        assert result.provenance.model == "qwen3.8-flash"
 
     def test_unknown_preferred_model_uses_default_chain(self):
         import asyncio
 
-        gw, nemotron, gemini = self._gateway_with_fakes()
+        gw, qwen, gemini = self._gateway_with_fakes()
         req = AITaskRequest(
             task=TaskType.EVALUATE,
             input="JUDGE PROMPT",
@@ -144,7 +144,7 @@ class TestPreferredModelPinning:
     def test_no_preference_keeps_full_chain(self):
         import asyncio
 
-        gw, nemotron, gemini = self._gateway_with_fakes()
+        gw, qwen, gemini = self._gateway_with_fakes()
         req = AITaskRequest(
             task=TaskType.EVALUATE,
             input="JUDGE PROMPT",
@@ -153,7 +153,7 @@ class TestPreferredModelPinning:
         result = asyncio.run(gw.execute(req))
         assert result.is_success()
         assert gemini.calls == 1
-        assert nemotron.calls == 0
+        assert qwen.calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +196,9 @@ class TestGatewayJudgeLLM:
         gw = self._gw_with(result=_result("ok"))
         with patch("core.ai_gateway.gateway.get_gateway", return_value=gw):
             from core.evaluator import GatewayJudgeLLM
-            GatewayJudgeLLM(label="test", model_key="gpt-oss-120b").generate("prompt")
+            GatewayJudgeLLM(label="test", model_key="qwen3.8-flash").generate("prompt")
         req = gw.execute.call_args.args[0]
-        assert req.preferred_model == "gpt-oss-120b"
+        assert req.preferred_model == "qwen3.8-flash"
 
     def test_no_model_key_leaves_request_unpinned(self):
         gw = self._gw_with(result=_result("ok"))

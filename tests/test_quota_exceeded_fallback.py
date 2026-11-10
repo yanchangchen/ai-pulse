@@ -94,11 +94,11 @@ def test_evaluator_runs_deterministic_only_without_gateway_providers(mock_gw):
 @patch("core.evaluator.faithfulness_judge")
 @patch("core.evaluator.categoriser_judge")
 @patch("core.evaluator._gateway_has_providers", return_value=True)
-def test_llm_judges_run_despite_ollama_quota_when_gateway_ready(
+def test_llm_judges_run_despite_qwen_quota_when_gateway_ready(
     mock_gw, mock_cat, mock_faith, mock_uniq, mock_kw, mock_insert
 ):
     """The judges route through the Model Gateway (Gemini-first EVALUATE
-    policy), so an Ollama quota outage alone must NOT disable them."""
+    policy), so a Qwen Cloud quota outage alone must NOT disable them."""
     LLMClient.mark_quota_exceeded("Quota limit test")
 
     mock_cat.return_value = (0.9, {}, {"samples_judged": 5})
@@ -139,7 +139,7 @@ def test_format_display_timestamp():
 
 
 def test_probe_resets_flag_on_200():
-    """A 200 from /api/tags proves quota is back — the flag must clear."""
+    """A 200 from /models proves quota is back — the flag must clear."""
     LLMClient.mark_quota_exceeded("Pre-probe stale flag")
     assert LLMClient.is_quota_exceeded() is True
 
@@ -152,13 +152,13 @@ def test_probe_resets_flag_on_200():
     assert result is True
     assert LLMClient.is_quota_exceeded() is False
     assert LLMClient.get_quota_message() == ""
-    # Probe must hit /api/tags (not /api/generate)
+    # Probe must hit /models (not /chat/completions)
     called_url = mock_get.call_args[0][0]
-    assert called_url.endswith("/api/tags")
+    assert called_url.endswith("/models")
 
 
 def test_probe_refreshes_flag_on_429():
-    """A 429 from /api/tags means quota is still exhausted — keep flag set."""
+    """A 429 from /models means quota is still exhausted — keep flag set."""
     LLMClient.reset_quota_status()
     assert LLMClient.is_quota_exceeded() is False
 
@@ -175,7 +175,7 @@ def test_probe_refreshes_flag_on_429():
 
 
 def test_probe_leaves_flag_unchanged_on_transport_error():
-    """If we cannot reach Ollama, we cannot confirm — leave the flag as-is."""
+    """If we cannot reach Qwen Cloud, we cannot confirm — leave the flag as-is."""
     LLMClient.mark_quota_exceeded("Pre-probe flag")
     assert LLMClient.is_quota_exceeded() is True
     msg_before = LLMClient.get_quota_message()
@@ -235,7 +235,7 @@ def test_reset_quota_status_clears_cause():
 
 
 def test_empty_response_recovery_probe_returns_true_on_200():
-    """A 200 from /api/tags inside the retry loop means retry would succeed."""
+    """A 200 from /models inside the retry loop means retry would succeed."""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
 
@@ -258,14 +258,16 @@ def test_empty_response_recovery_probe_returns_false_on_network_error():
 
 
 def test_generate_recovers_on_empty_body_when_probe_returns_200():
-    """If the first /api/generate returns an empty body but /api/tags is 200,
+    """If the first /chat/completions call returns an empty body but /models is 200,
     a fresh retry should succeed without bumping the streak."""
     client = LLMClient()
     empty_resp = MagicMock(status_code=200)
-    empty_resp.json.return_value = {"response": ""}
+    empty_resp.json.return_value = {"choices": [{"message": {"content": ""}}]}
     empty_resp.text = ""
     good_resp = MagicMock(status_code=200)
-    good_resp.json.return_value = {"response": "Recovered narrative."}
+    good_resp.json.return_value = {
+        "choices": [{"message": {"content": "Recovered narrative."}}]
+    }
     good_resp.text = "Recovered narrative."
 
     probe_resp = MagicMock(status_code=200)
@@ -281,7 +283,7 @@ def test_generate_recovers_on_empty_body_when_probe_returns_200():
 
 
 def test_generate_marks_degraded_empty_response_after_threshold():
-    """When /api/tags probe also fails across all 3 retries, the cause tag
+    """When the /models probe also fails across all 3 retries, the cause tag
     must be ``empty_response`` (not ``quota_429``) so the banner is honest.
 
     Exception classes are resolved through ``llm_client_mod`` at call time
@@ -291,7 +293,7 @@ def test_generate_marks_degraded_empty_response_after_threshold():
     """
     client = llm_client_mod.LLMClient()
     empty_resp = MagicMock(status_code=200)
-    empty_resp.json.return_value = {"response": ""}
+    empty_resp.json.return_value = {"choices": [{"message": {"content": ""}}]}
     empty_resp.text = ""
 
     probe_fail = MagicMock(status_code=500)

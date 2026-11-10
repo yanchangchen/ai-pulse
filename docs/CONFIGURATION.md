@@ -6,8 +6,9 @@ Where every setting lives, how it is resolved, and the gotchas. Read this before
 ## `.streamlit/secrets.toml`
 
 Read by `config/settings.py` `_get_secret()` in order: `st.secrets` → direct TOML parse →
-env vars → default. Keys: `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default
-`nemotron-3-ultra:cloud`), `OLLAMA_API_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL` (default
+env vars → default. Keys: `QWEN_BASE_URL` (default Token Plan endpoint
+`https://token-plan.maas.qwencloudapi.com/compatible-mode/v1`), `QWEN_MODEL` (default
+`qwen3.8-flash`), `QWEN_API_KEY` (falls back to `DASHSCOPE_API_KEY`), `GEMINI_API_KEY`, `GEMINI_MODEL` (default
 `gemini-3.8-flash`; `GEMINI_AVAILABLE_MODELS` lists the switchable set — stable/GA
 models only), `GEMINI_EMBEDDING_MODEL` (default `gemini-embedding-001`),
 `EMBEDDING_PROVIDER` (default `gemini`; set to `cloudflare` only in a migration window),
@@ -65,7 +66,7 @@ only a non-768 model would require a migration.
 ## Gateway provider init
 
 `ModelGateway._init_providers()` (`core/ai_gateway/gateway.py`) resolves
-`GEMINI_API_KEY` / `OLLAMA_API_KEY` / `OLLAMA_BASE_URL` **through the `config.settings`
+`GEMINI_API_KEY` / `QWEN_API_KEY` / `QWEN_BASE_URL` **through the `config.settings`
 constants**, i.e. the same `st.secrets` → secrets.toml → env vars → default chain. Keys
 stored only in `secrets.toml` are visible to the gateway; plain OS environment variables
 also work.
@@ -75,8 +76,8 @@ also work.
 > providers when keys lived only in `secrets.toml` — every gateway task then silently
 > landed on the deterministic fallback ("Non-LLM" / "gateway:error" provenance chips).
 
-Gateway behaviour tunables (OS env vars): `OLLAMA_REQUEST_TIMEOUT` (default 180s — cloud
-models can exceed 60s under load), `GEMINI_REQUEST_TIMEOUT` (default 30s),
+Gateway behaviour tunables (OS env vars): `QWEN_REQUEST_TIMEOUT` (default 180s — large
+summary prompts can exceed 60s under load), `GEMINI_REQUEST_TIMEOUT` (default 30s),
 `GATEWAY_HEALTH_RESET_SECONDS` (default 300s).
 
 ## Langfuse tracing (Phase 0.3, Pillar F)
@@ -96,8 +97,8 @@ nothing else.
 
 Source of truth for `DAYS_LOOKBACK` (14), `CACHE_TTL_SECONDS` (12h), `FETCH_WORKERS` (8),
 evaluation budgets, and the **model-aware context-window table**
-(`OLLAMA_MODEL_CONTEXT_WINDOWS` / `get_ollama_num_ctx()` — wrong `num_ctx` truncates input
-and causes empty responses).
+(`QWEN_MODEL_CONTEXT_WINDOWS` / `get_qwen_context_window()` — qwen3.8-flash and
+qwen3.8-max both expose a native 1M-token window).
 
 ## Summariser tuner settings — `config/custom_settings.json`
 

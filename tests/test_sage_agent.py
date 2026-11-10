@@ -26,8 +26,8 @@ def _gateway_result(
     provenance = Provenance(
         task="sage_chat",
         method="llm" if status == "success" else "failed",
-        provider="ollama",
-        model="nemotron-3-ultra:cloud",
+        provider="qwen",
+        model="qwen3.8-flash",
         latency_ms=1234,
         fallback_used=fallback_used,
         error=error,
@@ -767,7 +767,7 @@ class TestChatWithSage:
             result = chat_with_sage(messages, context)
 
         assert result["response"] == "Sage says hello."
-        assert result["provenance"]["model"] == "nemotron-3-ultra:cloud"
+        assert result["provenance"]["model"] == "qwen3.8-flash"
         assert result["provenance"]["task"] == "sage_chat"
 
     def test_request_routed_as_sage_chat_without_deterministic_fallback(self):

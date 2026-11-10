@@ -14,7 +14,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 
 ## ✨ Key Features
 
-- **Multi-model AI gateway** — task-typed LLM calls routed across Gemini and Ollama Cloud with fallback chains, health tracking, context-fit checks, and per-request timeouts. [Architecture details →](docs/ARCHITECTURE.md#routing-policies)
+- **Multi-model AI gateway** — task-typed LLM calls routed across Qwen Cloud and Gemini with fallback chains, health tracking, context-fit checks, and per-request timeouts. [Architecture details →](docs/ARCHITECTURE.md#routing-policies)
 - **Dense article embeddings** — 768-dim vectors in Supabase pgvector with per-article model provenance. Today Gemini-only; free hosted alternatives (Cloudflare, Jina) and a self-deployed Render service are documented in [Embedding providers →](docs/EMBEDDING_PROVIDERS.md)
 - **Deterministic classification** — 4-pass waterfall (keywords → TF-IDF → optional LLM → heuristic). The LLM gate can be disabled entirely once keyword coverage matures. [Modes explained →](docs/ARCHITECTURE.md#classification-modes)
 - **Self-improving keywords** — after each run, missing keywords are heuristically extracted from LLM/heuristic articles and auto-applied if they appear in 3+ articles. [How it works →](docs/ARCHITECTURE.md#self-improving-keywords)
@@ -32,9 +32,9 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 Create `.streamlit/secrets.toml`:
 ```toml
 [general]
-OLLAMA_BASE_URL = "https://api.ollama.com"
-OLLAMA_MODEL    = "nemotron-3-ultra:cloud"
-OLLAMA_API_KEY  = "your-ollama-api-key"
+QWEN_BASE_URL   = "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1"
+QWEN_MODEL      = "qwen3.8-flash"
+QWEN_API_KEY    = "your-qwen-cloud-api-key"
 GEMINI_API_KEY  = "your-gemini-api-key"
 ```
 
@@ -48,11 +48,11 @@ service is documented, but not wired, in
 The Model Gateway resolves provider keys through `config.settings` (st.secrets → secrets.toml → env vars → default), so `secrets.toml` alone is sufficient; OS env vars also work and additionally tune gateway behaviour:
 
 ```bash
-export OLLAMA_BASE_URL="https://api.ollama.com"
-export OLLAMA_API_KEY="your-ollama-api-key"
+export QWEN_BASE_URL="https://token-plan.maas.qwencloudapi.com/compatible-mode/v1"
+export QWEN_API_KEY="your-qwen-cloud-api-key"
 export GEMINI_API_KEY="your-gemini-api-key"
 # Optional: tune per-provider request timeouts and health recovery
-export OLLAMA_REQUEST_TIMEOUT="180"         # seconds; default 180 (cloud models can be slow under load)
+export QWEN_REQUEST_TIMEOUT="180"           # seconds; default 180 (large summary prompts can be slow)
 export GEMINI_REQUEST_TIMEOUT="30"          # seconds; default 30
 export GATEWAY_HEALTH_RESET_SECONDS="300"   # cooldown before an "unavailable" model is retried; default 300
 ```

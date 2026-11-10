@@ -177,8 +177,8 @@ No product impact analyzed.
 """
         fake_prov = MagicMock()
         fake_prov.method = "llm"
-        fake_prov.provider = "ollama"
-        fake_prov.model = "nemotron-3-ultra"
+        fake_prov.provider = "qwen"
+        fake_prov.model = "qwen3.8-flash"
         fake_prov.task = "summarise"
         fake_prov.latency_ms = 123
         fake_prov.attempts = 1
@@ -221,8 +221,8 @@ Enterprise adoption is accelerating.
 """
         fake_prov = MagicMock()
         fake_prov.method = "llm"
-        fake_prov.provider = "ollama"
-        fake_prov.model = "nemotron-3-ultra"
+        fake_prov.provider = "qwen"
+        fake_prov.model = "qwen3.8-flash"
         fake_prov.task = "summarise"
         fake_prov.latency_ms = 123
         fake_prov.attempts = 1
@@ -257,8 +257,8 @@ Enterprise adoption is accelerating.
         fake_result.result = "## 1. WHAT IS HAPPENING\nSignal.\n## 2. ENGINEERING TRADEOFFS\nTradeoffs.\n## 3. PRODUCT IMPACT\nImpact.\n## 4. ACTIONABLE WATCHLIST\n- Item\n## 5. STRATEGIC FURTHER READING\n- Art | Src | url"
         fake_prov = MagicMock()
         fake_prov.method = "llm"
-        fake_prov.provider = "ollama"
-        fake_prov.model = "nemotron-3-ultra"
+        fake_prov.provider = "qwen"
+        fake_prov.model = "qwen3.8-flash"
         fake_prov.task = "summarise"
         fake_prov.latency_ms = 100
         fake_prov.attempts = 1

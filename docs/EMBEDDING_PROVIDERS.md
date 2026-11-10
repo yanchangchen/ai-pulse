@@ -573,5 +573,3 @@ truth; the query above is the application-side proxy.
   <https://render.com/docs/free>
 - fastembed supported models (bge-base-en-v1.5: 768 dims / 0.210 GB; nomic-embed-text-v1.5:
   768 dims / 0.520 GB): <https://qdrant.github.io/fastembed/examples/Supported_Models/>
-- Ollama Cloud docs (no embedding endpoint documented — not a viable hosted option):
-  <https://docs.ollama.com/cloud>

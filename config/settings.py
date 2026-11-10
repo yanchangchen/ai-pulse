@@ -1,6 +1,6 @@
 """
 Centralized settings for AI Pulse.
-Single source of truth for Ollama configuration, API keys, and app constants.
+Single source of truth for Qwen Cloud configuration, API keys, and app constants.
 
 Resolution order: st.secrets → os.environ → defaults (fail gracefully).
 """
@@ -86,11 +86,19 @@ def _get_secret(key: str, default: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Ollama Cloud configuration
+# Qwen Cloud configuration (OpenAI-compatible endpoint)
 # ---------------------------------------------------------------------------
-OLLAMA_BASE_URL: str = _get_secret("OLLAMA_BASE_URL", "https://api.ollama.com")
-OLLAMA_MODEL: str = _get_secret("OLLAMA_MODEL", "nemotron-3-ultra:cloud")
-OLLAMA_API_KEY: str = _get_secret("OLLAMA_API_KEY", "")
+# Regional endpoint and key must match — a key issued for one region does not
+# work against another region's endpoint.  The api key can also be supplied
+# through the OpenAI/DashScope-standard DASHSCOPE_API_KEY variable.
+QWEN_BASE_URL: str = _get_secret(
+    "QWEN_BASE_URL",
+    "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1",
+)
+QWEN_MODEL: str = _get_secret("QWEN_MODEL", "qwen3.8-flash")
+QWEN_API_KEY: str = _get_secret(
+    "QWEN_API_KEY", _get_secret("DASHSCOPE_API_KEY", "")
+)
 
 # ---------------------------------------------------------------------------
 # Google Gemini API configuration (On-Demand Deep Dive Summarisation)
@@ -193,8 +201,7 @@ EVALUATION_MAX_RUNS: int = 7
 EVALUATION_JUDGE_MODELS: dict[str, str] = {
     "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
     "gemini-3.8-flash": "Gemini 3.8 Flash",
-    "nemotron-3-ultra": "Nemotron 3 Ultra (Ollama)",
-    "gpt-oss-120b": "GPT-OSS 120B (Ollama)",
+    "qwen3.8-flash": "Qwen 3.8 Flash (Qwen Cloud)",
 }
 # How often the WeeklyEvaluator background thread wakes up to check whether
 # it should run (seconds).  1 hour is plenty — evaluations are weekly.
@@ -249,37 +256,30 @@ EVAL_FAITHFULNESS_SKIP_STRINGS: tuple = (
 # ---------------------------------------------------------------------------
 # LLM context window - MODEL AWARE
 # ---------------------------------------------------------------------------
-# Context window sizes per model (tokens).  Ollama Cloud models have specific
-# context limits; using the wrong num_ctx truncates input and causes empty responses.
-OLLAMA_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "nemotron-3-super:cloud": 262144,      # 256K context
-    "nemotron-3-super": 262144,
-    "nemotron-3-ultra:cloud": 262144,      # If available
-    "nemotron-3-ultra": 262144,
-    "gpt-oss:120b-cloud": 131072,          # 128K context
-    "gpt-oss:120b": 131072,
-    "gpt-oss:20b-cloud": 131072,
-    "gpt-oss:20b": 131072,
-    "nemotron-3-nano:30b": 131072,
-    "minimax-m3:cloud": 32768,             # Previous model
-    "minimax-m3": 32768,
+# Context window sizes per model (tokens).  Qwen 3.8 Flash and Max both ship
+# a native 1M-token context window (QwenCloud changelog).
+QWEN_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "qwen3.8-flash": 1_000_000,
+    "qwen3.8-max": 1_000_000,
 }
 
-def get_ollama_num_ctx(model: str = None) -> int:
-    """Get appropriate num_ctx for the current model."""
-    if model is None:
-        model = OLLAMA_MODEL
-    return OLLAMA_MODEL_CONTEXT_WINDOWS.get(model, 32768)  # Default 32K
 
-# Backward compatibility - compute dynamically for current model
-OLLAMA_NUM_CTX: int = get_ollama_num_ctx()
+def get_qwen_context_window(model: str = None) -> int:
+    """Get the context window for a Qwen Cloud model."""
+    if model is None:
+        model = QWEN_MODEL
+    return QWEN_MODEL_CONTEXT_WINDOWS.get(model, 131072)  # Default 128K
+
+
+# Context budget used when formatting prompts for the primary model.
+QWEN_NUM_CTX: int = get_qwen_context_window()
 MAX_ARTICLES_PER_SUMMARY: int = 12
 MAX_ARTICLES_PER_GEMINI_SUMMARY: int = 75
-# Rough chars-per-token ratio.  Used to budget the input side of num_ctx.
+# Rough chars-per-token ratio.  Used to budget the input side of the context window.
 # 3 chars/token is a conservative estimate that errs on the side of
 # truncation rather than overflow.
 CHARS_PER_TOKEN: int = 3
-# Fraction of num_ctx reserved for input (rest is for system + output).
+# Fraction of the context window reserved for input (rest is for system + output).
 INPUT_BUDGET_FRACTION: float = 0.6
 
 # How close together (in minutes) two runs with the same article fingerprint

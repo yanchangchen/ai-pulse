@@ -67,3 +67,36 @@ Future.md.)*
 | Helicone | Free tier + OSS | Free | Low | Ruled out: proxy/gateway-first — would duplicate the routing/fallback layer `core/ai_gateway` already provides |
 
 *Context: Langfuse was acquired by ClickHouse in Jan 2026; it remains open-source and self-hostable, but production self-hosting grew heavy (the 6-service stack above). Phoenix remains lightweight.*
+
+---
+
+## Decision: generation provider — Qwen Cloud replaces Ollama *(2026-11-11)*
+
+> **Decision (2026-11-11): remove Ollama Cloud; make Qwen Cloud (`qwen3.8-flash`) the generation primary.** Ollama is no longer free, so it was dropped from the gateway entirely rather than left as a dead fallback.
+
+**What changed**
+
+- `OllamaCloudProvider` and every `OLLAMA_*` setting were deleted; `QwenCloudProvider` (`core/ai_gateway/providers/qwen.py`) calls QwenCloud's OpenAI-compatible `POST /chat/completions` with `Authorization: Bearer <key>`.
+- The legacy synchronous `core/llm_client.py` was ported to the same API (chat `messages` in, `choices[0].message.content` out). Its quota probe tries `GET /models` first and falls back to a 1-token chat request when the deployment answers 404/405.
+- Config: `QWEN_BASE_URL`, `QWEN_MODEL` (default `qwen3.8-flash`), `QWEN_API_KEY` (also accepts `DASHSCOPE_API_KEY`). The Token Plan endpoint is `https://token-plan.maas.qwencloudapi.com/compatible-mode/v1`; keys are plan/region-specific.
+- Context window: `qwen3.8-flash` / `qwen3.8-max` are documented with a native 1M-token window (`QWEN_MODEL_CONTEXT_WINDOWS`).
+
+**Routing**
+
+| Task | Primary | Fallbacks |
+|---|---|---|
+| summarise / synthesise / project / sage_chat | qwen3.8-flash | gemini-3.6-flash, gemini-3.8-flash |
+| categorise / extract / evaluate | gemini-3.5-flash-lite | gemini-3.8-flash, qwen3.8-flash |
+
+The Gemini-first tasks stay that way by design: classification is cheaper on flash-lite, and keeping the judges Gemini-first means a Qwen outage cannot disable evaluation. Qwen took Ollama's former slots (primary where Ollama was primary, fallback where it was a fallback).
+
+**Provenance compatibility**
+
+- New summaries carry `qwen:<model>` and render a Qwen chip. The old `ollama:` chip mapping is retained only so summaries cached before this migration still render correctly; no runtime path emits it.
+
+**Verification (2026-11-11)**
+
+- Live direct provider call: `qwen3.8-flash` → `"OK"`, usage reported.
+- Gateway `SAGE_CHAT` and a Qwen-pinned `CATEGORISE` (schema-validated JSON) both succeeded through the token-plan endpoint.
+- Legacy `LLMClient.probe_quota_status()` / `is_available()` / `generate()` all succeeded.
+- Full suite: 589 passed, 1 skipped (tracing tests excluded because `opentelemetry` was absent from the local venv).

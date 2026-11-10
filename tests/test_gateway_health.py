@@ -1,9 +1,9 @@
 """Tests for gateway health latching, circuit-breaker auto-reset, and
 loud fallback logging.
 
-These cover the nemotron regression where the primary model latched
-'unavailable' after a transient Ollama Cloud outage and every later
-summarisation silently routed to gpt-oss for the process lifetime.
+These cover the primary-model regression where the primary model latched
+'unavailable' after a transient Qwen Cloud outage and every later
+summarisation silently routed to the fallback for the process lifetime.
 All tests are offline: fake providers are injected directly.
 """
 
@@ -20,13 +20,13 @@ from core.ai_gateway.contracts import AITaskRequest, TaskType
 MINI_ROUTING = {
     "model_registry": {
         "m1": {
-            "provider": "ollama",
+            "provider": "qwen",
             "model": "m1:cloud",
             "tasks": ["summarise"],
             "context_window": 131072,
         },
         "m2": {
-            "provider": "ollama",
+            "provider": "qwen",
             "model": "m2:cloud",
             "tasks": ["summarise"],
             "context_window": 131072,
@@ -54,7 +54,7 @@ class FakeProvider:
 
     def get_capabilities(self):
         return {
-            "provider": "ollama",
+            "provider": "qwen",
             "model": self.model,
             "context_window": 131072,
             "tasks": ["summarise"],
@@ -82,7 +82,7 @@ def make_gateway(providers):
     gw = ModelGateway(routing_config=MINI_ROUTING)
     gw.providers = dict(providers)
     gw.health = {
-        name: ModelHealth(provider="ollama", model=p.model)
+        name: ModelHealth(provider="qwen", model=p.model)
         for name, p in providers.items()
     }
     gw.health_reset_seconds = 300

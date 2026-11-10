@@ -157,7 +157,7 @@ class WeeklyEvaluator:
             return
 
         # Judges route through the Model Gateway (Gemini-first EVALUATE
-        # policy) — an Ollama quota outage no longer blocks evaluation, but
+        # policy) — a Qwen Cloud quota outage no longer blocks evaluation, but
         # a gateway with zero providers does.
         if not _gateway_has_providers():
             logger.info("Weekly evaluator: Model Gateway has no providers, skipping.")

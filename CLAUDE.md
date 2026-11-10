@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project: AI Pulse
 
-AI News Intelligence Dashboard — a Streamlit application that aggregates, classifies, and summarises AI industry developments from engineering blogs and newsletters into 7 strategic themes. LLM work runs through a **multi-model gateway** (Ollama Cloud + Google Gemini) with routing, fallback, and provenance; a persistent memory system (local JSON + Markdown Wiki + Supabase cloud sync) feeds prior-run context back into every summary.
+AI News Intelligence Dashboard — a Streamlit application that aggregates, classifies, and summarises AI industry developments from engineering blogs and newsletters into 7 strategic themes. LLM work runs through a **multi-model gateway** (Qwen Cloud + Google Gemini) with routing, fallback, and provenance; a persistent memory system (local JSON + Markdown Wiki + Supabase cloud sync) feeds prior-run context back into every summary.
 
 ## Running the Application
 
@@ -40,7 +40,7 @@ python -m pytest -m integration tests/                                      # op
 
 ## Configuration (summary)
 
-- API keys: `ai-pulse/.streamlit/secrets.toml` (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_API_KEY`, `GEMINI_API_KEY`); optional Supabase credentials in `ai-pulse/.env`.
+- API keys: `ai-pulse/.streamlit/secrets.toml` (`QWEN_BASE_URL`, `QWEN_MODEL`, `QWEN_API_KEY`, `GEMINI_API_KEY`); optional Supabase credentials in `ai-pulse/.env`.
 - Gateway provider init resolves keys through `config.settings` (st.secrets → secrets.toml → env vars → default) — both `secrets.toml` and plain OS env vars work. Full details and gotchas: docs/CONFIGURATION.md.
 - Summariser params must be read via `get_summariser_settings()` (merges `config/custom_settings.json`), never hardcoded.
 

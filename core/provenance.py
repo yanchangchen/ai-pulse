@@ -2,7 +2,7 @@
 Render a small provenance chip for a theme summary.
 
 The summary dict carries two fields set by ``core.summariser._with_provenance``:
-    _source         — short token (e.g. "google:gemini-3.6-flash", "ollama:nemotron-3-ultra:cloud",
+    _source         — short token (e.g. "google:gemini-3.6-flash", "qwen:qwen3.8-flash",
                       "deterministic:summarise", "gateway:error")
     _generation_log — dict with model, article_count, generated_at, note, …
     _provenance     — full Provenance object dict (from ModelGateway)
@@ -26,6 +26,8 @@ _CHIP_STYLES: dict[str, Tuple[str, str, str, str]] = {
     "gateway:limited_coverage": ("Limited coverage",   "#eef0f4", "#525a6b", "#aab1bf"),
     "gateway:skipped":         ("Skipped — cached",   "#eef0f4", "#525a6b", "#aab1bf"),
     "google":                  ("Google synthesis",   "#e6f3ff", "#0b4a8a", "#5aa6dd"),
+    "qwen":                    ("Qwen synthesis",     "#ece9ff", "#3a1d8a", "#7e6dd8"),
+    # Legacy chip for summaries cached before the Qwen Cloud migration.
     "ollama":                  ("Ollama synthesis",   "#ece9ff", "#3a1d8a", "#7e6dd8"),
     "deterministic":           ("Deterministic",      "#fff4e5", "#8a4b00", "#f0a850"),
 }
@@ -44,6 +46,9 @@ def _classify(source: Optional[str]) -> str:
         return "google"
     if source.startswith("gemini:"):
         return "google"
+    if source.startswith("qwen:"):
+        return "qwen"
+    # Kept for summaries cached before the Qwen Cloud migration.
     if source.startswith("ollama:"):
         return "ollama"
     if source.startswith("deterministic:"):
@@ -63,6 +68,9 @@ def _format_label(source: Optional[str]) -> str:
         return f"Google · {source.split(':', 1)[1]}"
     if source.startswith("gemini:"):
         return f"Google · {source.split(':', 1)[1]}"
+    if source.startswith("qwen:"):
+        return f"Qwen · {source.split(':', 1)[1]}"
+    # Kept for summaries cached before the Qwen Cloud migration.
     if source.startswith("ollama:"):
         return f"Ollama · {source.split(':', 1)[1]}"
     if source.startswith("deterministic:"):
@@ -138,7 +146,7 @@ def render_provenance_chip(
         if parts:
             title_attr = f' title="{" · ".join(parts)}"'
 
-    icon = "✨" if style_key == "google" else "🧠" if style_key == "ollama" else "🛟"
+    icon = "✨" if style_key == "google" else "🧠" if style_key in ("qwen", "ollama") else "🛟"
     return (
         f'<span class="provenance-chip"'
         f' style="display:inline-block; padding:2px 10px; margin:0 0 8px 0;'

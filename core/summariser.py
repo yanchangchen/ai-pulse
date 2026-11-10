@@ -33,8 +33,8 @@ def _with_provenance(summary: Dict[str, str], source: str, **log_fields) -> Dict
     """Attach machine-readable provenance (`_source`, `_generation_log`) to a summary dict.
 
     `source` is a short token the UI uses to render a provenance chip — one of:
-    * `"extractive_fallback"` — non-LLM path (Ollama quota exceeded, empty response, transport error)
-    * `"ollama:<model>"`     — live Ollama synthesis
+    * `"extractive_fallback"` — non-LLM path (Qwen Cloud quota exceeded, empty response, transport error)
+    * `"qwen:<model>"`       — live Qwen Cloud synthesis
     * `"gemini:<model>"`     — on-demand Gemini synthesis
     """
     summary["_source"] = source
@@ -101,14 +101,14 @@ async def generate_theme_summary_gateway(
     # Rank articles by relevance to the theme, then format.
     from config.settings import (
         MAX_ARTICLES_PER_SUMMARY,
-        OLLAMA_NUM_CTX,
+        QWEN_NUM_CTX,
         CHARS_PER_TOKEN,
         INPUT_BUDGET_FRACTION,
     )
     ranked_articles = _rank_articles_by_relevance(
         articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
     )
-    char_budget = int(OLLAMA_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
+    char_budget = int(QWEN_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
     formatted_articles, included_articles = split_articles_for_prompt(
         ranked_articles, char_budget=char_budget,
     )
@@ -317,7 +317,7 @@ def _rank_articles_by_relevance(
     extractive fallback, then return the top-n.  Ties break by insertion order
     so the LLM sees a stable corpus across runs.
 
-    Re-using ``non_llm_summariser._score_article_relevance`` keeps the Ollama,
+    Re-using ``non_llm_summariser._score_article_relevance`` keeps the Qwen,
     Gemini, and extractive paths aligned on what counts as a high-signal article.
     """
     from core.non_llm_summariser import _score_article_relevance
@@ -349,7 +349,7 @@ def split_articles_for_prompt(
     until the budget is reached — any tail articles are dropped so the
     joined text stays inside the LLM's input window.
 
-    Callers should derive `char_budget` from the model's num_ctx
+    Callers should derive `char_budget` from the primary model's context window
     (see config.settings.CHARS_PER_TOKEN and INPUT_BUDGET_FRACTION).
     """
     formatted: List[str] = []
@@ -395,7 +395,7 @@ def generate_theme_summary(
             "further_reading": ""
         }
         return _with_provenance(
-            summary, source="ollama:no_articles",
+            summary, source="qwen:no_articles",
             model=LLMClient().model, article_count=0,
             note="empty_article_pool",
         )
@@ -413,7 +413,7 @@ def generate_theme_summary(
             "further_reading": ""
         }
         return _with_provenance(
-            summary, source="ollama:limited_coverage",
+            summary, source="qwen:limited_coverage",
             model=LLMClient().model, article_count=len(articles),
             note="fewer_than_3_articles",
         )
@@ -423,14 +423,14 @@ def generate_theme_summary(
     # the LLM's input budget.
     from config.settings import (
         MAX_ARTICLES_PER_SUMMARY,
-        OLLAMA_NUM_CTX,
+        QWEN_NUM_CTX,
         CHARS_PER_TOKEN,
         INPUT_BUDGET_FRACTION,
     )
     ranked_articles = _rank_articles_by_relevance(
         articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
     )
-    char_budget = int(OLLAMA_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
+    char_budget = int(QWEN_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
     formatted_articles, included_articles = split_articles_for_prompt(
         ranked_articles, char_budget=char_budget,
     )
@@ -530,7 +530,7 @@ Writing style rules:
 
         parsed = _parse_summary_sections(content)
         return _with_provenance(
-            parsed, source=f"ollama:{llm.model}",
+            parsed, source=f"qwen:{llm.model}",
             model=llm.model, article_count=len(articles),
             note="live_synthesis",
         )
@@ -546,7 +546,7 @@ Writing style rules:
             "further_reading": ""
         }
         return _with_provenance(
-            summary, source="ollama:error",
+            summary, source="qwen:error",
             model=LLMClient().model, article_count=len(articles),
             note="llm_client_error",
             error=str(exc),
@@ -1156,7 +1156,10 @@ def ensure_extractive_summary(s: dict, supabase=None, run_id: str = "", theme: s
 
     text = s.get("what_is_happening", "")
     legacy_indicators = [
+        # "Ollama ..." is retained so summaries cached before the Qwen Cloud
+        # migration are still detected and regenerated.
         "Ollama Cloud weekly quota limit reached",
+        "Qwen Cloud weekly quota limit reached",
         "Unable to generate new summary",
         "Live LLM synthesis paused",
         "quota limit reached",

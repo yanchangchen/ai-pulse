@@ -284,7 +284,7 @@ Phase 0 and Phase 2 measure Sage — traces, and a per-reply faithfulness score 
 3. **Supabase stays the single source of truth** (already the design intent — `app_settings` exists precisely because cloud deploys have ephemeral filesystems). Everything stateful (history, conversations, embeddings, llm_calls, rollups) lives there; the host is stateless and replaceable.
 
 ### Cost posture
-- **Free stack end-to-end is viable**: Supabase free (500MB DB — embedding math in Pillar A), HF Spaces free, GitHub Actions free, Langfuse Cloud Hobby free, Gemini/Ollama-Cloud existing keys.
+- **Free stack end-to-end is viable**: Supabase free (500MB DB — embedding math in Pillar A), HF Spaces free, GitHub Actions free, Langfuse Cloud Hobby free, Gemini/Qwen-Cloud existing keys.
 - **Paid trigger points** (only when hit): Supabase storage/RAM pressure (compute add-on), always-on hosting (VPS), Langfuse retention/features (Core), heavier embedding volume.
 - With `llm_calls` recording every call, upgrade decisions become data-driven rather than speculative.
 
