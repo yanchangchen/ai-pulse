@@ -4,6 +4,32 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-10 to 2026-11-11 — Ollama goes paid, and Qwen Cloud takes the generation stage
+
+**Problem**: Ollama Cloud stopped being free, and it was still the primary engine for `summarise`, `synthesise`, `project`, and Sage chat. Keeping it as a dead fallback would leave the routing table lying about capacity; removing it without a replacement would collapse the generation path onto Gemini alone, losing provider diversity and putting cost and availability in one vendor's hands.
+
+**What happened**:
+
+1. **A new adapter, not a re-pointed URL.** `QwenCloudProvider` (`core/ai_gateway/providers/qwen.py`) speaks QwenCloud's OpenAI-compatible `POST /chat/completions` API with `qwen3.8-flash`, a native 1M-token context window, and Bearer auth. Nothing about Ollama's `/api/generate` shape survived.
+
+2. **Ollama removed completely.** The provider, `OLLAMA_*` settings, registry entries, fallback slots, and `test_ollama_timeout.py` are gone. A provider that still exists in config but can never be reached is worse than no provider — it hides missing-credential failures and makes every routing table suspect.
+
+3. **Routing kept its design intent.** Qwen became primary exactly where Ollama was primary: `summarise` / `synthesise` / `project` / `sage_chat` → `qwen3.8-flash`, with Gemini as fallback. Gemini remains primary for `categorise` / `extract` (cheap flash-lite classification) and `evaluate` (a Qwen outage must not disable the quality judges), with Qwen now occupying Ollama's old fallback slot there.
+
+4. **The legacy synchronous path had to move too.** `core/llm_client.py` was still the shared client for the classifier's legacy path, the summariser's compatibility path, and process-wide quota state. Leaving it on Ollama's JSON shape would have been a second, silently stale integration — it now sends chat `messages`, reads `choices[0].message.content`, and probes `GET /models`, falling back to a 1-token chat request when the deployment answers 404/405.
+
+5. **Provenance stayed honest across the migration.** New summaries emit `qwen:<model>` and render a Qwen chip. The old `ollama:` chip mapping is retained only so summaries cached before the switch still render correctly — no runtime path emits it anymore.
+
+6. **The endpoint is plan-specific.** This deployment uses a Qwen Cloud Token Plan, whose base URL is `https://token-plan.maas.qwencloudapi.com/compatible-mode/v1`, not the pay-as-you-go regional endpoint. A stale `QWEN_BASE_URL` in `secrets.toml` produced a `401` even though the key itself was valid; moving the URL to token-plan fixed it.
+
+*Lesson: a provider migration is not finished when the new adapter returns 200. It is finished when the old provider is gone from the registry, settings, tests, and docs; when the legacy client has moved too; and when historical provenance still renders. Otherwise the "removed" provider survives in a code path nobody tests until the day it matters.*
+
+**Also shipped**: Installed the `opentelemetry-sdk` / `opentelemetry-exporter-otlp-proto-http` packages that `requirements.txt` had always listed but the local venv lacked, so the existing Langfuse keys finally activated tracing. A live gateway call produced trace `7dec106681b1a57faad3089aa1b24298` (`gateway.sage_chat`) in Langfuse (US region), and the 13 previously uncollectable tracing tests now pass.
+
+**Result**: The gateway runs entirely on Qwen Cloud + Gemini. Live checks passed for the direct provider, the gateway's `SAGE_CHAT` and a Qwen-pinned `CATEGORISE` (schema-validated JSON), and the legacy `LLMClient` probe/generate paths. Full suite: **589 passed, 1 skipped**, plus **13/13** tracing tests after the OTel install.
+
+---
+
 ## 2026-10-26 to 2026-10-27 — Phase 4.1–4.2: Making article coverage observable, and fixing the extractive ledger lie
 
 **Problem**: The summariser processes only a ranked subset of classified articles per theme (capped at `MAX_ARTICLES_PER_SUMMARY = 12`), but until now, the skipped articles — the ones classified but never fed to the LLM — were invisible. No count, no list, no signal. They quietly re-competed each run inside their 14-day fetch window and then aged out. Worse, on extractive fallback (gateway failure or user-selected Non-LLM mode), the non-LLM path stamped *all* input articles as "processed" despite only surfacing ~3–5 by name. The backlog silently drained, and the LLM would never revisit those articles even after recovery — a ledger asymmetry that made any future coverage metric deceptive by construction.
