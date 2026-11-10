@@ -89,7 +89,23 @@ def test_qwen_generate_uses_chat_completions_and_parses_response():
     assert payload["messages"] == [{"role": "user", "content": "hello"}]
     assert payload["temperature"] == 0.2
     assert payload["max_tokens"] == 99
+    assert payload["enable_thinking"] is False
     assert payload["stream"] is False
+
+
+def test_qwen_can_enable_thinking_explicitly():
+    provider = QwenCloudProvider(
+        base_url="https://qwen.example/v1",
+        api_key="test-key",
+        model="qwen3.8-flash",
+        enable_thinking=True,
+    )
+    provider.client.post = AsyncMock(return_value=_response(_chat_payload()))
+
+    asyncio.run(provider.generate("hello"))
+
+    payload = provider.client.post.call_args.kwargs["json"]
+    assert payload["enable_thinking"] is True
 
 
 def test_qwen_structured_strips_markdown_fences():

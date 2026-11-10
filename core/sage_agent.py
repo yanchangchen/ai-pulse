@@ -670,6 +670,36 @@ _ENGINE_UNAVAILABLE_MSG = (
     "Please try again in a moment."
 )
 
+_QUOTA_MARKERS = (
+    "429",
+    "quota",
+    "resource_exhausted",
+    "rate limit",
+    "usage limit",
+)
+
+
+def _all_quota_failures(reasons: Dict[str, str]) -> bool:
+    """True only when every failed model reported a quota/rate-limit error."""
+    if not reasons:
+        return False
+    return all(
+        any(marker in str(reason).lower() for marker in _QUOTA_MARKERS)
+        for reason in reasons.values()
+    )
+
+
+def _short_failure(reason: str) -> str:
+    """Condense a gateway failure reason for the Sage notice."""
+    text = str(reason)
+    # Drop the leading "retryable: " / "non_retryable: " classification token.
+    if ":" in text:
+        text = text.split(":", 1)[1]
+    text = " ".join(text.split())
+    if len(text) > 90:
+        text = text[:87].rstrip() + "..."
+    return text
+
 
 def chat_with_sage(
     messages: List[Dict[str, str]],
@@ -749,15 +779,33 @@ def chat_with_sage(
         }
 
     # Total failure across the fallback chain (no deterministic fallback
-    # for sage_chat). Distinguish quota exhaustion so the user knows to
-    # check API quotas rather than just retry.
+    # for sage_chat).  The last error alone is misleading: a Gemini 429
+    # following a Qwen timeout does not mean every engine was quota-limited.
+    # Use the gateway's per-model failure map to report what actually broke.
     error = result.provenance.error or str(result.result)
-    logger.warning("Sage gateway failed on all models: %s", error)
-    if "429" in error or "quota" in error.lower():
+    reasons = result.provenance.failure_reasons or {}
+    logger.warning(
+        "Sage gateway failed on all models: %s (reasons: %s)", error, reasons
+    )
+    if _all_quota_failures(reasons) or (
+        not reasons and ("429" in error or "quota" in error.lower())
+    ):
         return {
             "response": (
                 "⚠️ *Sage Notice: All engines are quota-limited right now (HTTP 429). "
                 "Please check API quotas or try again later.*"
+            ),
+            "provenance": result.provenance.to_dict(),
+        }
+    if reasons:
+        details = "; ".join(
+            f"{model}: {_short_failure(reason)}"
+            for model, reason in reasons.items()
+        )
+        return {
+            "response": (
+                "⚠️ *Sage Notice: All engines failed.* "
+                f"{details[:500]}. Please try again in a moment."
             ),
             "provenance": result.provenance.to_dict(),
         }

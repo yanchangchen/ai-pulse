@@ -507,6 +507,7 @@ Return JSON: {{"category": "theme name"}}""",
 
         start_time = time.time()
         last_error = None
+        failure_reasons: Dict[str, str] = {}
         fallback_used = False
         fallback_from = None
         attempts = 0
@@ -572,6 +573,7 @@ Return JSON: {{"category": "theme name"}}""",
                         tokens_in=(usage or {}).get("input_tokens"),
                         tokens_out=(usage or {}).get("output_tokens"),
                         trace_id=getattr(request, "trace_id", None),
+                        failure_reasons=failure_reasons,
                     )
                     self._log_call(provenance, success=True, model_key=model_key)
                     return AITaskResult.success(result, provenance)
@@ -579,6 +581,9 @@ Return JSON: {{"category": "theme name"}}""",
                 except Exception as e:
                     error_type = self._classify_error(e)
                     last_error = e
+                    failure_reasons[model_key] = (
+                        f"{error_type.value}: {str(e)[:300]}"
+                    )
 
                     if error_type == ErrorType.RETRYABLE and attempt < max_attempts - 1:
                         await asyncio.sleep(2 ** attempt)  # exponential backoff
@@ -610,6 +615,11 @@ Return JSON: {{"category": "theme name"}}""",
             return await self._deterministic_fallback(request, last_error, fallback_used, fallback_from, start_time)
 
         # Complete failure
+        logger.error(
+            "[%s] All LLM candidates failed: %s",
+            task.value,
+            failure_reasons or last_error,
+        )
         provenance = Provenance(
             task=task.value,
             method="failed",
@@ -619,6 +629,7 @@ Return JSON: {{"category": "theme name"}}""",
             fallback_from=fallback_from,
             correlation_id=request.correlation_id,
             error=str(last_error),
+            failure_reasons=failure_reasons,
             trace_id=getattr(request, "trace_id", None),
         )
         self._log_call(provenance, success=False, model_key=None)

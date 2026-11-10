@@ -224,10 +224,176 @@ def get_last_run_time() -> Optional[datetime]:
     last_run = get_last_run()
     if not last_run:
         return None
-    try:
-        return datetime.strptime(last_run["timestamp"], "%Y-%m-%d %H:%M:%S")
-    except Exception:
+    parsed = _parse_run_timestamp(last_run["timestamp"])
+    if parsed is None:
         return None
+    # Cloud timestamps are timezone-aware; cache-expiry math compares against
+    # a naive ``datetime.now()``, so normalise to local naive time.
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# Cloud-first run loading
+# ---------------------------------------------------------------------------
+
+def _parse_run_timestamp(value) -> Optional[datetime]:
+    """Parse either the local ``YYYY-MM-DD HH:MM:SS`` format or Supabase's
+    ISO-8601 ``run_timestamp`` value."""
+    if not value:
+        return None
+    text = str(value).strip()
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _run_timestamp_key(value) -> float:
+    """Sortable epoch for local/ISO timestamps (naive values use local time)."""
+    parsed = _parse_run_timestamp(value)
+    try:
+        return parsed.timestamp() if parsed else 0.0
+    except (OSError, OverflowError, ValueError):
+        return 0.0
+
+
+def _local_timestamp_label(value) -> str:
+    """Normalise a cloud timestamp to the local-history key format."""
+    parsed = _parse_run_timestamp(value)
+    if parsed is None:
+        return str(value)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+    return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _run_data_from_supabase(supabase, run: Dict) -> Dict:
+    """Build a local-history-shaped run dict from Supabase rows.
+
+    Supabase stores provenance as ``generation_source`` / ``generation_log``
+    columns, while the rest of the app consumes the summariser's ``_source`` /
+    ``_generation_log`` keys.  Map them back so Deep Dive and Overview render
+    the same provenance chips and coverage captions as a local run.
+    """
+    run_id = run["id"]
+    raw_summaries = supabase.get_summaries_by_run(run_id) or {}
+    articles = supabase.get_articles_for_run(run_id) or []
+
+    summaries: Dict[str, Dict] = {}
+    for theme, row in raw_summaries.items():
+        gen_log = row.get("generation_log")
+        if isinstance(gen_log, str):
+            try:
+                gen_log = json.loads(gen_log)
+            except Exception:
+                gen_log = {}
+        if not isinstance(gen_log, dict):
+            gen_log = {}
+
+        summary = {
+            "what_is_happening": row.get("what_is_happening", ""),
+            "engineering_tradeoffs": row.get("engineering_tradeoffs", ""),
+            "product_impact": row.get("product_impact", ""),
+            "why_it_matters": row.get("why_it_matters", ""),
+            "what_to_watch": row.get("what_to_watch", ""),
+            "further_reading": row.get("further_reading", ""),
+            "_source": row.get("generation_source"),
+            "_generation_log": gen_log,
+        }
+        # Deep Dive reads these top-level for its coverage caption.
+        for key in (
+            "included_count",
+            "total_articles",
+            "skipped_count",
+            "skipped_hashes",
+            "skipped_articles",
+        ):
+            if key in gen_log:
+                summary[key] = gen_log[key]
+        summaries[theme] = summary
+
+    themed_articles: Dict[str, List[Dict]] = {}
+    for row in articles:
+        article = dict(row)
+        theme = article.get("theme_name") or article.get("theme") or "Uncategorized"
+        article.setdefault("theme", theme)
+        if not article.get("source") and article.get("source_name"):
+            article["source"] = article["source_name"]
+        if not article.get("published_date") and article.get("published_at"):
+            article["published_date"] = article["published_at"]
+        themed_articles.setdefault(theme, []).append(article)
+
+    counts = {theme: len(items) for theme, items in themed_articles.items()}
+    return {
+        "date": run.get("run_date") or _local_timestamp_label(run.get("run_timestamp"))[:10],
+        "summaries": summaries,
+        "counts": counts,
+        "full_articles": articles,
+        "themed_articles": themed_articles,
+        "article_fingerprint": run.get("article_fingerprint"),
+    }
+
+
+def _cache_run_locally(timestamp: str, data: Dict) -> None:
+    """Write a cloud run into ``history.json`` so later loads are local."""
+    global _history_cache
+    try:
+        history_data = load_full_history()
+        history_data[timestamp] = data
+        MAX_LOCAL_RUNS = 5
+        if len(history_data) > MAX_LOCAL_RUNS:
+            latest = sorted(history_data.keys(), key=_run_timestamp_key, reverse=True)
+            history_data = {k: history_data[k] for k in latest[:MAX_LOCAL_RUNS]}
+        with open(HISTORY_JSON, "w", encoding="utf-8") as f:
+            json.dump(history_data, f, indent=2, ensure_ascii=False)
+        _history_cache = None
+    except Exception as exc:
+        logger.debug("Could not cache cloud run locally: %s", exc)
+
+
+def load_latest_run_data() -> Optional[Dict]:
+    """Return the freshest run, preferring Supabase when local history lags.
+
+    Background runs persist to Supabase first-class, but ``history.json`` is
+    only written by the process that completed the run.  A local app can
+    therefore hold a months-old cache while Supabase has today's run — which
+    made Deep Dive render stale "Unknown source" summaries.  This helper
+    loads the cloud run when it is newer and caches it locally for next time.
+    """
+    local = get_last_run()
+
+    try:
+        from core.supabase_client import get_supabase_manager
+
+        supabase = get_supabase_manager()
+        if supabase.is_available():
+            cloud_run = supabase.get_latest_run()
+            if cloud_run:
+                local_ts = local.get("timestamp") if local else None
+                cloud_ts = cloud_run.get("run_timestamp")
+                if (
+                    not local_ts
+                    or _run_timestamp_key(cloud_ts) > _run_timestamp_key(local_ts)
+                ):
+                    data = _run_data_from_supabase(supabase, cloud_run)
+                    if data.get("summaries") or data.get("full_articles"):
+                        cache_ts = _local_timestamp_label(cloud_ts)
+                        _cache_run_locally(cache_ts, data)
+                        logger.info(
+                            "Loaded run %s from Supabase (%s); local history was %s.",
+                            cloud_run.get("id"), cache_ts, local_ts or "missing",
+                        )
+                        return {"timestamp": cache_ts, "data": data, "source": "supabase"}
+    except Exception as exc:
+        logger.warning("Cloud run load failed; using local history: %s", exc)
+
+    return local
 
 
 def _save_to_supabase(

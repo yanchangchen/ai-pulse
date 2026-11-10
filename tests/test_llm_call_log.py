@@ -86,6 +86,15 @@ class TestProvenanceTokens:
         assert d["tokens_in"] is None
         assert d["tokens_out"] is None
 
+    def test_failure_reasons_roundtrip(self):
+        prov = Provenance(
+            task="sage_chat",
+            method="failed",
+            failure_reasons={"qwen3.8-flash": "retryable: timeout"},
+        )
+        restored = Provenance.from_dict(prov.to_dict())
+        assert restored.failure_reasons == {"qwen3.8-flash": "retryable: timeout"}
+
 
 # ---------------------------------------------------------------------------
 # Gateway usage propagation

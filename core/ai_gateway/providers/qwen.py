@@ -32,12 +32,18 @@ class QwenCloudProvider(ProviderAdapter):
         model: str = "qwen3.8-flash",
         request_timeout: float = 180.0,
         context_window: int = DEFAULT_CONTEXT_WINDOW,
+        enable_thinking: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.request_timeout = request_timeout
         self.context_window = context_window
+        # qwen3.8-flash is a hybrid model with thinking enabled by default.
+        # On a Sage-sized prompt (~32k chars) the hidden reasoning added
+        # ~10k output tokens and 150s+ latency, tripping the gateway timeout.
+        # QwenCloud documents ``enable_thinking: false`` as the way to skip it.
+        self.enable_thinking = enable_thinking
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -54,6 +60,7 @@ class QwenCloudProvider(ProviderAdapter):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": kwargs.get("temperature", 0.1),
             "max_tokens": kwargs.get("max_tokens", 1500),
+            "enable_thinking": self.enable_thinking,
             "stream": False,
         }
         data = await self._post_chat(payload, "generate")
@@ -82,6 +89,7 @@ class QwenCloudProvider(ProviderAdapter):
             "messages": [{"role": "user", "content": structured_prompt}],
             "temperature": kwargs.get("temperature", 0.1),
             "max_tokens": kwargs.get("max_tokens", 1500),
+            "enable_thinking": self.enable_thinking,
             "stream": False,
         }
         data = await self._post_chat(payload, "generate_structured")

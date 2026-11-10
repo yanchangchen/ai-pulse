@@ -114,6 +114,12 @@ class Provenance:
     correlation_id: str = ""
     source_ids: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    # Per-model failure details for the fallback chain, keyed by registry
+    # name (e.g. {"qwen3.8-flash": "retryable: timed out", ...}).  Lets the
+    # UI explain a total failure honestly instead of blaming only the last
+    # model's error (a Gemini 429 after a Qwen timeout is not "all engines
+    # quota-limited").
+    failure_reasons: Dict[str, str] = field(default_factory=dict)
     # Token usage as reported by the provider (None when the provider does
     # not report usage, or for deterministic-fallback results).  Persisted
     # to the Supabase ``llm_calls`` table by the gateway call log so cost
@@ -142,6 +148,7 @@ class Provenance:
             "correlation_id": self.correlation_id,
             "source_ids": self.source_ids,
             "error": self.error,
+            "failure_reasons": dict(self.failure_reasons),
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
             "trace_id": self.trace_id,
@@ -167,6 +174,7 @@ class Provenance:
             correlation_id=data.get("correlation_id", ""),
             source_ids=data.get("source_ids", []),
             error=data.get("error"),
+            failure_reasons=dict(data.get("failure_reasons") or {}),
             tokens_in=data.get("tokens_in"),
             tokens_out=data.get("tokens_out"),
             trace_id=data.get("trace_id"),

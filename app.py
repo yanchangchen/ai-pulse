@@ -16,7 +16,7 @@ from core.cache import (
     clear_all_caches,
     get_articles_hash
 )
-from core.history_manager import get_last_run, get_last_run_time
+from core.history_manager import get_last_run, get_last_run_time, load_latest_run_data
 from core.llm_client import LLMClient
 from core.logger import setup_logger
 from core.bg_refresher import BackgroundRefresher
@@ -78,7 +78,7 @@ def load_data() -> None:
     """Load data from history or trigger fetch."""
     logger.info("load_data() called.")
 
-    last_run = get_last_run()
+    last_run = load_latest_run_data()
 
     if last_run and 'full_articles' in last_run['data']:
         data = last_run['data']
@@ -87,7 +87,11 @@ def load_data() -> None:
         st.session_state.summaries = data.get('summaries', {})
         st.session_state.loaded_timestamp = last_run['timestamp']
         st.session_state.data_loaded = True
-        logger.info(f"Loaded {len(st.session_state.articles)} articles from history cache.")
+        logger.info(
+            "Loaded %d articles from %s cache.",
+            len(st.session_state.articles),
+            last_run.get('source', 'local'),
+        )
     else:
         logger.info("No history cache found.")
         st.session_state.data_loaded = False

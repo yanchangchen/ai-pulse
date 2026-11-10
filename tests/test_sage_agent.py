@@ -845,6 +845,45 @@ class TestChatWithSage:
         assert "429" in result["response"]
         assert "trouble connecting" not in result["response"]
 
+    def test_mixed_failure_reports_each_engine_not_quota_only(self):
+        """A Gemini 429 after a Qwen timeout is not 'all engines quota-limited'."""
+        messages = [{"role": "user", "content": "anything"}]
+        prov = Provenance(
+            task="sage_chat",
+            method="failed",
+            error="503 UNAVAILABLE",
+            failure_reasons={
+                "qwen3.8-flash": "retryable: timed out after 180.0s",
+                "gemini-3.6-flash": "retryable: 429 quota exceeded",
+            },
+        )
+        gateway = _mock_gateway(AITaskResult.failure("503 UNAVAILABLE", prov))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            result = chat_with_sage(messages, "context")
+
+        response = result["response"]
+        assert "All engines failed" in response
+        assert "timed out" in response
+        assert "429" in response
+        assert "All engines are quota-limited" not in response
+
+    def test_all_quota_failures_return_quota_notice(self):
+        messages = [{"role": "user", "content": "anything"}]
+        prov = Provenance(
+            task="sage_chat",
+            method="failed",
+            error="429 quota",
+            failure_reasons={
+                "qwen3.8-flash": "retryable: 429 quota exceeded",
+                "gemini-3.6-flash": "retryable: 429 quota exceeded",
+            },
+        )
+        gateway = _mock_gateway(AITaskResult.failure("429 quota", prov))
+        with patch("core.sage_agent.get_gateway", return_value=gateway):
+            result = chat_with_sage(messages, "context")
+
+        assert "All engines are quota-limited" in result["response"]
+
     def test_gateway_exception_returns_error_message(self):
         messages = [{"role": "user", "content": "anything"}]
 

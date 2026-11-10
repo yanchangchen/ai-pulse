@@ -200,6 +200,7 @@ class LLMClient:
                 "model": self.model,
                 "messages": [{"role": "user", "content": "ping"}],
                 "max_tokens": 1,
+                "enable_thinking": False,
                 "stream": False,
             },
             timeout=20,
@@ -367,6 +368,9 @@ class LLMClient:
             "stream": False,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            # qwen3.8-flash thinks by default (~10k hidden tokens, 150s+).
+            # The legacy client needs fast, bounded calls, so disable it.
+            "enable_thinking": False,
         }
         headers = self._auth_headers()
 

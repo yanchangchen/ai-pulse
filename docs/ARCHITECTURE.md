@@ -237,7 +237,11 @@ classifier/summariser only for backward compatibility and quota state.
   OpenAI-compatible endpoint (`@cf/baai/bge-base-en-v1.5`, 768 dims) and rejects partial or
   malformed batches. Both are embedding-only where applicable — generation methods raise
   `NotImplementedError`. `QwenCloudProvider` calls QwenCloud's OpenAI-compatible
-  `/chat/completions` endpoint and does not implement `embed()`. Vetted free hosted
+  `/chat/completions` endpoint and does not implement `embed()`. It sends
+  `enable_thinking: false` by default: qwen3.8-flash is a hybrid model whose
+  hidden reasoning added ~10k output tokens and 150s+ latency on a 32k-char
+  Sage prompt, which tripped the gateway timeout. Set
+  `QwenCloudProvider(enable_thinking=True)` only for tasks that need it. Vetted free hosted
   alternatives and the adapter contract are in
   [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
 - `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`,
@@ -317,6 +321,14 @@ retries. Set `LLM_DEBUG=1` to log prompts/responses on failures.
 - Supabase (PostgreSQL) — cloud persistence for cross-device access; auto-backfilled from
   `history.json` on first load; degrades gracefully (`is_available()` returns `False`
   without env vars). See [docs/SUPABASE.md](SUPABASE.md).
+
+`get_last_run()` reads only the local `history.json` cache, which a different process may
+have left stale (a background run that persisted to Supabase from another worker does not
+write this machine's file). `load_latest_run_data()` therefore compares the local and
+Supabase `run_timestamp` values, loads the newer cloud run when necessary, maps
+`generation_source` / `generation_log` back to `_source` / `_generation_log`, and caches
+the result locally. The app's `load_data()` uses this cloud-first loader so Deep Dive and
+Overview never render an old run with missing provenance.
 
 `core/history_manager.py` exposes `get_recent_context()` (injects the last 2 runs'
 summaries into LLM prompts) and `purge_run()`.
