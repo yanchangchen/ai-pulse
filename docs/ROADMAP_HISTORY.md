@@ -34,6 +34,25 @@ Future.md.)*
 
 ---
 
+## Phase 3 — Embedding pipeline (Completed 2026-11-10)
+
+*(Dense half of Pillar A. Provider decision and comparisons: [EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).)*
+
+- [x] **3.1 Storage (2026-10-26).** Enabled `vector`; added `article_embeddings` with `UNIQUE(article_id)` (one curated title+summary per article, no chunking yet), `embedding vector(768)`, denormalized `run_date`, `chunk_text` + `embedding_model` for audit/re-derivation, an HNSW cosine index, and the invoker-rights `match_article_embeddings` RPC.
+- [x] **3.2 Gateway provider (2026-10-26).** `TaskType.EMBEDDING` carries a text batch in `embed_inputs` (empty prompt), skips templates/schemas, and writes vectors through the same health/retry/provenance/`llm_calls`/OTel wiring as every other task. `GeminiProvider.embed()` pins `output_dimensionality=768`. The policy intentionally had `fallback: []` — a rule-based embedding is meaningless and a cross-model fallback would mix vector spaces.
+- [x] **3.3 Ingest-time embedding (2026-10-26).** `core/bg_refresher.py` calls `embed_unembedded_articles()` after persistence; best-effort, never fails a run.
+- [x] **3.4 Resumable backfill (2026-10-26).** `backfill_embeddings.py` + the `get_unembedded_articles` RPC: the LEFT JOIN is the cursor, so an interrupted run simply resumes. Batching (50/call) and an inter-batch sleep provide rate-limit headroom.
+- [x] **3.5 Cloudflare Workers AI migration (2026-11-10).** Gemini's free embedding quota was the throughput bottleneck (45 of 67 logged calls failed with 429 at 100 req/min; only 750 of 6,304 articles embedded). Migrated to `@cf/baai/bge-base-en-v1.5` via the OpenAI-compatible `/ai/v1/embeddings` endpoint.
+  - **Explicit switch:** `EMBEDDING_PROVIDER` (default `gemini`) selects the route from `EMBEDDING_ROUTE_PRIMARY`; registering `CF_ACCOUNT_ID`/`CF_API_TOKEN` does not move traffic. The `embedding` fallback chain stays empty for both providers because cosine distance is only meaningful within one model's space.
+  - **Context-fit bypass:** `_execute_inner()` used to check the batch's *summed* token estimate against a model window. Cloudflare's 512-token cap is **per text**, so a normal 50-article batch would have been skipped. `TaskType.EMBEDDING` now bypasses context-fit; a regression test covers a 50-item batch.
+  - **Idempotent upsert:** `insert_article_embeddings()` changed from append-only to `upsert(rows, on_conflict="article_id")`, enabling in-place re-embedding under `UNIQUE(article_id)`. One retry was added for a transient Windows `WinError 10035` socket failure under rapid backfill traffic.
+  - **Usage telemetry:** Cloudflare's OpenAI-compatible embeddings response omits `usage` (verified 2026-11-10), so the adapter records an estimated `tokens_in` (~3 chars/token) to keep `llm_calls` quota tracking usable; the Cloudflare dashboard remains exact. Migration rows written before this fix carry zero token counts — use call count / the dashboard for that one-off burst.
+  - **Forced re-embed + resumability:** `backfill_embeddings.py --reembed` reads each row's stored `chunk_text` and re-embeds it. `get_articles_for_reembedding(exclude_model=...)` filters out rows already carrying the target model, so every successful upsert removes its rows from the next query — a rerun resumes instead of redoing the first page (observed: the first attempt stopped after 100 rows on a socket error; the retry continued from row 101 without loss).
+  - **Migration result (2026-11-10):** 750 existing Gemini rows re-embedded, 5,554 backlog articles embedded → **6,304/6,304 (backlog 0)**, `embedding_model` 100% `@cf/baai/bge-base-en-v1.5`, all rows accepted by the `vector(768)` column. Cloudflare embedding calls all succeeded; the only failures in `llm_calls` were historical Gemini 429s.
+- **Gate (passed 2026-11-10):** `core/retrieval_eval.py` scored **Recall@10 = 0.833** across all 8 questions (per-question 0.67–1.00), snapshot in `app_settings.retrieval_eval_latest`. Caveat: the recorded 0.510 baseline was Gemini on a partial ~100-row index, so the improvement reflects both the model and full coverage — treat it as directional, not a controlled model comparison. The 3.6 14-day quota/error/latency watch now runs.
+
+---
+
 ## Decision: tracing backend — Langfuse Cloud (Hobby) *(2026-10)*
 
 > **Decision (2026-10): Langfuse Cloud (Hobby).** Alternatives recorded below for future reference; since instrumentation is OpenTelemetry-based, switching backends later means changing the exporter, not the code.

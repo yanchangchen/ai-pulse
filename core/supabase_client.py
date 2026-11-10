@@ -7,6 +7,7 @@ Gracefully degrades if Supabase is unavailable.
 import os
 import json
 import uuid
+import time
 import logging
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
@@ -1048,26 +1049,85 @@ class SupabaseManager:
             logger.warning(f"get_unembedded_articles RPC failed: {e}")
             return []
 
+    def get_articles_for_reembedding(
+        self, limit: int = 200, offset: int = 0, exclude_model: Optional[str] = None
+    ) -> List[Dict]:
+        """Return existing embedding rows for a forced re-embed (model migration).
+
+        ``get_unembedded_articles()`` deliberately excludes rows that already
+        have a vector, which makes a provider switch impossible to complete —
+        the old-model rows would never be revisited.  This selects those rows
+        instead, carrying the stored ``chunk_text`` (the exact string that was
+        embedded, so vectors stay re-derivable) and ``run_date``.  Paginated by
+        ``article_id`` so a backfill-plus-upsert loop sees a stable window.
+
+        ``exclude_model`` filters out rows already written by the target model,
+        making re-embedding idempotent and resumable: every successful upsert
+        removes its rows from the next query, so a retry after an interruption
+        continues instead of re-processing the same page.
+
+        Returns ``[]`` (never raises) when unavailable or empty.
+        """
+        if not self.available:
+            return []
+        try:
+            query = self.client.table("article_embeddings").select(
+                "article_id, run_date, chunk_text"
+            )
+            if exclude_model:
+                query = query.neq("embedding_model", exclude_model)
+            response = (
+                query.order("article_id")
+                .range(offset, offset + max(limit, 1) - 1)
+                .execute()
+            )
+            rows = []
+            for r in response.data or []:
+                if not r.get("article_id"):
+                    continue
+                r["run_date"] = str(r.get("run_date") or "")
+                r["chunk_text"] = r.get("chunk_text") or ""
+                rows.append(r)
+            return rows
+        except Exception as e:
+            logger.warning(f"get_articles_for_reembedding failed: {e}")
+            return []
+
     def insert_article_embeddings(self, rows: List[Dict]) -> bool:
-        """Insert embedding rows (best-effort, never raises).
+        """Upsert embedding rows (best-effort, never raises).
+
+        ``article_embeddings`` has ``UNIQUE(article_id)``, so a re-embed
+        (provider migration or model refresh) must replace the existing row
+        rather than append a duplicate.  An upsert on ``article_id`` makes
+        the write idempotent and enables the Phase 3.5 controlled switch:
+        re-running the backfill overwrites old-model vectors in place.
 
         Args:
             rows: List of dicts with article_id / run_date / chunk_text /
                 embedding (list of 768 floats) / embedding_model.
 
         Returns:
-            True when the insert succeeded, False otherwise.  Duplicate
-            article_id rows (a race between ingest and backfill) surface as
-            an error and are logged, not raised.
+            True when the upsert succeeded, False otherwise (including a
+            concurrent ingest/backfill race — logged, not raised).
         """
         if not self.available or not rows:
             return False
-        try:
-            self.client.table("article_embeddings").insert(rows).execute()
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to insert article embeddings: {e}")
-            return False
+        last_error = None
+        # One retry: the sync Supabase client occasionally surfaces a
+        # transient Windows socket error (WinError 10035) under rapid
+        # backfill traffic, which is safe to retry on an idempotent upsert.
+        for attempt in range(2):
+            try:
+                self.client.table("article_embeddings").upsert(
+                    rows, on_conflict="article_id"
+                ).execute()
+                return True
+            except Exception as e:
+                last_error = e
+                if attempt == 0:
+                    time.sleep(1.0)
+        logger.warning(f"Failed to upsert article embeddings: {last_error}")
+        return False
 
     def match_article_embeddings(
         self, query_embedding: List[float], match_count: int = 10

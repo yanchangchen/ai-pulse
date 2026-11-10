@@ -19,7 +19,7 @@ from .contracts import (
     Provenance,
     ValidationResult,
 )
-from .providers import GeminiProvider, OllamaCloudProvider
+from .providers import CloudflareProvider, GeminiProvider, OllamaCloudProvider
 from .providers.base import ProviderAdapter
 from .deterministic import (
     rule_categorise,
@@ -32,6 +32,11 @@ from config.settings import (
     GEMINI_API_KEY,
     OLLAMA_API_KEY,
     OLLAMA_BASE_URL,
+    EMBEDDING_PROVIDER,
+    EMBEDDING_ROUTE_PRIMARY,
+    CF_ACCOUNT_ID,
+    CF_API_TOKEN,
+    CLOUDFLARE_EMBEDDING_MODEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -120,6 +125,16 @@ class ModelGateway:
                     "cost_class": "low",
                     "priority": 1,
                 },
+                # Cloudflare Workers AI (Phase 3.5, Option A).  bge-base-en-v1.5
+                # is also 768-dim, but its vectors live in a different space
+                # than Gemini's — the two routes must never be mixed.
+                "cloudflare-bge-base-en-v1.5": {
+                    "provider": "cloudflare",
+                    "model": CLOUDFLARE_EMBEDDING_MODEL,
+                    "tasks": ["embedding"],
+                    "cost_class": "free",
+                    "priority": 1,
+                },
             },
             "routing_policies": {
                 "categorise": {
@@ -197,14 +212,23 @@ class ModelGateway:
                     ],
                     "deterministic_fallback": False,
                 },
-                # Dense embeddings: Gemini-only for now (no Ollama embedding
-                # provider registered).  Like EVALUATE/SAGE_CHAT there is no
-                # prompt template and no deterministic fallback — a rule-based
-                # embedding is meaningless, so total failure surfaces to the
-                # caller (core/embedding.py), which treats it as a skipped
-                # batch rather than writing garbage vectors.
+                # Dense embeddings: one explicitly selected provider, never a
+                # cross-model fallback.  Cosine distance is only meaningful
+                # within a single model's vector space, so a Gemini fallback
+                # for Cloudflare (or vice versa) would silently poison the
+                # index — if the primary fails, skip the batch and let the
+                # DB-as-cursor backfill retry later.  Like EVALUATE/SAGE_CHAT
+                # there is no prompt template and no deterministic fallback:
+                # a rule-based embedding is meaningless.
+                #
+                # EMBEDDING_PROVIDER is the deliberate switch (default
+                # "gemini"); adding Cloudflare credentials alone must not
+                # move the live route.
                 "embedding": {
-                    "primary": "gemini-embedding-001",
+                    "primary": EMBEDDING_ROUTE_PRIMARY.get(
+                        EMBEDDING_PROVIDER,
+                        EMBEDDING_ROUTE_PRIMARY["gemini"],
+                    ),
                     "fallback": [],
                     "deterministic_fallback": False,
                 },
@@ -254,6 +278,42 @@ class ModelGateway:
                     self.health[name] = ModelHealth(
                         provider="ollama", model=cfg["model"]
                     )
+
+        # Cloudflare Workers AI (embedding-only, Phase 3.5 Option A).
+        # Registering the adapter is NOT the same as selecting it: the
+        # embedding route follows EMBEDDING_PROVIDER, so credentials alone
+        # never move live traffic.
+        if CF_ACCOUNT_ID and CF_API_TOKEN:
+            try:
+                for name, cfg in self.routing_config["model_registry"].items():
+                    if cfg["provider"] == "cloudflare":
+                        self.providers[name] = CloudflareProvider(
+                            account_id=CF_ACCOUNT_ID,
+                            api_token=CF_API_TOKEN,
+                            model=cfg["model"],
+                            request_timeout=float(
+                                os.getenv("CLOUDFLARE_REQUEST_TIMEOUT", "30")
+                            ),
+                        )
+                        self.health[name] = ModelHealth(
+                            provider="cloudflare", model=cfg["model"]
+                        )
+            except Exception as e:
+                logger.warning(f"Cloudflare provider not available: {e}")
+        elif EMBEDDING_PROVIDER == "cloudflare":
+            logger.warning(
+                "EMBEDDING_PROVIDER=cloudflare but CF_ACCOUNT_ID/CF_API_TOKEN "
+                "are missing; embedding batches will be skipped until the "
+                "credentials are configured"
+            )
+
+        if EMBEDDING_PROVIDER not in EMBEDDING_ROUTE_PRIMARY:
+            logger.warning(
+                "Unknown EMBEDDING_PROVIDER %r; the embedding route falls "
+                "back to 'gemini'. Valid values: %s",
+                EMBEDDING_PROVIDER,
+                sorted(EMBEDDING_ROUTE_PRIMARY),
+            )
 
         logger.info(f"Initialized providers: {list(self.providers.keys())}")
 
@@ -480,7 +540,14 @@ Return JSON: {{"category": "theme name"}}""",
                     logger.info(msg)
                 continue
 
-            if not self._check_context_fit(model_key, input_tokens):
+            # Embedding batches are not one context: each text is embedded
+            # independently and providers cap tokens PER TEXT (bge-base:
+            # 512).  Applying the batch's summed estimate to a per-text
+            # window would skip every normal 50-article batch, so embedding
+            # tasks bypass context-fit entirely.
+            if request.task is not TaskType.EMBEDDING and not self._check_context_fit(
+                model_key, input_tokens
+            ):
                 logger.debug(
                     f"Skipping {model_key}: input {input_tokens} tokens exceeds context budget"
                 )

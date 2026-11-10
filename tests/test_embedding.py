@@ -83,13 +83,23 @@ def test_get_unembedded_articles_unavailable():
     assert manager.get_unembedded_articles() == []
 
 
-def test_insert_article_embeddings_success_and_unavailable():
+def test_insert_article_embeddings_upserts_on_article_id():
     manager = SupabaseManager()
     manager.available = True
     manager.client = MagicMock()
-    assert manager.insert_article_embeddings([{"article_id": "a1"}]) is True
-    manager.client.table.assert_called_with("article_embeddings")
+    table = manager.client.table.return_value
+    rows = [{"article_id": "a1"}]
 
+    assert manager.insert_article_embeddings(rows) is True
+
+    manager.client.table.assert_called_with("article_embeddings")
+    # Re-embedding after a provider migration must overwrite, not append
+    # (article_embeddings has UNIQUE(article_id)).
+    table.upsert.assert_called_once_with(rows, on_conflict="article_id")
+    table.upsert.return_value.execute.assert_called_once()
+
+
+def test_insert_article_embeddings_unavailable():
     manager2 = SupabaseManager()
     manager2.available = False
     assert manager2.insert_article_embeddings([{"article_id": "a1"}]) is False
@@ -168,6 +178,116 @@ def test_embed_unembedded_articles_writes_rows(monkeypatch):
     assert [r["chunk_text"] for r in inserted] == ["T1 S1", "T2 S2"]
     assert all(r["embedding_model"] == "gemini-embedding-001" for r in inserted)
     assert all(len(r["embedding"]) == 768 for r in inserted)
+
+
+def test_get_articles_for_reembedding_paginates_by_article_id():
+    manager = SupabaseManager()
+    manager.available = True
+    manager.client = MagicMock()
+    table = manager.client.table.return_value
+    chain = table.select.return_value.order.return_value.range.return_value
+    chain.execute.return_value = MagicMock(
+        data=[
+            {"article_id": "a1", "run_date": "2026-08-01", "chunk_text": "T S"},
+            {"article_id": None, "run_date": "2026-08-02", "chunk_text": "skip"},
+        ]
+    )
+
+    rows = manager.get_articles_for_reembedding(limit=10, offset=20)
+
+    assert rows == [
+        {"article_id": "a1", "run_date": "2026-08-01", "chunk_text": "T S"}
+    ]
+    manager.client.table.assert_called_with("article_embeddings")
+    table.select.assert_called_with("article_id, run_date, chunk_text")
+    table.select.return_value.order.assert_called_with("article_id")
+    table.select.return_value.order.return_value.range.assert_called_with(20, 29)
+
+
+def test_get_articles_for_reembedding_excludes_target_model():
+    manager = SupabaseManager()
+    manager.available = True
+    manager.client = MagicMock()
+    table = manager.client.table.return_value
+    query = table.select.return_value.neq.return_value
+    query.order.return_value.range.return_value.execute.return_value = MagicMock(data=[])
+
+    manager.get_articles_for_reembedding(
+        limit=10, exclude_model="@cf/baai/bge-base-en-v1.5"
+    )
+
+    table.select.return_value.neq.assert_called_once_with(
+        "embedding_model", "@cf/baai/bge-base-en-v1.5"
+    )
+
+
+def test_get_articles_for_reembedding_unavailable():
+    manager = SupabaseManager()
+    manager.available = False
+    assert manager.get_articles_for_reembedding() == []
+
+
+def test_reembed_articles_overwrites_existing_rows_with_routed_model(monkeypatch):
+    from core import embedding as emb
+    import config.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "EMBEDDING_PROVIDER", "cloudflare")
+    monkeypatch.setattr(
+        settings_mod,
+        "EMBEDDING_ROUTE_MODEL",
+        {
+            "gemini": "gemini-embedding-001",
+            "cloudflare": "@cf/baai/bge-base-en-v1.5",
+        },
+    )
+
+    manager = MagicMock()
+    manager.is_available.return_value = True
+    manager.get_articles_for_reembedding.side_effect = [
+        [
+            {"article_id": "a1", "run_date": "2026-08-01", "chunk_text": "T1 S1"},
+            {"article_id": "a2", "run_date": "2026-08-02", "chunk_text": ""},
+        ],
+        [],
+    ]
+    manager.insert_article_embeddings.return_value = True
+
+    monkeypatch.setattr(emb, "_gateway_ready", lambda: True)
+    monkeypatch.setattr(
+        emb,
+        "embed_texts",
+        lambda texts, **kw: ([[0.2] * 768], "@cf/baai/bge-base-en-v1.5"),
+    )
+    monkeypatch.setattr("core.supabase_client.get_supabase_manager", lambda: manager)
+
+    count = emb.reembed_articles(batch_size=2, between_batches_sleep=0)
+
+    assert count == 1  # empty chunk_text is not re-embedded
+    manager.get_articles_for_reembedding.assert_called_with(
+        limit=2, offset=0, exclude_model="@cf/baai/bge-base-en-v1.5"
+    )
+    inserted = manager.insert_article_embeddings.call_args[0][0]
+    assert len(inserted) == 1
+    assert inserted[0]["article_id"] == "a1"
+    assert inserted[0]["chunk_text"] == "T1 S1"
+    assert inserted[0]["embedding_model"] == "@cf/baai/bge-base-en-v1.5"
+
+
+def test_reembed_articles_stops_when_gateway_batch_fails(monkeypatch):
+    from core import embedding as emb
+
+    manager = MagicMock()
+    manager.is_available.return_value = True
+    manager.get_articles_for_reembedding.return_value = [
+        {"article_id": "a1", "run_date": "2026-08-01", "chunk_text": "T1 S1"},
+    ]
+
+    monkeypatch.setattr(emb, "_gateway_ready", lambda: True)
+    monkeypatch.setattr(emb, "embed_texts", lambda texts, **kw: ([], None))
+    monkeypatch.setattr("core.supabase_client.get_supabase_manager", lambda: manager)
+
+    assert emb.reembed_articles(batch_size=50, between_batches_sleep=0) == 0
+    manager.insert_article_embeddings.assert_not_called()
 
 
 def test_embed_unembedded_articles_skips_failed_batch(monkeypatch):

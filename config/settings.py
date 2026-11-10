@@ -114,6 +114,44 @@ GEMINI_AVAILABLE_MODELS: list[str] = [
 GEMINI_EMBEDDING_MODEL: str = _get_secret("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 
 # ---------------------------------------------------------------------------
+# Embedding provider selection (Phase 3.5)
+# ---------------------------------------------------------------------------
+# "gemini" (default) or "cloudflare".  Credentials alone must never switch
+# the live route: flip this as the FIRST step of a controlled migration
+# window, then re-embed every existing row before normal ingest resumes.
+#
+# Both providers emit 768-dim vectors, but cosine distance is only meaningful
+# within ONE model's vector space — never configure a cross-model fallback,
+# and never leave the index half-switched (see docs/EMBEDDING_PROVIDERS.md).
+EMBEDDING_PROVIDER: str = _get_secret("EMBEDDING_PROVIDER", "gemini").strip().lower()
+
+# Gateway registry key for each selectable provider.  core/embedding.py
+# treats ``embedding_model`` as a gateway provider key, so the default must
+# track the selected route (otherwise the stale Gemini key would pin the
+# Gemini provider and silently defeat the switch).
+EMBEDDING_ROUTE_PRIMARY: dict[str, str] = {
+    "gemini": "gemini-embedding-001",
+    "cloudflare": "cloudflare-bge-base-en-v1.5",
+}
+
+# Cloudflare Workers AI (Option A).  OpenAI-compatible embeddings endpoint;
+# bge-base-en-v1.5 matches Gemini's 768 dims, so no schema change is needed —
+# but existing rows still need a one-time re-embed so the index is uniform.
+CF_ACCOUNT_ID: str = _get_secret("CF_ACCOUNT_ID", "")
+CF_API_TOKEN: str = _get_secret("CF_API_TOKEN", "")
+CLOUDFLARE_EMBEDDING_MODEL: str = _get_secret(
+    "CLOUDFLARE_EMBEDDING_MODEL", "@cf/baai/bge-base-en-v1.5"
+)
+
+# Raw model id stored in ``article_embeddings.embedding_model`` for the
+# selected route.  The re-embed migration filters on this so a rerun targets
+# only rows still carrying the old model (idempotent + interruptible).
+EMBEDDING_ROUTE_MODEL: dict[str, str] = {
+    "gemini": GEMINI_EMBEDDING_MODEL,
+    "cloudflare": CLOUDFLARE_EMBEDDING_MODEL,
+}
+
+# ---------------------------------------------------------------------------
 # Langfuse Cloud observability (Model Gateway OTel tracing, Phase 0.3)
 # ---------------------------------------------------------------------------
 # Tracing is env-gated: with either key absent, the gateway emits no spans
@@ -416,7 +454,12 @@ EMBEDDING_DIMENSIONS: int = int(_get_secret("EMBEDDING_DIMENSIONS", "768"))
 _EMBEDDING_DEFAULTS = {
     "embedding_enabled": True,       # gate the ingest-time embed step
     "embedding_batch_size": 50,      # texts per embed_content call
-    "embedding_model": GEMINI_EMBEDDING_MODEL,
+    # Gateway provider key (not a raw model id) — must track the selected
+    # EMBEDDING_PROVIDER so a stale Gemini key cannot pin the old route
+    # after the switch.
+    "embedding_model": EMBEDDING_ROUTE_PRIMARY.get(
+        EMBEDDING_PROVIDER, GEMINI_EMBEDDING_MODEL
+    ),
     "embedding_dimensions": EMBEDDING_DIMENSIONS,
     "embedding_backfill_sleep": 0.5,  # seconds between backfill batches (rate-limit headroom)
 }

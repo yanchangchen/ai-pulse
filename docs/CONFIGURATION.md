@@ -10,6 +10,9 @@ env vars → default. Keys: `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default
 `nemotron-3-ultra:cloud`), `OLLAMA_API_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL` (default
 `gemini-3.8-flash`; `GEMINI_AVAILABLE_MODELS` lists the switchable set — stable/GA
 models only), `GEMINI_EMBEDDING_MODEL` (default `gemini-embedding-001`),
+`EMBEDDING_PROVIDER` (default `gemini`; set to `cloudflare` only in a migration window),
+`CF_ACCOUNT_ID` / `CF_API_TOKEN` (Cloudflare Workers AI embeddings),
+`CLOUDFLARE_EMBEDDING_MODEL` (default `@cf/baai/bge-base-en-v1.5`),
 and Langfuse tracing: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`,
 `LANGFUSE_HOST` (default `https://cloud.langfuse.com`; US region
 `https://us.cloud.langfuse.com`).
@@ -27,28 +30,33 @@ Settings are read through `get_embedding_settings()` (`config/settings.py`), whi
 |---|---|---|
 | `embedding_enabled` | `true` | Gates the ingest-time embed step |
 | `embedding_batch_size` | `50` | Texts per embedding call |
-| `embedding_model` | `GEMINI_EMBEDDING_MODEL` | **Gateway provider key** (not a raw model id). `core/embedding.py::_preferred_embedding_model()` ignores values not registered in `get_gateway().providers` and silently falls back to the routing default |
+| `embedding_model` | selected route's gateway key | **Gateway provider key** (not a raw model id), tracking `EMBEDDING_PROVIDER` — `gemini-embedding-001` by default, `cloudflare-bge-base-en-v1.5` after the switch. `core/embedding.py::_preferred_embedding_model()` ignores values not registered in `get_gateway().providers` and silently falls back to the routing default. A stale `custom_settings.json` override can pin the old provider — update or remove it during the migration window |
 | `embedding_dimensions` | `768` | Must match `article_embeddings.embedding vector(768)`; `EMBEDDING_DIMENSIONS` env/secret overrides the default |
 | `embedding_backfill_sleep` | `0.5` | Seconds between backfill batches (rate-limit headroom) |
 
-Provider credentials today: `GEMINI_API_KEY`. The only registered embedding route is
-`gemini-embedding-001` (no fallback).
+Provider credentials: `GEMINI_API_KEY` (default route) and `CF_ACCOUNT_ID` +
+`CF_API_TOKEN` (Cloudflare Workers AI embeddings). Both routes are 768-dim; each policy has
+**no fallback**, because vectors from different models are not comparable.
 
-**Not implemented yet.** Moving to a free hosted provider — Cloudflare Workers AI, Jina AI,
-or a self-deployed Render service — adds these credentials through the same
-`config.settings` chain:
+**Implemented (Phase 3.5).** `CloudflareProvider`
+(`core/ai_gateway/providers/cloudflare.py`) implements `embed()` against the
+OpenAI-compatible endpoint; the adapter validates one vector per input, non-empty vectors
+and the requested width, and `_execute_inner()` bypasses whole-batch context-fit for
+embedding tasks (Cloudflare's 512-token cap is per text). `insert_article_embeddings()` is an
+idempotent upsert on `article_id`, so the migration window can overwrite existing rows.
 
 | Provider | New keys |
 |---|---|
-| Cloudflare Workers AI | `CF_ACCOUNT_ID`, `CF_API_TOKEN` |
-| Jina AI | `JINA_API_KEY` |
-| Render service | `EMBEDDING_SERVICE_URL`, `EMBEDDING_SERVICE_TOKEN` |
+| Cloudflare Workers AI | `CF_ACCOUNT_ID`, `CF_API_TOKEN`, `EMBEDDING_PROVIDER=cloudflare` (optional `CLOUDFLARE_EMBEDDING_MODEL`) |
+| Jina AI (future) | `JINA_API_KEY` |
+| Render service (future) | `EMBEDDING_SERVICE_URL`, `EMBEDDING_SERVICE_TOKEN` |
 
-> **Safe switch:** the implementation plan adds an explicit `EMBEDDING_PROVIDER` setting
-> (default `gemini`) so credentials alone do not switch the live route. Flip it as the first
-> step of a controlled migration window, then re-embed every existing row and drain the
-> backlog before enabling retrieval. Do not leave it half-switched: old Gemini and new BGE
-> vectors in one index make distances meaningless.
+> **Safe switch:** `EMBEDDING_PROVIDER` (default `gemini`) is the deliberate switch —
+> credentials alone do not move the live route. Flip it as the first step of a controlled
+> migration window, then re-embed every existing row and drain the backlog before enabling
+> retrieval. Do not leave it half-switched: old Gemini and new BGE vectors in one index make
+> distances meaningless. **This deployment completed the switch on 2026-11-10**
+> (`EMBEDDING_PROVIDER=cloudflare`; 6,304/6,304 rows uniform, backlog 0, Recall@10 = 0.833).
 
 See [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md) for models, free tiers, the adapter
 contract, and the re-embed runbook. `embedding_dimensions` stays `768` for all three options;

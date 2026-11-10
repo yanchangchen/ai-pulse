@@ -6,14 +6,21 @@ path and both stay in sync.  Resumability is the database, not a cursor file:
 ``get_unembedded_articles`` returns only articles without an embedding row, so
 re-running simply resumes wherever the previous run stopped.
 
+``--reembed`` is the Phase 3.5 migration companion: it re-embeds rows that
+*already* have a vector, using the stored ``chunk_text`` and the upsert path,
+so an ``EMBEDDING_PROVIDER`` switch can make the whole index one model.
+
 Usage:
     python backfill_embeddings.py                  # drain the whole backlog
     python backfill_embeddings.py --limit 20       # embed at most 20 articles
     python backfill_embeddings.py --dry-run        # count without writing
+    python backfill_embeddings.py --reembed        # re-embed existing rows (migration)
     python backfill_embeddings.py --sleep 2 --batch-size 100
 
-Requires GEMINI_API_KEY (and the Phase 3 migration applied) to write anything;
-with no key or no migration the run reports 0 embedded and exits cleanly.
+Requires the routed provider's credentials (Gemini by default; Cloudflare
+when ``EMBEDDING_PROVIDER=cloudflare``) and the Phase 3 migration applied to
+write anything; with no key or no migration the run reports 0 embedded and
+exits cleanly.
 """
 import argparse
 import time
@@ -43,20 +50,28 @@ def main() -> int:
         "--sleep", type=float, default=None,
         help="seconds between batches (default from get_embedding_settings())",
     )
+    parser.add_argument(
+        "--reembed", action="store_true",
+        help="re-embed existing rows instead of draining the unembedded backlog "
+             "(Phase 3.5 provider-migration window)",
+    )
     args = parser.parse_args()
 
-    from core.embedding import backfill_embeddings
+    from core.embedding import backfill_embeddings, reembed_articles
 
     started = time.time()
-    total = backfill_embeddings(
+    runner = reembed_articles if args.reembed else backfill_embeddings
+    total = runner(
         total_limit=args.limit,
         batch_size=args.batch_size,
         dry_run=args.dry_run,
         between_batches_sleep=args.sleep,
     )
     elapsed = time.time() - started
-    verb = "would embed" if args.dry_run else "embedded"
-    print(f"Backfill complete: {verb} {total} article(s) in {elapsed:.1f}s")
+    verb = "would re-embed" if args.reembed and args.dry_run else (
+        "re-embedded" if args.reembed else ("would embed" if args.dry_run else "embedded")
+    )
+    print(f"{'Re-embed' if args.reembed else 'Backfill'} complete: {verb} {total} article(s) in {elapsed:.1f}s")
     return 0
 
 

@@ -164,7 +164,7 @@ def embed_unembedded_articles(
                 "run_date": run_date,
                 "chunk_text": text,
                 "embedding": vector,
-                "embedding_model": model or settings.get("embedding_model") or "gemini-embedding-001",
+                "embedding_model": model or settings.get("embedding_model") or "unknown",
             })
 
         if dry_run:
@@ -175,6 +175,121 @@ def embed_unembedded_articles(
 
     logger.info("Embedded %d article(s) this pass", embedded)
     return embedded
+
+
+def reembed_articles(
+    total_limit: int = 0,
+    batch_size: Optional[int] = None,
+    dry_run: bool = False,
+    between_batches_sleep: Optional[float] = None,
+) -> int:
+    """Re-embed **existing** ``article_embeddings`` rows with the routed provider.
+
+    This is the migration-window companion to ``backfill_embeddings``:
+    ``get_unembedded_articles()`` only returns rows *without* a vector, so the
+    old-model rows would otherwise never be revisited and the index could not
+    reach model uniformity.  It reads the stored ``chunk_text`` (the exact
+    string originally embedded) and writes through the same
+    ``insert_article_embeddings()`` upsert path, replacing each row in place.
+
+    Run only after flipping ``EMBEDDING_PROVIDER`` — and drain the normal
+    backlog afterwards.  ``total_limit`` 0 means "every embedded row".
+    Never raises: the usual best-effort contract applies (a failed batch stops
+    the loop and is retried on the next run).
+    """
+    from config.settings import (
+        get_embedding_settings,
+        EMBEDDING_PROVIDER,
+        EMBEDDING_ROUTE_MODEL,
+        GEMINI_EMBEDDING_MODEL,
+    )
+
+    settings = get_embedding_settings()
+    if not settings.get("embedding_enabled", True):
+        return 0
+    if not _gateway_ready():
+        return 0
+
+    try:
+        from core.supabase_client import get_supabase_manager
+
+        manager = get_supabase_manager()
+        if not manager or not manager.is_available():
+            return 0
+    except Exception as e:
+        logger.debug("Re-embed skipped (no Supabase manager): %s", e)
+        return 0
+
+    batch = batch_size or int(settings.get("embedding_batch_size", 50))
+    dimensions = int(settings.get("embedding_dimensions", 768))
+    sleep = (
+        between_batches_sleep
+        if between_batches_sleep is not None
+        else float(settings.get("embedding_backfill_sleep", 0.5))
+    )
+    preferred = _preferred_embedding_model(settings.get("embedding_model"))
+    target_model = EMBEDDING_ROUTE_MODEL.get(
+        EMBEDDING_PROVIDER, GEMINI_EMBEDDING_MODEL
+    )
+
+    total = 0
+    while True:
+        remaining = (total_limit - total) if total_limit else batch
+        if remaining <= 0:
+            break
+        page_size = min(batch, remaining)
+        # Offset stays 0: each successful upsert removes its rows from the
+        # ``exclude_model`` filter, so the next query naturally returns the
+        # next page.  This makes a rerun resume after an interruption instead
+        # of re-embedding the same first rows.
+        rows = manager.get_articles_for_reembedding(
+            limit=page_size, offset=0, exclude_model=target_model
+        )
+        if not rows:
+            break
+
+        pairs = [
+            (row, (row.get("chunk_text") or "").strip())
+            for row in rows
+        ]
+        pairs = [(row, text) for row, text in pairs if text]
+        if not pairs:
+            # Nothing embeddable in this page; stop rather than spin.
+            break
+
+        texts = [text for _, text in pairs]
+        vectors, model = embed_texts(
+            texts, dimensions=dimensions, preferred_model=preferred
+        )
+        if not vectors:
+            # Stop rather than spin: the next run resumes with the remaining
+            # old-model rows.
+            break
+
+        out: List[Dict] = []
+        for (row, text), vector in zip(pairs, vectors):
+            out.append({
+                "article_id": row.get("article_id"),
+                "run_date": row.get("run_date") or time.strftime("%Y-%m-%d"),
+                "chunk_text": text,
+                "embedding": vector,
+                "embedding_model": model or settings.get("embedding_model") or "unknown",
+            })
+
+        if dry_run:
+            total += len(out)
+        elif manager.insert_article_embeddings(out):
+            total += len(out)
+        else:
+            break
+
+        if total_limit and total >= total_limit:
+            break
+        if sleep > 0:
+            time.sleep(sleep)
+
+    logger.info("Re-embedded %d existing article(s) this pass", total)
+    return total
 
 
 def backfill_embeddings(

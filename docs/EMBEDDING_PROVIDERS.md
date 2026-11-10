@@ -1,9 +1,12 @@
 # Embedding Providers & Migration Options
 
-> **Status (2026-11-09): decision recorded, implementation pending.** The app still embeds
-> exclusively through Google Gemini (`gemini-embedding-001`). **Option A (Cloudflare Workers
-> AI) is selected**; Options B (Jina) and C (Render) are retained as fallbacks. Nothing below
-> is wired into the gateway yet — this page is the decision record and implementation runbook.
+> **Status (2026-11-10): migration complete.** The live index is **6,304 / 6,304 articles**,
+> **100% `@cf/baai/bge-base-en-v1.5`** (768 dims, backlog 0). Gemini remains registered as the
+> code-default route for fresh installs but receives no embedding traffic in this deployment.
+> `CloudflareProvider`, the `EMBEDDING_PROVIDER` switch, the idempotent upsert path,
+> `backfill_embeddings.py --reembed`, and the context-fit bypass are landed and unit-tested.
+> The retrieval gate scored **Recall@10 = 0.833** (recorded Gemini baseline 0.510, but on a
+> partial ~100-row index — directional only). The §8 14-day metrics watch is now running.
 
 Moving embeddings off Google is a *provider* change, not a model-quality change: the
 pipeline, storage, and retrieval RPCs stay the same as long as the replacement emits
@@ -39,6 +42,20 @@ and [Decision record & trigger metrics](#8-decision-record--trigger-metrics).
 This baseline is why the migration is attractive: Cloudflare's free allowance is hundreds of
 times the steady-state ingest volume, while Gemini's free embedding quota is already the
 throughput bottleneck.
+
+### Post-migration result (2026-11-10)
+
+| Metric | Value |
+|---|---|
+| Articles / embeddings | 6,304 / 6,304 (**backlog 0**) |
+| Embedding model | `@cf/baai/bge-base-en-v1.5`, 768 dims — **100% of rows** |
+| Re-embedded existing rows | 750 (Gemini → Cloudflare, in place) |
+| Backlog embedded | 5,554 |
+| Retrieval gate | Recall@10 = **0.833** (8/8 questions; per-question 0.67–1.00) |
+| Cloudflare call failures | none logged during the migration |
+
+*The earlier 0.510 baseline was Gemini on a partial ~100-row index, so the gate improvement
+reflects both the model change and full coverage — directional, not a controlled comparison.*
 
 ---
 
@@ -344,10 +361,12 @@ All three keep `vector(768)`. None requires a schema migration.
 
 ### 6.1 Add an adapter
 
-Add one provider adapter (e.g. `core/ai_gateway/providers/openai_compat.py`) implementing
-`ProviderAdapter.embed()`. Cloudflare (OpenAI-compatible) and Jina share it; the Render service
-needs a trivial variant for its `/embed` shape. `generate()` / `generate_structured()` can
-raise `NotImplementedError` — embedding-only providers never serve generation tasks.
+**Landed:** `core/ai_gateway/providers/cloudflare.py` (`CloudflareProvider`) implements
+`ProviderAdapter.embed()` against the OpenAI-compatible endpoint. Cloudflare (OpenAI-compatible)
+and Jina share this shape; the Render service would need a trivial variant for its `/embed`
+shape. `generate()` / `generate_structured()` raise `NotImplementedError` — embedding-only
+providers never serve generation tasks. The adapter validates one vector per input, non-empty
+vectors, and the requested 768 dimensions, failing the whole batch on any mismatch.
 
 ```python
 async def embed(self, texts, **kwargs):
@@ -365,21 +384,30 @@ async def embed(self, texts, **kwargs):
 The gateway's `_execute_with_validation()` already special-cases `TaskType.EMBEDDING` and
 calls `provider.embed(...)`; registration is the main gateway change.
 
-**Context-fit gotcha (must fix when adding an embedding provider):** `_execute_inner()` calls
-`_check_context_fit()` with the **batch's total** estimated tokens. Cloudflare's 512-token
-limit is **per text**, so a normal 50-article batch (~5k tokens) would be rejected as
-"exceeds context budget". Add a `request.task is TaskType.EMBEDDING` bypass for context-fit
-(or return a deliberately large `context_window` from the embedding provider) and a
-regression test that a multi-item batch is accepted. This does not affect the current Gemini
-route because its registry entry carries a very large context window.
+**Usage note:** Cloudflare's OpenAI-compatible embeddings response omits `usage`
+(verified 2026-11-10). `CloudflareProvider` therefore records an estimated `tokens_in`
+(~3 chars/token, the repo's standard heuristic) so `llm_calls` still carries usable quota
+data for §6.4/§8; the Cloudflare dashboard Neurons graph remains the exact source of truth.
+
+**Context-fit gotcha (fixed):** `_execute_inner()` used to call `_check_context_fit()` with
+the **batch's total** estimated tokens. Cloudflare's 512-token limit is **per text**, so a
+normal 50-article batch (~5k tokens) would have been rejected as "exceeds context budget".
+`_execute_inner()` now bypasses context-fit for `TaskType.EMBEDDING`, and
+`tests/test_cloudflare_provider.py::test_embedding_batch_bypasses_whole_batch_context_fit`
+regression-tests a 50-item batch against a 512-token provider.
 
 ### 6.2 Register the model and route
 
-In `core/ai_gateway/gateway.py`:
+**Landed** in `core/ai_gateway/gateway.py`:
 
-1. Add a registry entry with `"tasks": ["embedding"]`.
-2. Point the `embedding` routing policy's `primary` at it.
-3. Leave `fallback: []` unless the fallback serves the **same model**.
+1. Registry entry `cloudflare-bge-base-en-v1.5` with `"tasks": ["embedding"]`.
+2. The `embedding` policy's `primary` resolves from `EMBEDDING_PROVIDER` via
+   `EMBEDDING_ROUTE_PRIMARY` (`gemini-embedding-001` default,
+   `cloudflare-bge-base-en-v1.5` when switched).
+3. `fallback: []` for both routes — never a cross-model fallback.
+
+Registering the provider requires both credentials; adding them alone does **not** move the
+route (`test_cloudflare_credentials_alone_do_not_switch_route`).
 
 ### 6.3 Settings / secrets
 
@@ -388,47 +416,55 @@ Read credentials through `config.settings` (never `os.getenv` directly inside
 
 | Provider | Keys |
 |---|---|
-| Cloudflare | `CF_ACCOUNT_ID`, `CF_API_TOKEN` |
+| Cloudflare | `CF_ACCOUNT_ID`, `CF_API_TOKEN`, optional `CLOUDFLARE_EMBEDDING_MODEL` |
 | Jina | `JINA_API_KEY` |
 | Render | `EMBEDDING_SERVICE_URL`, `EMBEDDING_SERVICE_TOKEN` |
 
-`embedding_model` in `get_embedding_settings()` is a **gateway provider key**, not a raw
-model id: `core/embedding.py::_preferred_embedding_model()` ignores values that are not in
-`get_gateway().providers` and silently falls back to the routing default. Keep the registry
-key and this setting in sync.
+**Landed:** `EMBEDDING_PROVIDER` (default `gemini`) selects the route; the provider is
+registered when credentials are present, but traffic only moves when the switch is flipped.
+`_EMBEDDING_DEFAULTS["embedding_model"]` now tracks the selected route, so it cannot pin the
+old Gemini provider after the switch. `embedding_model` in `get_embedding_settings()` is a
+**gateway provider key**, not a raw model id: `core/embedding.py::_preferred_embedding_model()`
+ignores values that are not in `get_gateway().providers` and silently falls back to the
+routing default. If you have a `config/custom_settings.json` override for `embedding_model`,
+update or remove it in the migration window.
 
-Add an explicit switch (e.g. `EMBEDDING_PROVIDER`, default `gemini`). Flip it to the new
-provider as the **first step of a controlled migration window**, then run the re-embed and
-full backfill in §6.4; do not enable dense retrieval until every row carries the new model.
-Do not auto-switch just because credentials are present, and do not leave the switch
-half-done — normal ingest would keep writing old-model vectors. The switch also keeps the
-app working for anyone without the new credentials.
+Flip `EMBEDDING_PROVIDER=cloudflare` as the **first step of a controlled migration window**,
+then run the re-embed and full backfill in §6.4; do not enable dense retrieval until every
+row carries the new model. Do not auto-switch just because credentials are present, and do
+not leave the switch half-done — normal ingest would keep writing old-model vectors. The
+switch also keeps the app working for anyone without the new credentials.
 
 ### 6.4 Re-embed during the migration window
 
-`article_embeddings` is one row per article (`UNIQUE(article_id)`), and
-`insert_article_embeddings()` is a plain insert — a re-embed is not possible with the current
-path. During one controlled migration window:
+`article_embeddings` is one row per article (`UNIQUE(article_id)`).
+`insert_article_embeddings()` is an idempotent
+`upsert(rows, on_conflict="article_id")`, and `get_articles_for_reembedding(exclude_model=…)`
+returns only rows still carrying a different model, so a rerun after an interruption resumes
+instead of redoing the first page. **Completed 2026-11-10** with:
 
-1. Add a re-embed path in `core/supabase_client.py`: either an `upsert(..., on_conflict="article_id")`
-   or a `delete_article_embeddings(article_ids)` step.
-2. Add a one-off script (or extend `backfill_embeddings.py` with `--reembed`) that reads all
-   rows/articles, embeds with the new model, and upserts.
-3. Flip `EMBEDDING_PROVIDER` to the new provider, then run the re-embed and the backlog
-   backfill to completion.
-4. Verify: row count unchanged, `embedding_model` all equal, no 768-dim errors, and
-   `core/retrieval_eval.py`'s hit-rate gate does not regress. Only then resume normal dense
-   retrieval use.
+1. Credentials in `.streamlit/secrets.toml`.
+2. `EMBEDDING_PROVIDER=cloudflare` + restart; the gateway route flipped and the provider
+   registered.
+3. ```bash
+   python backfill_embeddings.py --reembed   # 750 old rows overwritten in place
+   python backfill_embeddings.py             # 5,554 backlog drained
+   ```
+4. Verified row count (6,304 = articles), `embedding_model` uniform, 768 dims, backlog 0,
+   and `python -m core.retrieval_eval` → Recall@10 0.833.
 
 Do **not** leave a partially re-embedded index in service: mixed-model vectors degrade
-retrieval silently (distances are meaningless across spaces).
+retrieval silently (distances are meaningless across spaces). During this migration the
+first re-embed attempt stopped after 100 rows on a transient Windows socket error; the
+resumable filter meant the retry continued from row 101 without redoing work.
 
 ### 6.5 Tests
 
-Extend `tests/test_embedding.py` with an adapter test that mocks the HTTP response and
-asserts: vector count matches input count, dimensions are 768, and a malformed/partial
-response yields `([], None)` (the existing all-or-nothing guard). `tests/conftest.py` already
-pins Supabase offline, so no network is touched.
+**Landed:** `tests/test_cloudflare_provider.py` mocks the HTTP response and asserts: vector
+order/count, 768 dimensions, usage mapping, malformed/partial response rejection, HTTP error
+propagation, timeout handling, the routing switch, credentials-without-switch, and the
+embedding batch context-fit bypass. The upsert path is covered in `tests/test_embedding.py`.
+`tests/conftest.py` already pins Supabase offline, so no network is touched.
 
 ### 6.6 Rollback
 
@@ -441,15 +477,16 @@ a config flip.
 
 ## 7. Decision checklist
 
-- [ ] Free-tier terms re-verified on the provider dashboard (quotas change).
-- [ ] Model card confirms 768 output dims and the exact model id.
-- [ ] Input length comfortable vs. the model's token cap (512 for Cloudflare bge-base).
-- [ ] Fallback chain is empty or same-model-only.
-- [ ] Adapter returns exactly one vector per input, or fails the whole batch.
-- [ ] Re-embed path exists and has been run against the full table.
-- [ ] `--dry-run` backfill reports 0 remaining after the re-embed.
-- [ ] `core/retrieval_eval.py` hit-rate gate checked before/after.
-- [ ] Docs updated: routing table in [ARCHITECTURE.md](ARCHITECTURE.md), settings in
+- [x] Free-tier terms re-verified on the provider dashboard (quotas change).
+- [x] Model card confirms 768 output dims and the exact model id.
+- [x] Input length comfortable vs. the model's token cap (512 for Cloudflare bge-base).
+- [x] Fallback chain is empty or same-model-only.
+- [x] Adapter returns exactly one vector per input, or fails the whole batch.
+- [x] Re-embed path exists (`upsert(..., on_conflict="article_id")`).
+- [x] Re-embed path has been run against the full table (750 rows, 2026-11-10).
+- [x] `--dry-run` backfill reports 0 remaining after the re-embed.
+- [x] `core/retrieval_eval.py` hit-rate gate checked before/after (Recall@10 = 0.833).
+- [x] Docs updated: routing table in [ARCHITECTURE.md](ARCHITECTURE.md), settings in
       [CONFIGURATION.md](CONFIGURATION.md), storage contract in [SUPABASE.md](SUPABASE.md).
 
 ---

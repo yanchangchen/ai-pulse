@@ -149,13 +149,19 @@ The gateway routes each task type to a primary model with an ordered fallback ch
 | project | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | Yes |
 | evaluate | gemini-3.5-flash-lite | gemini-3.8-flash | nemotron-3-ultra | gpt-oss-120b | No |
 | sage_chat | nemotron-3-ultra | gpt-oss-120b | gemini-3.6-flash | gemini-3.8-flash | No |
-| embedding | gemini-embedding-001 | — | — | — | No |
+| embedding | gemini-embedding-001 (default) / cloudflare-bge-base-en-v1.5 | — | — | — | No |
 
-> **Embedding provider note (2026-11):** `gemini-embedding-001` is the only registered
-> embedding model and the only adapter implementing `embed()`. The selected replacement is
-> **Option A — Cloudflare Workers AI** (`@cf/baai/bge-base-en-v1.5`); it is not wired yet.
-> Keep the `embedding` fallback chain empty unless the fallback serves the *same* model,
-> because vectors from different models are not comparable.
+> **Embedding provider note (2026-11):** two embedding routes are registered —
+> `gemini-embedding-001` (default) and **Option A — Cloudflare Workers AI**
+> (`@cf/baai/bge-base-en-v1.5`, adapter landed in
+> `core/ai_gateway/providers/cloudflare.py`). `EMBEDDING_PROVIDER` selects the primary;
+> credentials alone do not switch it. Both are 768-dim, but their vectors are **not
+> comparable**, so the `embedding` fallback chain stays empty — keep it empty unless a
+> fallback serves the *same* model. Embedding tasks bypass whole-batch context-fit because
+> provider caps (e.g. Cloudflare's 512) apply per text, not per batch. **Migration completed
+> 2026-11-10:** the live index is 6,304/6,304 articles, 100% `@cf/baai/bge-base-en-v1.5`,
+> backlog 0; retrieval gate Recall@10 = 0.833. The code default remains `gemini` for fresh
+> installs — this deployment sets `EMBEDDING_PROVIDER=cloudflare`.
 
 #### Embedding provider fallbacks (retained for Option A limits)
 
@@ -208,23 +214,31 @@ classifier/summariser only for backward compatibility and quota state.
   `ProviderAdapter.embed()` instead of the prompt/schema path, and pins
   `embedding_dimensions` (768) to match the `vector(768)` column — no template, no schema, and
   `deterministic_fallback: False`, so a failed batch is skipped rather than written as
-  garbage vectors. `gemini-embedding-001` is the sole registered embedding model today;
-  provider options are in [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
+  garbage vectors. Two embedding-only models are registered
+  (`gemini-embedding-001` default, `cloudflare-bge-base-en-v1.5` when
+  `EMBEDDING_PROVIDER=cloudflare`), with an empty fallback chain because vectors from
+  different models are not comparable. Provider options are in
+  [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
 - `gateway.py` — `ModelGateway` singleton via `get_gateway()`. Holds a **model registry +
   per-task routing policies** (primary + ordered fallback chain: Gemini flash models +
-  Ollama cloud models for generation, plus `gemini-embedding-001` for the embedding route).
-  Per-model health tracking (3 consecutive failures →
+  Ollama cloud models for generation, plus the selected embedding-only model). Per-model
+  health tracking (3 consecutive failures →
   degraded, 5 → unavailable, with the circuit-breaker auto-reset described above),
-  context-fit check (input must fit ~60% of the model's window), exponential-backoff
+  context-fit check (input must fit ~60% of the model's window; **bypassed for
+  `EMBEDDING`**, whose provider caps apply per text rather than to the batch sum),
+  exponential-backoff
   retries, JSON-schema validation, WARNING-level logs on every fallback transition, and a
   final **deterministic fallback** when all LLMs fail. Ollama request timeout defaults to
   180s (`OLLAMA_REQUEST_TIMEOUT`) because cloud models can exceed 60s under load.
-- `providers/` — `GeminiProvider` and `OllamaCloudProvider` async adapters behind
-  `ProviderAdapter`. `GeminiProvider` additionally implements `embed()` (Phase 3) calling
-  `models.embed_content` with `output_dimensionality=768` against `gemini-embedding-001`.
-  `OllamaCloudProvider` does not implement `embed()` (it inherits the default
-  `NotImplementedError`), and Ollama Cloud's hosted API does not document an embeddings
-  endpoint, so the existing Ollama key cannot be reused for embeddings. Vetted free hosted
+- `providers/` — `GeminiProvider`, `OllamaCloudProvider` and `CloudflareProvider` async
+  adapters behind `ProviderAdapter`. `GeminiProvider` implements `embed()` (Phase 3) calling
+  `models.embed_content` with `output_dimensionality=768` against `gemini-embedding-001`;
+  `CloudflareProvider` implements `embed()` against Cloudflare Workers AI's
+  OpenAI-compatible endpoint (`@cf/baai/bge-base-en-v1.5`, 768 dims) and rejects partial or
+  malformed batches. Both are embedding-only where applicable — generation methods raise
+  `NotImplementedError`. `OllamaCloudProvider` does not implement `embed()`, and Ollama
+  Cloud's hosted API does not document an embeddings endpoint, so the existing Ollama key
+  cannot be reused for embeddings. Vetted free hosted
   alternatives and the adapter contract are in
   [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
 - `deterministic.py` — zero-LLM fallbacks: `rule_categorise`, `extractive_summarise`,

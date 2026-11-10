@@ -25,6 +25,7 @@ This document outlines key operational constraints and testing workflows for AI 
 | **Theme Classifier & TF-IDF** | `python -m pytest tests/test_classifier.py tests/test_tfidf_classifier.py` | ~0.3s |
 | **Summariser & Synthesis** | `python -m pytest tests/test_summariser.py` | ~0.3s |
 | **Model Gateway & Health** | `python -m pytest tests/test_gateway_health.py tests/test_gateway_evaluate.py` | ~0.5s |
+| **Embeddings & Provider Switch** | `python -m pytest tests/test_embedding.py tests/test_cloudflare_provider.py` | ~60s (builds gateway providers) |
 | **Quality Evaluator** | `python -m pytest tests/test_evaluator.py` | ~1.5s |
 | **Filter by Feature Keyword** | `python -m pytest tests/ -k "sage"` or `tests/ -k "feedback"` | ~0.3s |
 | **Single Test Function** | `python -m pytest tests/test_sage_conversations.py::test_supabase_preferred_when_available` | ~0.05s |
