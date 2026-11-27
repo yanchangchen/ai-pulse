@@ -10,6 +10,19 @@ from core.history_manager import get_last_run
 
 logger = setup_logger(__name__)
 
+
+def _console_print(msg: str) -> None:
+    """Print that survives consoles without UTF-8 (e.g. Windows cp1252).
+
+    A UnicodeEncodeError from a progress emoji must never kill the pipeline —
+    fall back to replacing unencodable characters instead.
+    """
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(msg.encode(enc, errors="replace").decode(enc, errors="replace"), flush=True)
+
 # To survive module reloads in Streamlit, persist state in sys
 if not hasattr(sys, "_aipulse_bg_refresher_state"):
     sys._aipulse_bg_refresher_state = {
@@ -53,7 +66,7 @@ class BackgroundRefresher:
             state = cls._get_state()
             state["progress"] = msg
         logger.info("[BG Refresher Progress] %s", msg)
-        print(f"🔄 [AI Pulse BG Refresher] Current Step: {msg}", flush=True)
+        _console_print(f"🔄 [AI Pulse BG Refresher] Current Step: {msg}")
 
     @classmethod
     def start(cls) -> bool:
@@ -76,7 +89,7 @@ class BackgroundRefresher:
             state["thread"] = thread
             thread.start()
             logger.info("Started background refresh thread.")
-            print("⚡ [AI Pulse BG Refresher] Started background pipeline execution thread.", flush=True)
+            _console_print("⚡ [AI Pulse BG Refresher] Started background pipeline execution thread.")
             return True
 
     @classmethod
@@ -102,6 +115,7 @@ class BackgroundRefresher:
             from core.history_manager import (
                 save_run_to_history,
                 compute_run_fingerprint,
+                compute_run_processing_stats,
                 is_duplicate_run,
             )
 
@@ -136,6 +150,14 @@ class BackgroundRefresher:
             cls.update_progress("[LLM] Generating targeted Engineering Blueprint & Product Feasibility briefs...")
             theme_counts = {theme: len(themed_articles.get(theme, [])) for theme in themed_articles}
             summaries, processed_per_theme = generate_all_summaries(themed_articles, articles)
+
+            # Run-level processing visibility: how many new unprocessed articles
+            # came in, how many were summarised, how many wait for the next run.
+            run_stats = compute_run_processing_stats(summaries)
+            cls.update_progress(
+                f"[LLM] {run_stats['new_unprocessed']} new unprocessed articles came in -> "
+                f"{run_stats['processed']} summarised, {run_stats['waiting']} waiting for next run"
+            )
 
             # 4. Save to history only if there was real synthesis and it isn't a duplicate
             any_processed = any(processed_per_theme.get(theme, []) for theme in processed_per_theme)
@@ -179,7 +201,7 @@ class BackgroundRefresher:
                 state["status"] = "completed"
                 state["progress"] = "[CACHE] Pipeline completed successfully."
                 state["completed_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print("✅ [CACHE] BG Pipeline execution successfully finished.", flush=True)
+            _console_print("✅ [CACHE] BG Pipeline execution successfully finished.")
             
         except Exception as e:
             with cls._lock:
@@ -188,7 +210,7 @@ class BackgroundRefresher:
                 state["progress"] = f"[ERROR] Failed with error: {e}"
                 state["error"] = str(e)
             logger.error("Background pipeline failed: %s", e, exc_info=True)
-            print(f"❌ [ERROR] BG Pipeline execution failed: {e}", flush=True)
+            _console_print(f"❌ [ERROR] BG Pipeline execution failed: {e}")
 
 
 
@@ -259,7 +281,9 @@ def render_sidebar_info() -> None:
         # Show status
         last_run_time = get_last_run_time()
         if last_run_time:
-            hours_since = (datetime.now() - last_run_time).total_seconds() / 3600
+            # Clamp at 0: a future-dated run (clock/timezone skew) must never
+            # render as a negative age like "-7h ago".
+            hours_since = max(0.0, (datetime.now() - last_run_time).total_seconds() / 3600)
             if hours_since < 12:
                 st.sidebar.success(f"✅ Cache up-to-date ({int(hours_since)}h ago)")
             else:

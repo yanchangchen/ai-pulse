@@ -36,6 +36,25 @@ def test_llm_client_quota_auto_expiry():
     assert LLMClient.is_quota_exceeded() is False
 
 
+def test_console_print_normal_utf8(capsys):
+    from core.bg_refresher import _console_print
+    _console_print("🔄 hello")
+    assert "🔄 hello" in capsys.readouterr().out
+
+
+def test_console_print_survives_non_utf8_console(monkeypatch):
+    """A cp1252 console (Windows headless) must not kill the pipeline over an emoji."""
+    import io
+    import sys
+    from core.bg_refresher import _console_print
+
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", buf)
+    _console_print("🔄 [AI Pulse BG Refresher] Current Step: test")  # must not raise
+    out = buf.buffer.getvalue().decode("cp1252")
+    assert "Current Step: test" in out
+
+
 def test_run_pipeline_skips_save_when_no_processed_articles():
     """If summariser returns no processed articles, the pipeline should not persist a run."""
     from unittest.mock import MagicMock, patch as _patch

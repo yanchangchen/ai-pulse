@@ -128,7 +128,7 @@ streamlit run app.py
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/                    # full suite: 685 tests (final check only)
+python -m pytest tests/                    # full suite: 697 tests (final check only)
 python -m pytest tests/test_summariser.py  # targeted: prefer during iteration (<0.5s)
 python -m pytest -m integration tests/     # opt-in: real LLM + Supabase wiring
 ```

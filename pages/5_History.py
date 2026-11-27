@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from config.themes import THEME_ORDER, THEME_COLORS
-from core.history_manager import load_full_history
+from core.history_manager import load_full_history, compute_run_processing_stats
 from core.summariser import ensure_extractive_summary
 from core.shared_sidebar import render_sidebar_nav
 from core.supabase_client import get_supabase_manager
@@ -84,6 +84,12 @@ def main() -> None:
         counts = entry.get("counts", {})
 
         st.markdown(f'<div class="wiki-date">📅 Latest Cache: {format_display_timestamp(latest_ts)}</div>', unsafe_allow_html=True)
+        _rs = compute_run_processing_stats(summaries)
+        if _rs["new_unprocessed"] or _rs["processed"]:
+            st.caption(
+                f"🆕 {_rs['new_unprocessed']} new unprocessed articles this run · "
+                f"✅ {_rs['processed']} summarised · ⏳ {_rs['waiting']} waiting for next run"
+            )
 
         themes_to_show = THEME_ORDER if selected_theme == "All Themes" else [selected_theme]
         cols = st.columns(min(len(themes_to_show), 2))
@@ -103,7 +109,17 @@ def main() -> None:
                         gen_log_loc = {}
                 inc_loc = summary.get("included_count") if summary.get("included_count") is not None else gen_log_loc.get("included_count")
                 tot_loc = summary.get("total_articles") or gen_log_loc.get("total_articles") or count
-                label_loc = f"📰 {inc_loc} of {tot_loc} reflected" if inc_loc is not None and tot_loc > 0 and inc_loc < tot_loc else f"📰 {count} articles"
+                waiting_loc = summary.get("waiting_hashes")
+                if waiting_loc is None:
+                    waiting_loc = gen_log_loc.get("waiting_hashes")
+                left_loc = len(waiting_loc) if waiting_loc is not None else max(0, tot_loc - (inc_loc or 0))
+                if inc_loc is not None and tot_loc > 0:
+                    if inc_loc == 0 and left_loc == 0:
+                        label_loc = f"📰 {tot_loc} tracked · 0 new (all previously processed)"
+                    else:
+                        label_loc = f"📰 {inc_loc} of {tot_loc} reflected · {left_loc} left unprocessed"
+                else:
+                    label_loc = f"📰 {count} articles"
                 skipped_loc = summary.get("skipped_articles") or gen_log_loc.get("skipped_articles") or []
                 aged_loc = summary.get("aged_out_articles") or gen_log_loc.get("aged_out_articles") or []
 
@@ -606,6 +622,12 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
 
             summaries = supabase.get_summaries_for_run(run_id) or []
             summaries_dict = {s["theme_name"]: s for s in summaries}
+            _rs = compute_run_processing_stats(summaries_dict)
+            if _rs["new_unprocessed"] or _rs["processed"]:
+                st.caption(
+                    f"🆕 {_rs['new_unprocessed']} new unprocessed articles this run · "
+                    f"✅ {_rs['processed']} summarised · ⏳ {_rs['waiting']} waiting for next run"
+                )
 
             themes_to_show = THEME_ORDER if selected_theme == "All Themes" else [selected_theme]
 
@@ -636,8 +658,16 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
                     skipped_list = s.get("skipped_articles") or gen_log.get("skipped_articles") or []
                     aged_list = s.get("aged_out_articles") or gen_log.get("aged_out_articles") or []
 
-                    if inc_count is not None and tot_count > 0 and inc_count < tot_count:
-                        expander_title = f"🔹 {theme} ({inc_count} of {tot_count} articles reflected)"
+                    waiting_list = s.get("waiting_hashes")
+                    if waiting_list is None:
+                        waiting_list = gen_log.get("waiting_hashes")
+                    left_count = len(waiting_list) if waiting_list is not None else max(0, tot_count - (inc_count or 0))
+
+                    if inc_count is not None and tot_count > 0:
+                        if inc_count == 0 and left_count == 0:
+                            expander_title = f"🔹 {theme} ({tot_count} tracked · 0 new — all previously processed)"
+                        else:
+                            expander_title = f"🔹 {theme} ({inc_count} of {tot_count} reflected · {left_count} left unprocessed)"
                     else:
                         expander_title = f"🔹 {theme} ({article_count} articles)"
 
@@ -645,8 +675,11 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
                         col_details, col_articles = st.columns([2, 1])
 
                         with col_details:
-                            if inc_count is not None and tot_count > 0 and inc_count < tot_count:
-                                st.caption(f"ℹ️ **{inc_count} of {tot_count}** classified articles reflected in this summary ({tot_count - inc_count} in backlog).")
+                            if inc_count is not None and tot_count > 0:
+                                if inc_count == 0 and left_count == 0:
+                                    st.caption(f"ℹ️ **0 new** of {tot_count} tracked articles — all were processed in earlier runs; nothing left unprocessed.")
+                                else:
+                                    st.caption(f"ℹ️ **{inc_count} of {tot_count}** classified articles reflected in this summary · **{left_count} left unprocessed** for the next run.")
                             st.markdown("**WHAT HAPPENED**")
                             st.markdown(sanitize_summary_html(s.get('what_is_happening', 'No data.')))
 

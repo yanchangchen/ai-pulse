@@ -4,6 +4,24 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-27 — The run that landed 8 hours in the future
+
+**Problem**: after a headless demo run, the Memory Wiki showed the newest run as *tomorrow morning* (28/11 07:27 instead of 27/11 23:27), and the sidebar reported the cache as "-7h ago".
+
+**What happened**:
+
+1. **Naive local time, meet timestamptz.** `save_run_to_history` stamps runs with `datetime.now()` — local, naive — and handed that string straight to Supabase. Postgres reads a naive timestamp as **UTC**, so a UTC+8 process wrote its run 8 hours into the future. Every earlier run had come from a UTC process, which masked the bug for months. The shifted timestamp then sorted as "latest" everywhere, and `now − run_time` went negative — hence "-7h ago".
+
+2. **The fix is one conversion, at the boundary.** Local history keys stay local (they're a local cache); the Supabase payload now converts to aware UTC ISO before insert. The duplicate-run check had the mirror bug — `strptime` with the local-key format silently failed on ISO cloud timestamps, so the Supabase fingerprint check had been dead code; it now parses ISO and normalises to local naive. The sidebar clamps negative ages at 0. The one shifted row was repaired from its `created_at` (the DB's own clock was right all along).
+
+3. **While in there: say the zero.** Coverage labels only rendered "N of M reflected" when N < M — full coverage silently fell back to "(79 articles)", which reads as *nothing processed*. Now every surface (Timeline, Deep Dive, memory.md) always states "N of M reflected · K left unprocessed", even at K = 0, plus a run-level 🆕/✅/⏳ caption reconstructed from the persisted `included_count + waiting_hashes` — no schema change.
+
+*Lesson: a naive datetime is a timezone bug waiting for a process in a different TZ. Convert at the storage boundary, keep `created_at` as the audit clock, and make "zero" an explicit, rendered state — an absent label is indistinguishable from a broken pipeline.*
+
+**Result**: runs persist correctly from any timezone; the demo run (267/267 processed, Agentic 79 via 7-batch map-reduce) displays at its true time; regression tests in `tests/test_run_timestamps.py`.
+
+---
+
 ## 2026-11-27 — Phase 4.6: ranking is a policy, not a sort
 
 **Problem**: after 4.5 every overflow article eventually gets fed — but *which* articles fill the 50 slots was still a pure keyword-relevance sort with an aging boost. A syndicated reprint could occupy a slot twice, one prolific source could crowd out a quieter one, and a 13-day-old story could outrank this morning's at equal relevance.

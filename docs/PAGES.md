@@ -14,6 +14,7 @@ Theme summary cards with provenance chips and key takeaways.
 ## `pages/2_Deep_Dive.py`
 
 Per-theme article list, full summaries, on-demand Gemini re-summarisation, further reading.
+Coverage caption always shows "N of M reflected · K left unprocessed" (even at K = 0).
 
 ## `pages/3_Keyword_Analysis.py`
 
@@ -36,10 +37,12 @@ Three tabs:
   fallbacks, per-model health tracking). Each reply is captioned with the engine
   provenance (provider/model, latency, fallback flag) and the grounding stats
   (summaries/dates plus article-evidence count).
-- **📖 Memory Timeline** — per-run theme cards/expander carry the Phase 4.1 coverage
-  caption ("N of M reflected") and the ⏳ Missed/Backlog list, plus the Phase 4.3
-  🍂 Aged-out Unprocessed list (waiting articles that left the fetch window before
-  ever being summarised, with last-seen run).
+- **📖 Memory Timeline** — run-level caption ("🆕 N new unprocessed articles this
+  run · ✅ M summarised · ⏳ K waiting", from `compute_run_processing_stats()`);
+  per-theme cards/expanders always show "N of M reflected · K left unprocessed"
+  (even when K = 0 — full coverage is stated, not implied), the ⏳ Missed/Backlog
+  list, and the Phase 4.3 🍂 Aged-out Unprocessed list (waiting articles that left
+  the fetch window before ever being summarised, with last-seen run).
 - **⚖️ Compare Runs**
 
 ### Sage agent internals (`core/sage_agent.py`)

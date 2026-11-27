@@ -108,11 +108,18 @@ def main() -> None:
     with col_header:
         st.markdown(f"<h2 style='color: {theme_color}; margin-top:0;'>{selected_theme}</h2>", unsafe_allow_html=True)
         st.markdown(render_provenance_chip(theme_summary), unsafe_allow_html=True)
-        if inc_count is not None and tot_count > 0 and inc_count < tot_count:
-            st.caption(f"📰 **{inc_count} of {tot_count}** articles reflected in this brief ({tot_count - inc_count} in backlog / awaiting next cycle)")
+        waiting_dd = theme_summary.get("waiting_hashes")
+        if waiting_dd is None:
+            waiting_dd = gen_log.get("waiting_hashes")
+        left_dd = len(waiting_dd) if waiting_dd is not None else max(0, tot_count - (inc_count or 0))
+        if inc_count is not None and tot_count > 0:
+            if inc_count == 0 and left_dd == 0:
+                st.caption(f"📰 **0 new** of {tot_count} tracked articles — all were processed in earlier runs; nothing left unprocessed")
+            else:
+                st.caption(f"📰 **{inc_count} of {tot_count}** articles reflected in this brief · **{left_dd} left unprocessed** for the next run")
     with col_count:
-        metric_val = f"{inc_count} / {tot_count}" if inc_count is not None and tot_count > 0 and inc_count < tot_count else f"{len(theme_articles)}"
-        metric_meta = "Articles Reflected" if inc_count is not None and tot_count > 0 and inc_count < tot_count else "Articles Tracked"
+        metric_val = f"{inc_count} / {tot_count}" if inc_count is not None and tot_count > 0 else f"{len(theme_articles)}"
+        metric_meta = "Articles Reflected" if inc_count is not None and tot_count > 0 else "Articles Tracked"
         st.markdown(f"""
         <div class="metric-card" style="text-align: center; border-color: {theme_color}40 !important;">
             <div style="font-size: 26px; font-weight: bold; color: {theme_color};">{metric_val}</div>

@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -43,6 +43,49 @@ def compute_run_fingerprint(full_articles: List[Dict]) -> str:
     return hashlib.sha256("".join(sorted(hashes)).encode()).hexdigest()
 
 
+def compute_run_processing_stats(summaries: Dict[str, Dict]) -> Dict[str, int]:
+    """Run-level processing visibility (extends the Phase 4.1 per-theme captions).
+
+    Per theme, ``waiting_hashes`` is the unprocessed pool minus what the run
+    surfaced, so ``included_count + len(waiting_hashes)`` reconstructs how many
+    never-before-summarised articles entered the run. Summing across themes
+    gives the run totals: how many new unprocessed articles came in, how many
+    were summarised (processed), and how many wait for the next run.
+
+    Works on live summary dicts and on rows restored from Supabase, where the
+    counts live inside ``generation_log`` (possibly a JSON string). Themes
+    skipped as all-already-processed contribute zero.
+    """
+    new_unprocessed = processed = waiting = 0
+    for summary in (summaries or {}).values():
+        if not isinstance(summary, dict):
+            continue
+        gen_log = summary.get("_generation_log") or summary.get("generation_log") or {}
+        if isinstance(gen_log, str):
+            try:
+                gen_log = json.loads(gen_log)
+            except Exception:
+                gen_log = {}
+        if not isinstance(gen_log, dict):
+            gen_log = {}
+        inc = summary.get("included_count")
+        if inc is None:
+            inc = gen_log.get("included_count")
+        wait = summary.get("waiting_hashes")
+        if wait is None:
+            wait = gen_log.get("waiting_hashes") or []
+        inc = int(inc or 0)
+        n_wait = len(wait or [])
+        processed += inc
+        waiting += n_wait
+        new_unprocessed += inc + n_wait
+    return {
+        "new_unprocessed": new_unprocessed,
+        "processed": processed,
+        "waiting": waiting,
+    }
+
+
 def _latest_local_run_timestamp_and_fingerprint() -> tuple:
     """Return (timestamp, fingerprint) of the latest local run, or (None, None)."""
     try:
@@ -73,8 +116,13 @@ def is_duplicate_run(fingerprint: str) -> bool:
                 latest_fp = latest.get("article_fingerprint")
                 latest_ts = latest.get("run_timestamp")
                 if latest_fp and latest_ts:
-                    run_time = datetime.strptime(latest_ts, "%Y-%m-%d %H:%M:%S")
-                    if latest_fp == fingerprint and (datetime.now() - run_time) <= window:
+                    # Cloud timestamps are ISO-8601 with offset; normalise to
+                    # local naive time for the comparison (strptime with the
+                    # local-key format silently failed on them before).
+                    run_time = _parse_run_timestamp(latest_ts)
+                    if run_time is not None and run_time.tzinfo is not None:
+                        run_time = run_time.astimezone().replace(tzinfo=None)
+                    if run_time is not None and latest_fp == fingerprint and (datetime.now() - run_time) <= window:
                         logger.info("Duplicate run fingerprint detected in Supabase (within %s minutes)",
                                     DUPLICATE_RUN_WINDOW_MINUTES)
                         return True
@@ -208,8 +256,10 @@ def save_run_to_history(
         count = article_counts.get(theme, 0)
         inc_count = summary.get("included_count", count)
         src = summary.get("_source", "unknown")
-        if inc_count is not None and inc_count < count:
-            new_entry += f"### {theme} ({inc_count} of {count} articles reflected)\n"
+        waiting = summary.get("waiting_hashes")
+        left = len(waiting) if waiting is not None else max(0, count - (inc_count or 0))
+        if inc_count is not None:
+            new_entry += f"### {theme} ({inc_count} of {count} articles reflected · {left} left unprocessed)\n"
         else:
             new_entry += f"### {theme} ({count} articles)\n"
         new_entry += f"*Source:* `{src}`\n\n"
@@ -480,9 +530,18 @@ def _save_to_supabase(
             logger.debug("Supabase not available, skipping cloud persistence")
             return
 
-        # 1. Create trend run record
+        # 1. Create trend run record. Supabase stores timestamptz: send an
+        # aware UTC timestamp, never the naive local string — Postgres would
+        # read a naive value as UTC and shift the run by the local offset
+        # (a UTC+8 headless run once landed 8h "in the future", breaking
+        # latest-run ordering and cache-age display).
+        run_ts_utc = (
+            datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+            .astimezone(timezone.utc)
+            .isoformat()
+        )
         run_record = supabase.save_trend_run(
-            run_timestamp=timestamp,
+            run_timestamp=run_ts_utc,
             run_date=date_key,
             total_articles=len(full_articles),
             article_fingerprint=article_fingerprint,

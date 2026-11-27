@@ -7,7 +7,7 @@ This document outlines key operational constraints and testing workflows for AI 
 ## ⚡ Critical Testing Rule for AI Harnesses
 
 > ### ⚠️ HARNESS DIRECTIVE: NEVER RUN THE FULL SUITE ON ROUTINE EDITS
-> - The full test suite has grown to **685 tests** and takes **~2 minutes** to complete.
+> - The full test suite has grown to **697 tests** and takes **~2–3 minutes** to complete.
 > - Running `pytest tests/` after small edits creates excessive latency and wastes time.
 > - **During active development and iteration, harnesses MUST ONLY run the 1–2 test files directly touching the changed code (< 0.5s execution time).**
 > - Reserve the full `python -m pytest tests/` suite strictly as a final sanity check before declaring a task complete or submitting a PR.
