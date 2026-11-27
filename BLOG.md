@@ -4,6 +4,26 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-27 — Phase 4.6: ranking is a policy, not a sort
+
+**Problem**: after 4.5 every overflow article eventually gets fed — but *which* articles fill the 50 slots was still a pure keyword-relevance sort with an aging boost. A syndicated reprint could occupy a slot twice, one prolific source could crowd out a quieter one, and a 13-day-old story could outrank this morning's at equal relevance.
+
+**What happened**:
+
+1. **Four signals, four knobs.** Recency (linear decay over the 14-day lookback, doubling as the first tie-break), source diversity (a greedy per-source diminishing penalty — the extractive engine's diversity filter, promoted to prompt selection), near-duplicate demotion (title-token Jaccard ≥ 0.8 against a higher-ranked representative), and classification-gate confidence (keyword > TF-IDF/LLM > heuristic). Each disables at 0; all off reproduces legacy order exactly — a regression test pins that.
+
+2. **Demote, never drop.** Every penalty only reorders; when the pool fits the ceiling, all articles still feed. That keeps the 4.1/4.3 ledger contract intact — an article marked processed genuinely appeared in a prompt — and it's what makes the change safe to ship without an LLM gate.
+
+3. **Deterministic gate, same-pool before/after.** Ranking changes selection, not capacity, so `eval_ranking_gate.py` measures selection quality directly: on the freshest run (273 articles), the one theme over the cap went from 19 to 24 distinct sources and 7.27 to 6.34 mean article age, with 40/50 overlap and zero duplicate pairs fed. The near-dup signal found nothing at Jaccard 0.8 today — it waits, unit-tested, for the next syndication wave.
+
+4. **Two honest limits.** Supabase-restored articles carry no `gate` column, so gate confidence is neutral there (it acts on freshly classified articles); and identical titles from *different* sources cluster as duplicates before diversity ever sees them — a test that assumed otherwise failed, correctly.
+
+*Lesson: a ranking function is a policy surface — give each preference its own knob, make every penalty a demotion rather than a deletion, and pin the all-off path to the legacy behaviour so "turn it off" is a tested state, not a hope.*
+
+**Result**: Phase 4 complete (4.1–4.6). 20 new tests (`tests/test_ranking_refinements.py`), fair-drain and summariser suites green, gate results in `scratch/eval_4_6_results.json`. Next lever: Phase 5 hybrid retrieval.
+
+---
+
 ## 2026-11-27 — The 139-minute "success": why wait_for is not a timeout
 
 **Problem**: During the 4.4/4.5 gate experiments, two Gemini fallbacks logged `success=true` with latencies of 702s and 8329s — a 2.3-hour "successful" call. The provider already wrapped every SDK call in `asyncio.wait_for(..., 30s)`. The timeout existed; it just didn't bind.

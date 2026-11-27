@@ -109,6 +109,14 @@ strict-faithfulness overrides to `config/custom_settings.json` via
 `load_custom_settings()` / `get_summariser_settings()` — code that reads summariser params
 must go through that merge, not hardcode defaults.
 
+Phase 4.3–4.6 ranking/capacity knobs share the same merge: `aging_boost_per_run`
+(2.0), `max_articles_per_summary` (50), `article_summary_chars` (300),
+`mapreduce_batch_size` (12), `mapreduce_max_batches` (8), `recency_weight` (1.0),
+`source_diversity_penalty` (1.5), `near_duplicate_penalty` (4.0),
+`near_duplicate_threshold` (0.8), `gate_confidence_weight` (0.5). Each Phase 4.6
+signal disables at 0; all 0 plus `aging_boost_per_run` 0 restores legacy
+relevance ranking.
+
 The overlay is **Supabase-backed** (`app_settings` table, key `custom_settings`): loads are
 remote-first (remote row wins and refreshes the local file as an offline cache; the remote
 fetch is TTL-cached ~30s), saves write through to both. Same for the auto-remediation state

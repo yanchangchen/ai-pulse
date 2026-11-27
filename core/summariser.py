@@ -5,7 +5,7 @@ Generates theme summaries using the Model Gateway with routing, fallback, and pr
 
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from config.themes import THEMES, THEME_ORDER
@@ -504,14 +504,35 @@ def _merge_intermediates_deterministic(
     )
 
 
+# Phase 4.6: classification-gate confidence — gate 1 (exact keywords) is the
+# strongest theme fit, gates 2 (TF-IDF) / 3 (LLM) are solid, gate 4 (heuristic
+# fallback) is the weakest. Scaled by ``gate_confidence_weight``.
+_GATE_CONFIDENCE = {1: 1.0, 2: 0.7, 3: 0.7, 4: 0.0}
+
+
+def _parse_published_ts(article: Dict) -> float:
+    """Parse ``published_date`` (ISO string from the fetcher) to a UTC epoch
+    timestamp; 0.0 when missing/unparseable so date-less articles stay neutral."""
+    raw = article.get("published_date")
+    if not raw:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(raw))
+    except (ValueError, TypeError):
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
 def _rank_articles_by_relevance(
     articles: List[Dict],
     theme_name: str,
     top_n: int,
 ) -> List[Dict]:
     """Sort articles by relevance to the theme using the same scoring as the
-    extractive fallback, then return the top-n.  Ties break by insertion order
-    so the LLM sees a stable corpus across runs.
+    extractive fallback, then return the top-n.  Ties break by recency, then by
+    insertion order so the LLM sees a stable corpus across runs.
 
     Re-using ``non_llm_summariser._score_article_relevance`` keeps the Qwen,
     Gemini, and extractive paths aligned on what counts as a high-signal article.
@@ -521,24 +542,112 @@ def _rank_articles_by_relevance(
     ``times_seen`` counter to the score, so long-waiting backlog articles
     eventually outrank fresh ones and drain inside the fetch window instead of
     ageing out silently.
-    """
-    from core.non_llm_summariser import _score_article_relevance
-    from config.settings import get_summariser_settings
 
+    Phase 4.6 prioritisation refinements (all knobs via
+    ``get_summariser_settings()``; each 0 disables that signal):
+    - ``recency_weight``: bonus decaying linearly to 0 at ``DAYS_LOOKBACK``
+      days old, so fresh developments edge out stale ones at equal relevance.
+    - ``gate_confidence_weight``: small bonus scaled by classification-gate
+      confidence (keyword > TF-IDF/LLM > heuristic).
+    - ``near_duplicate_penalty`` / ``near_duplicate_threshold``: syndicated
+      copies (title-token Jaccard >= threshold vs a higher-ranked article) are
+      demoted — never dropped, so small pools still feed everything and the
+      processed ledger stays truthful.
+    - ``source_diversity_penalty``: greedy selection subtracts the penalty per
+      already-picked article from the same source, spreading the brief across
+      sources (pattern: the extractive engine's diversity filter).
+    """
+    from core.non_llm_summariser import _score_article_relevance, _tokenize
+    from config.settings import get_summariser_settings, DAYS_LOOKBACK
+
+    settings = get_summariser_settings()
     theme_kws = THEMES.get(theme_name, {}).get("keywords")
-    boost = float(get_summariser_settings().get("aging_boost_per_run", 2.0))
+    boost = float(settings.get("aging_boost_per_run", 2.0))
     seen = processed_articles.get_times_seen(theme_name) if boost > 0 else {}
-    if not theme_kws and not seen:
+    recency_weight = float(settings.get("recency_weight", 1.0))
+    src_penalty = float(settings.get("source_diversity_penalty", 1.5))
+    dup_penalty = float(settings.get("near_duplicate_penalty", 4.0))
+    dup_threshold = float(settings.get("near_duplicate_threshold", 0.8))
+    gate_weight = float(settings.get("gate_confidence_weight", 0.5))
+
+    refinements_off = (
+        recency_weight <= 0 and src_penalty <= 0
+        and dup_penalty <= 0 and gate_weight <= 0
+    )
+    if not theme_kws and not seen and refinements_off:
         return list(articles[:top_n])
-    scored = [
-        (idx,
-         (_score_article_relevance(a, theme_kws) if theme_kws else 1.0)
-         + boost * seen.get(processed_articles.article_hash(a), 0))
-        for idx, a in enumerate(articles)
-    ]
-    # Sort by score desc, then by original index asc (stable)
-    scored.sort(key=lambda x: (-x[1], x[0]))
-    return [articles[idx] for idx, _ in scored[:top_n]]
+
+    now_ts = datetime.now(timezone.utc).timestamp()
+    lookback_s = max(1, int(DAYS_LOOKBACK)) * 86400.0
+
+    def _source(a: Dict) -> str:
+        return a.get("source_name") or a.get("source") or "Tracked Source"
+
+    scored = []
+    for idx, a in enumerate(articles):
+        base = _score_article_relevance(a, theme_kws) if theme_kws else 1.0
+        base += boost * seen.get(processed_articles.article_hash(a), 0)
+        pub_ts = _parse_published_ts(a)
+        if recency_weight > 0 and pub_ts > 0:
+            age_s = max(0.0, now_ts - pub_ts)
+            base += recency_weight * max(0.0, 1.0 - age_s / lookback_s)
+        if gate_weight > 0:
+            base += gate_weight * _GATE_CONFIDENCE.get(a.get("gate"), 0.4)
+        scored.append((idx, base, pub_ts))
+
+    # Near-duplicate demotion: greedy clustering in base-score order — each
+    # article is compared against the representatives already seen; a
+    # title-token Jaccard >= threshold marks it a syndicated copy.
+    if dup_penalty > 0 and len(scored) > 1:
+        reps: List[Tuple[int, set]] = []
+        dup_flags = [False] * len(scored)
+        for idx, base, _ts in sorted(scored, key=lambda x: (-x[1], x[0])):
+            tokens = set(_tokenize(articles[idx].get("title", "")))
+            is_dup = False
+            if tokens:
+                for _rep_idx, rep_tokens in reps:
+                    union = len(tokens | rep_tokens)
+                    if union and len(tokens & rep_tokens) / union >= dup_threshold:
+                        is_dup = True
+                        break
+            if is_dup:
+                dup_flags[idx] = True
+            else:
+                reps.append((idx, tokens))
+        scored = [
+            (idx, base - (dup_penalty if dup_flags[idx] else 0.0), ts)
+            for idx, base, ts in scored
+        ]
+
+    # Sort by adjusted score desc, then recency desc (only when the recency
+    # signal is enabled), then index asc (stable).
+    order = sorted(
+        range(len(scored)),
+        key=lambda i: (
+            -scored[i][1],
+            -(scored[i][2] if recency_weight > 0 else 0.0),
+            i,
+        ),
+    )
+    if src_penalty <= 0:
+        return [articles[i] for i in order[:top_n]]
+
+    # Greedy selection with a per-source diminishing penalty. Ties keep the
+    # base-score order (first candidate wins), so selection stays deterministic.
+    selected: List[Dict] = []
+    source_counts: Dict[str, int] = {}
+    remaining = list(order)
+    while remaining and len(selected) < top_n:
+        best_pos, best_eff = 0, None
+        for pos, i in enumerate(remaining):
+            eff = scored[i][1] - src_penalty * source_counts.get(_source(articles[i]), 0)
+            if best_eff is None or eff > best_eff:
+                best_pos, best_eff = pos, eff
+        i = remaining.pop(best_pos)
+        selected.append(articles[i])
+        src = _source(articles[i])
+        source_counts[src] = source_counts.get(src, 0) + 1
+    return selected
 
 
 def format_articles_for_prompt(articles: List[Dict], char_budget: Optional[int] = None) -> str:

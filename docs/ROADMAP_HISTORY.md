@@ -106,10 +106,10 @@ constrained. Tracking queries for ad-hoc re-checks: [EMBEDDING_PROVIDERS.md §8]
 
 ---
 
-## Phase 4 — Full-coverage article processing (in progress)
+## Phase 4 — Full-coverage article processing (4.1–4.6 landed)
 
 *(4.1 skip visibility and 4.2 fallback-ledger truthfulness landed 2026-10-26/27 —
-see the BLOG.md entry for that week. 4.3 below landed 2026-11-27.)*
+see the BLOG.md entry for that week. 4.3–4.6 below landed 2026-11-27.)*
 
 - [x] **4.3 Fair drain / backlog carryover (2026-11-27).** Three pieces:
   - **Counter:** `articles.times_seen` (`supabase_migration_times_seen.sql`) counts
@@ -193,6 +193,41 @@ see the BLOG.md entry for that week. 4.3 below landed 2026-11-27.)*
     prioritisation and Phase 5 retrieval are the next levers, not more capacity.
   - Tests: `tests/test_mapreduce.py` (6: defaults, batching+union, cost bound,
     deterministic merge+dedupe, reduce budget scaling, orchestrator trigger).
+- [x] **4.6 Prioritisation refinements (2026-11-27, deterministic gate).**
+  Four ranking signals added to `_rank_articles_by_relevance`, each a knob via
+  `get_summariser_settings()` (each 0 disables that signal; all 0 + aging 0 =
+  legacy relevance order):
+  - **Recency** (`recency_weight`, default 1.0): bonus decaying linearly to 0 at
+    `DAYS_LOOKBACK` (14) days old; also the first tie-break (score desc →
+    published_date desc → insertion order). Missing/unparseable dates are
+    neutral, never penalised.
+  - **Source diversity** (`source_diversity_penalty`, default 1.5): greedy
+    selection subtracts the penalty per already-picked article from the same
+    source — the extractive engine's diversity-filter pattern applied to prompt
+    selection. Demotes, never drops: small pools still feed everything.
+  - **Near-duplicate demotion** (`near_duplicate_penalty` 4.0,
+    `near_duplicate_threshold` 0.8): greedy title-token Jaccard clustering in
+    base-score order; syndicated copies (e.g. MarkTechPost reprints) score below
+    the representative but stay selectable, so the processed ledger stays
+    truthful.
+  - **Gate confidence** (`gate_confidence_weight`, default 0.5): bonus scaled by
+    classification gate (1 keyword → 1.0, 2 TF-IDF / 3 LLM → 0.7, 4 heuristic →
+    0.0, missing → neutral 0.4). Applies to freshly classified articles;
+    Supabase-restored articles carry no `gate` column and stay neutral.
+  - **Gate** (`eval_ranking_gate.py`, deterministic same-pool before/after —
+    ranking changes selection, not capacity, so no LLM arms; 4.3 precedent):
+    freshest run, 273 articles / 7 themes, cap 50. Only Agentic Systems &
+    DevTools exceeds the cap (84): distinct sources **19 → 24**, mean article
+    age **7.27 → 6.34 days**, 40/50 selection overlap, duplicate pairs fed
+    0 → 0 (no syndication in this pool at Jaccard 0.8 — the signal is
+    unit-tested for when it appears). Other themes select identically
+    (pool ≤ cap; ordering only). Results: `scratch/eval_4_6_results.json`.
+  - Composition with 4.3 verified: the aging boost still flips order for
+    long-waiting articles (regression test); map-reduce batch composition
+    inherits the refined order unchanged.
+  - Tests: `tests/test_ranking_refinements.py` (20: per-signal on/off, decay,
+    tie-breaks, threshold respect, never-drop guarantees, neutral missing
+    fields, legacy path, aging composition, defaults).
 
 ---
 

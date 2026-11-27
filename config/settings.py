@@ -414,6 +414,21 @@ def get_summariser_settings() -> dict:
         # count bound (cost ceiling; beyond it, articles wait via 4.3 aging).
         "mapreduce_batch_size": 12,
         "mapreduce_max_batches": 8,
+        # Phase 4.6 prioritisation refinements (each 0 disables that signal;
+        # all 0 + aging_boost_per_run 0 = legacy relevance ranking):
+        # Max recency bonus, decaying linearly to 0 at DAYS_LOOKBACK days old.
+        "recency_weight": 1.0,
+        # Score penalty per already-selected article from the same source
+        # (greedy re-rank; spreads the brief across sources).
+        "source_diversity_penalty": 1.5,
+        # Score penalty for syndicated near-duplicates (title-token Jaccard
+        # >= near_duplicate_threshold against a higher-ranked representative).
+        # Demoted, never dropped — small pools still feed every article.
+        "near_duplicate_penalty": 4.0,
+        "near_duplicate_threshold": 0.8,
+        # Scales the classification-gate confidence bonus
+        # (gate 1 keyword 1.0, gates 2/3 0.7, gate 4 heuristic 0.0).
+        "gate_confidence_weight": 0.5,
     }
     defaults.update(load_custom_settings())
     return defaults

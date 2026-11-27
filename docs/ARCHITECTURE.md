@@ -317,6 +317,16 @@ classifier/summariser only for backward compatibility and quota state.
   `mapreduce_max_batches` (default 8), beyond which articles wait via 4.3 aging.
   `_generation_log.mapreduce` records batch count/size and reduce source;
   fallback source token `extractive:mapreduce_merge`.
+- **Prioritisation refinements (Phase 4.6):** four ranking signals in
+  `_rank_articles_by_relevance`, each a `get_summariser_settings()` knob (0
+  disables): `recency_weight` (1.0 — linear decay to 0 at `DAYS_LOOKBACK`, also
+  the first tie-break), `source_diversity_penalty` (1.5 — greedy per-source
+  diminishing penalty, the extractive engine's diversity pattern),
+  `near_duplicate_penalty`/`near_duplicate_threshold` (4.0 / 0.8 — title-token
+  Jaccard demotion of syndicated copies, never dropped), and
+  `gate_confidence_weight` (0.5 — classification-gate bonus; neutral for
+  Supabase-restored articles, which carry no `gate`). All off + aging 0 = legacy
+  relevance order. Deterministic gate: `eval_ranking_gate.py`.
 - Themes whose article hashes were all seen before are skipped (`gateway:skipped`) —
   summaries are skipped entirely when article content hashes are unchanged
   (`get_articles_hash()` / `_get_existing_article_hashes()`).

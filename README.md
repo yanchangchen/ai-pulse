@@ -19,7 +19,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 - **Deterministic classification** — 4-pass waterfall (keywords → TF-IDF → optional LLM → heuristic). The LLM gate can be disabled entirely once keyword coverage matures. [Modes explained →](docs/ARCHITECTURE.md#classification-modes)
 - **Self-improving keywords** — after each run, missing keywords are heuristically extracted from LLM/heuristic articles and auto-applied if they appear in 3+ articles. [How it works →](docs/ARCHITECTURE.md#self-improving-keywords)
 - **Non-LLM fallback** — LexRank + Luhn extractive engine produces 5-section briefs in <50ms, zero tokens, 100% faithful.
-- **Full-coverage processing (Phases 4.1–4.5)** — skip visibility ("N of M articles reflected" + missed/backlog lists), fair-drain aging boost for waiting articles, budget-aware capacity, and map-reduce overflow summarisation so large article pools are fully digested — eval-gated at 74% narrative coverage.
+- **Full-coverage processing (Phases 4.1–4.6)** — skip visibility ("N of M articles reflected" + missed/backlog lists), fair-drain aging boost for waiting articles, budget-aware capacity, map-reduce overflow summarisation (eval-gated at 74% narrative coverage), and prioritisation refinements: recency weighting, source diversity, syndicated near-duplicate demotion, classification-gate confidence.
 - **Persistent memory** — every run persisted to `history.json`, `memory.md`, and optionally Supabase. The last 2 runs' summaries are injected into the next prompt so the model reports on **evolutions**, not static snapshots.
 - **Duplicate-run suppression** — a stable article-set fingerprint stops the same fetched set from being persisted twice within a configurable window.
 - **Processed-article ledger** — tracks which articles have actually been included in a summary prompt, so only new/unprocessed articles are summarised and the rest are carried forward to the next run.
@@ -128,7 +128,7 @@ streamlit run app.py
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/                    # full suite: 665 tests (final check only)
+python -m pytest tests/                    # full suite: 685 tests (final check only)
 python -m pytest tests/test_summariser.py  # targeted: prefer during iteration (<0.5s)
 python -m pytest -m integration tests/     # opt-in: real LLM + Supabase wiring
 ```
@@ -149,7 +149,7 @@ not pytest tests.
 | [Supabase](docs/SUPABASE.md) | Schema, migrations, RLS, app_settings KV store, test isolation |
 | [Embedding Providers](docs/EMBEDDING_PROVIDERS.md) | Live Cloudflare Workers AI pipeline, provider options (Gemini code default, Jina, self-deployed Render), adapter/re-embed runbook, closed metrics-watch results |
 | [Future.md](Future.md) | Standing Sage RAG roadmap: hybrid retrieval, temporal awareness, hierarchical memory, multi-agent synthesis, improvement loop |
-| [Roadmap History](docs/ROADMAP_HISTORY.md) | Implementation notes for every completed phase (0–4.5) |
+| [Roadmap History](docs/ROADMAP_HISTORY.md) | Implementation notes for every completed phase (0–4.6) |
 | [BLOG.md](BLOG.md) | Engineering lessons learned, dated entries grouped by 2-week blocks |
 
 ## 📈 Performance & Monitoring
