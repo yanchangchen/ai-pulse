@@ -17,6 +17,8 @@ Your ai-pulse application now supports **cloud persistence to Supabase**. This m
 
 **Important:** File-based persistence (local `history.json` and `memory.md`) continues to work as a fallback. Supabase is optional and gracefully degrades if unavailable.
 
+> **Developer reference:** the current full schema, the ordered migration list, RLS, and the `app_settings` KV store are documented in [docs/SUPABASE.md](docs/SUPABASE.md). Since the original integration, Supabase has grown well beyond run persistence: Sage conversations and article FTS retrieval, the `llm_calls` observability log, Sage faithfulness evaluations, pgvector article embeddings (Cloudflare Workers AI), the processed-article ledger, and the Phase 4.3 `times_seen` fair-drain counter all live there.
+
 ---
 
 ## Step 1: Create a Supabase Project
@@ -67,6 +69,10 @@ The Feedback & Roadmap page uses a table added by a separate migration:
 3. Paste it into the SQL editor and click **"Run"**.
 
 This creates the `user_feedback` table, indexes, and Row Level Security policies used by page 8.
+
+### Apply the remaining migrations
+
+The base schema is only the starting point. Apply the `supabase_migration_*.sql` files in the repository root, roughly in the order listed in [docs/SUPABASE.md — Migrations](docs/SUPABASE.md#migrations): dedup, keywords, quality metrics, provenance, user feedback, backfill articles, app settings, `llm_calls`, article FTS, Sage evaluations, article embeddings (pgvector), and `times_seen`. Each migration is idempotent and safe to re-run; features whose migration is missing degrade gracefully (e.g. the `times_seen` counter falls back to local JSON).
 
 **What this creates:**
 - `trend_runs` table: Each ai-pulse execution
@@ -143,7 +149,7 @@ Every time ai-pulse completes a run, the following is saved to Supabase:
 | Data | Saved To |
 |------|----------|
 | Run timestamp & date | `trend_runs` |
-| Theme summaries (5 themes) | `theme_summaries` |
+| Theme summaries (7 themes) | `theme_summaries` |
 | All articles with classifications | `articles` |
 | Sync status & timestamps | `sync_metadata` |
 
@@ -321,14 +327,10 @@ The following enhancements have been implemented:
 - Only processes new articles (better signal, faster execution)
 - Reduces API costs and improves performance
 
-### Step 4: Emerging Trends Visualization ✅
-- New `pages/7_Emerging_Trends.py` page with 4 visualizations:
-  - 🗓️ **Emergence Timeline**: When did each trend first appear?
-  - 📈 **Acceleration Index**: Week-over-week growth % for each theme
-  - ⭐ **Novelty Score**: 0-100 score based on how recent the trend is
-  - 🆕 **Novel Articles**: Articles published in the last 7 days
+### Step 4: Emerging Trends Visualization *(since removed)*
+- The original `pages/7_Emerging_Trends.py` page (Emergence Timeline, Acceleration Index, Novelty Score, Novel Articles) was later dropped; cross-run trend analysis now lives in **Trend Analytics** (`pages/6_Trend_Analytics.py`), and page 7 is now **Quality Evaluation**. See [docs/PAGES.md](docs/PAGES.md) for the current 10-page layout.
 
-## Files Changed
+## Files Changed *(historical — at the time of the original integration)*
 
 New files added:
 - `core/supabase_client.py` - Supabase manager class (360+ lines)

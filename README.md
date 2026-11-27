@@ -14,16 +14,18 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 
 ## ✨ Key Features
 
-- **Multi-model AI gateway** — task-typed LLM calls routed across Qwen Cloud and Gemini with fallback chains, health tracking, context-fit checks, and per-request timeouts. [Architecture details →](docs/ARCHITECTURE.md#routing-policies)
-- **Dense article embeddings** — 768-dim vectors in Supabase pgvector with per-article model provenance. Today Gemini-only; free hosted alternatives (Cloudflare, Jina) and a self-deployed Render service are documented in [Embedding providers →](docs/EMBEDDING_PROVIDERS.md)
+- **Multi-model AI gateway** — task-typed LLM calls routed across Qwen Cloud and Gemini with fallback chains, health tracking, context-fit checks, per-request timeouts, and a hard wall-clock deadline bounding each fallback chain. [Architecture details →](docs/ARCHITECTURE.md#routing-policies)
+- **Dense article embeddings** — 768-dim vectors in Supabase pgvector with per-article model provenance. This deployment runs Cloudflare Workers AI (`@cf/baai/bge-base-en-v1.5`, full index, retrieval Recall@10 = 0.917); fresh installs default to Gemini until switched via `EMBEDDING_PROVIDER`. [Embedding providers →](docs/EMBEDDING_PROVIDERS.md)
 - **Deterministic classification** — 4-pass waterfall (keywords → TF-IDF → optional LLM → heuristic). The LLM gate can be disabled entirely once keyword coverage matures. [Modes explained →](docs/ARCHITECTURE.md#classification-modes)
 - **Self-improving keywords** — after each run, missing keywords are heuristically extracted from LLM/heuristic articles and auto-applied if they appear in 3+ articles. [How it works →](docs/ARCHITECTURE.md#self-improving-keywords)
 - **Non-LLM fallback** — LexRank + Luhn extractive engine produces 5-section briefs in <50ms, zero tokens, 100% faithful.
+- **Full-coverage processing (Phases 4.1–4.5)** — skip visibility ("N of M articles reflected" + missed/backlog lists), fair-drain aging boost for waiting articles, budget-aware capacity, and map-reduce overflow summarisation so large article pools are fully digested — eval-gated at 74% narrative coverage.
 - **Persistent memory** — every run persisted to `history.json`, `memory.md`, and optionally Supabase. The last 2 runs' summaries are injected into the next prompt so the model reports on **evolutions**, not static snapshots.
 - **Duplicate-run suppression** — a stable article-set fingerprint stops the same fetched set from being persisted twice within a configurable window.
 - **Processed-article ledger** — tracks which articles have actually been included in a summary prompt, so only new/unprocessed articles are summarised and the rest are carried forward to the next run.
-- **Quality evaluation** — 7 automated metrics (3 LLM-as-judge + 4 deterministic) with in-app remediation. [Details →](docs/QUALITY_EVALUATION.md)
-- **Sage agent** — conversational AI research analyst grounded in the Memory Wiki archive with chronological citations.
+- **Quality evaluation** — 7 automated run metrics (3 LLM-as-judge + 4 deterministic) plus a chat-time Sage faithfulness judge, with in-app and automatic remediation. [Details →](docs/QUALITY_EVALUATION.md)
+- **Sage agent** — conversational AI research analyst grounded in the Memory Wiki archive plus Postgres full-text article retrieval, with clickable citations, per-reply evidence popovers, and a chat-time faithfulness judge.
+- **Observability** — every gateway call mirrored to the durable `llm_calls` table; OpenTelemetry traces export to Langfuse Cloud with trace-id linkage.
 
 ## 📦 Setup
 
@@ -38,10 +40,18 @@ QWEN_API_KEY    = "your-qwen-cloud-api-key"
 GEMINI_API_KEY  = "your-gemini-api-key"
 ```
 
-Embeddings currently use `GEMINI_API_KEY` / `gemini-embedding-001`. Moving to a free hosted
-open-model provider (Cloudflare Workers AI or Jina) or a self-deployed Render embedding
-service is documented, but not wired, in
-[docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md).
+Embeddings route through the gateway's `EMBEDDING_PROVIDER` switch (code default `gemini` →
+`gemini-embedding-001` via `GEMINI_API_KEY`). This deployment runs **Cloudflare Workers AI**;
+to enable it, add to the same `[general]` block:
+
+```toml
+EMBEDDING_PROVIDER = "cloudflare"
+CF_ACCOUNT_ID      = "your-cloudflare-account-id"
+CF_API_TOKEN       = "your-workers-ai-api-token"
+```
+
+Provider options, free tiers, the migration/re-embed runbook, and the closed 14-day metrics
+watch: [docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md).
 
 ### 2. Export Environment Variables (optional tuning)
 
@@ -100,8 +110,10 @@ streamlit run app.py
 | 4 | Sources | RSS feeds and web sources with article counts |
 | 5 | Memory Wiki | **🔮 Ask Sage** chat, 📖 Memory Timeline, ⚖️ Compare Runs |
 | 6 | Trend Analytics | Cross-run thematic momentum and theme drilldown |
-| 7 | Quality Evaluation | 7 automated metrics with in-app remediation |
+| 7 | Quality Evaluation | 7 automated run metrics + chat-time Sage faithfulness, with in-app remediation |
 | 8 | Feedback & Roadmap | Feature requests, bug reports, public roadmap |
+| 9 | Eval Sets | Browsable registry of git-tracked eval question sets (`eval_sets/*.json`) with latest run scores |
+| 10 | Dev Blog | Searchable rendering of the `BLOG.md` engineering journal |
 
 ## 🎯 The 7 Strategic Themes
 
@@ -116,11 +128,14 @@ streamlit run app.py
 ## 🧪 Tests
 
 ```bash
-pytest tests/          # ~240 tests
-pytest -m integration  # opt-in: real LLM + Supabase wiring
+python -m pytest tests/                    # full suite: 665 tests (final check only)
+python -m pytest tests/test_summariser.py  # targeted: prefer during iteration (<0.5s)
+python -m pytest -m integration tests/     # opt-in: real LLM + Supabase wiring
 ```
 
-See [test files](tests/) for the full suite.
+During iteration, run only the 1–2 test files touching the changed code — see the
+[AGENTS.md](AGENTS.md) cheat sheet. Root-level `test_*.py` scripts are manual smoke tests,
+not pytest tests.
 
 ## 📁 Docs
 
@@ -128,11 +143,13 @@ See [test files](tests/) for the full suite.
 |---|---|
 | [CLAUDE.md](CLAUDE.md) | Always-loaded agent rules: testing directive, configuration gotchas, documentation routing table |
 | [Architecture](docs/ARCHITECTURE.md) | Classification modes, 4-pass waterfall, system diagrams, gateway internals, routing policies, summarizer pipeline, quota, memory, caching |
-| [Quality Evaluation](docs/QUALITY_EVALUATION.md) | 7 judge metrics table, page-7 execution model (checkpointing, judge model selector), in-app + auto remediation |
-| [Pages](docs/PAGES.md) | Per-page reference for all 8 pages, app.py, Sage agent internals |
+| [Quality Evaluation](docs/QUALITY_EVALUATION.md) | Judge metrics table (7 run metrics + chat-time Sage faithfulness), page-7 execution model (checkpointing, judge model selector), in-app + auto remediation |
+| [Pages](docs/PAGES.md) | Per-page reference for all 10 pages, app.py, Sage agent internals |
 | [Configuration](docs/CONFIGURATION.md) | Secrets/env resolution, settings constants, custom_settings/custom_keywords, gateway tunables |
 | [Supabase](docs/SUPABASE.md) | Schema, migrations, RLS, app_settings KV store, test isolation |
-| [Embedding Providers](docs/EMBEDDING_PROVIDERS.md) | Current Gemini-only pipeline, free hosted alternatives (Cloudflare, Jina), self-deployed Render service, adapter/re-embed runbook |
+| [Embedding Providers](docs/EMBEDDING_PROVIDERS.md) | Live Cloudflare Workers AI pipeline, provider options (Gemini code default, Jina, self-deployed Render), adapter/re-embed runbook, closed metrics-watch results |
+| [Future.md](Future.md) | Standing Sage RAG roadmap: hybrid retrieval, temporal awareness, hierarchical memory, multi-agent synthesis, improvement loop |
+| [Roadmap History](docs/ROADMAP_HISTORY.md) | Implementation notes for every completed phase (0–4.5) |
 | [BLOG.md](BLOG.md) | Engineering lessons learned, dated entries grouped by 2-week blocks |
 
 ## 📈 Performance & Monitoring

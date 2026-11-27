@@ -6,7 +6,9 @@
 > `CloudflareProvider`, the `EMBEDDING_PROVIDER` switch, the idempotent upsert path,
 > `backfill_embeddings.py --reembed`, and the context-fit bypass are landed and unit-tested.
 > The retrieval gate scored **Recall@10 = 0.833** (recorded Gemini baseline 0.510, but on a
-> partial ~100-row index — directional only). The §8 14-day metrics watch is now running.
+> partial ~100-row index — directional only). The §8 14-day metrics watch **closed healthy
+> 2026-11-27** (no Option C trigger); the retrieval re-gate on the curated 24-question set
+> (`eval_sets/retrieval_hit_rate.json`) scored **Recall@10 = 0.917** — now the Phase 5 baseline.
 
 Moving embeddings off Google is a *provider* change, not a model-quality change: the
 pipeline, storage, and retrieval RPCs stay the same as long as the replacement emits
@@ -69,7 +71,8 @@ bg_refresher.py / backfill_embeddings.py
        ├─ embed_texts(batch)                          # all-or-nothing per batch
        │    └─ ModelGateway.execute(TaskType.EMBEDDING)
        │         └─ ProviderAdapter.embed(texts, dimensions=768)
-       │              └─ GeminiProvider.embed()       # the only implementation today
+       │              └─ CloudflareProvider.embed()   # live route (EMBEDDING_PROVIDER=cloudflare)
+       │                 # GeminiProvider.embed() is the code default for fresh installs
        └─ SupabaseManager.insert_article_embeddings(rows)
 ```
 
@@ -80,8 +83,9 @@ Key files:
 | Batch/ingest/backfill loop | `core/embedding.py` |
 | Model Gateway routing | `core/ai_gateway/gateway.py` |
 | Provider contract | `core/ai_gateway/providers/base.py` (`ProviderAdapter.embed`, default `NotImplementedError`) |
-| Gemini implementation | `core/ai_gateway/providers/gemini.py` (`models.embed_content`, `output_dimensionality=768`) |
-| Settings | `config/settings.py` (`GEMINI_EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `get_embedding_settings()`) |
+| Cloudflare implementation (live) | `core/ai_gateway/providers/cloudflare.py` (`@cf/baai/bge-base-en-v1.5`, 768 dims) |
+| Gemini implementation (code default) | `core/ai_gateway/providers/gemini.py` (`models.embed_content`, `output_dimensionality=768`) |
+| Settings | `config/settings.py` (`EMBEDDING_PROVIDER`, `GEMINI_EMBEDDING_MODEL`, `CLOUDFLARE_EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `get_embedding_settings()`) |
 | Storage | `supabase_migration_article_embeddings.sql` (`article_embeddings`, `match_article_embeddings`) |
 | Manual backfill | `backfill_embeddings.py` |
 | Ingest hook | `core/bg_refresher.py` (after persistence, best-effort) |

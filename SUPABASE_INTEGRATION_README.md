@@ -4,6 +4,8 @@
 
 This document summarizes the Supabase integration changes made to the ai-pulse application.
 
+> **Current state:** this file describes the original integration. The live schema has grown far beyond the core 4 tables — Sage conversations, article FTS (`match_articles`), `llm_calls`, `sage_evaluations`, pgvector `article_embeddings`, `processed_articles`, `app_settings`, and the `times_seen` fair-drain counter. The authoritative developer reference is [docs/SUPABASE.md](docs/SUPABASE.md); setup steps are in [SUPABASE_SETUP_GUIDE.md](SUPABASE_SETUP_GUIDE.md).
+
 ## What Changed
 
 ### New Files
@@ -68,7 +70,7 @@ save_run_to_history() called
     ├─→ Save to memory.md ✅ (local file)
     └─→ _save_to_supabase() called
         ├─→ Create trend_runs record
-        ├─→ Create theme_summaries records (5 themes)
+        ├─→ Create theme_summaries records (7 themes)
         ├─→ Create articles records (all articles)
         └─→ Update sync_metadata
 ```
@@ -89,6 +91,8 @@ If Supabase is unavailable:
 | `theme_summaries` | Theme insights per run | run_id, theme_name, what_is_happening, why_it_matters, what_to_watch |
 | `articles` | Individual articles | run_id, theme_name, title, summary, source_name, link |
 | `sync_metadata` | Sync tracking | key (last_sync_time, last_run_id, sync_status), value |
+
+These are the **core** tables from `supabase_schema.sql`. The `supabase_migration_*.sql` files add the rest of the live schema (keyword suggestions, quality evaluations, provenance columns, user feedback, app settings, `llm_calls`, Sage conversations/evaluations, article FTS, pgvector embeddings, processed-article ledger, `times_seen`) — full list and ordering in [docs/SUPABASE.md](docs/SUPABASE.md#migrations).
 
 ## How to Use
 
@@ -250,10 +254,9 @@ The following enhancements have been successfully implemented:
 - `generate_all_summaries()` skips LLM calls for already-summarized articles
 - Only processes new articles (better signal, faster execution)
 
-### Step 4: Emerging Trends Visualization ✅
-- New `pages/7_Emerging_Trends.py` page with 4 visualizations
-- Emergence Timeline, Acceleration Index, Novelty Score, Novel Articles
-- Helps identify and track emerging trends in real-time
+### Step 4: Emerging Trends Visualization *(since removed)*
+- The original `pages/7_Emerging_Trends.py` page was later dropped; cross-run trend analysis now lives in **Trend Analytics** (`pages/6_Trend_Analytics.py`), and page 7 is now **Quality Evaluation**
+- Current page layout (10 pages): [docs/PAGES.md](docs/PAGES.md)
 
 ## Future Enhancements
 
@@ -265,7 +268,7 @@ Possible next steps:
 5. **Data export** - Export trends to CSV/JSON for external analysis
 6. **Webhooks** - Trigger actions on new trends or acceleration events
 
-## Files Summary
+## Files Summary *(historical — at the time of the original integration)*
 
 | File | Lines | Purpose |
 |------|-------|----------|
@@ -288,6 +291,6 @@ Possible next steps:
 
 Refer to:
 - `SUPABASE_SETUP_GUIDE.md` - Step-by-step setup
-- `SUPABASE_INTEGRATION_ANALYSIS.md` - Detailed design document
+- `docs/SUPABASE.md` - Current schema, migrations, RLS, and test isolation (developer reference)
 - `core/supabase_client.py` - Code documentation
 - Supabase docs: https://supabase.com/docs

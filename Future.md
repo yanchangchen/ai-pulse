@@ -41,7 +41,7 @@ The long-term vision transforms Sage into a **Time-Aware, Multi-Stage Hierarchic
                     ▼                                 ▼
       ┌───────────────────────────┐     ┌───────────────────────────┐
       │   Dense Vector Search     │     │   Sparse Keyword (BM25)   │
-      │  (pgvector / Gemini Embed)│     │   (Postgres tsvector/FTS) │
+      │  (pgvector / CF BGE)     │     │   (Postgres tsvector/FTS) │
       └─────────────┬─────────────┘     └─────────────┬─────────────┘
                     │                                 │
                     └────────────────┬────────────────┘
@@ -83,7 +83,7 @@ The long-term vision transforms Sage into a **Time-Aware, Multi-Stage Hierarchic
 
 ### Pillar A: Two-Stage Hybrid Retrieval (Dense + Sparse)
 * **Dense Retrieval**:
-  - Vector embeddings generated through the Model Gateway's `TaskType.EMBEDDING` route. Today that is Google Gemini `gemini-embedding-001` at 768 dims. Free hosted open-model replacements (Cloudflare Workers AI `bge-base-en-v1.5`, Jina `jina-embeddings-v5-omni-nano`) and a self-deployed Render embedding service are evaluated in [docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md). *Verify current model names/limits at implementation time — both Google's and Jina's lineups rotate.*
+  - Vector embeddings generated through the Model Gateway's `TaskType.EMBEDDING` route. The live route is **Cloudflare Workers AI `@cf/baai/bge-base-en-v1.5`** at 768 dims (`EMBEDDING_PROVIDER=cloudflare`; migration complete, 3.6 watch closed healthy 2026-11-27); the code default for fresh installs remains Gemini `gemini-embedding-001`. Jina (`jina-embeddings-v5-omni-nano`) and a self-deployed Render embedding service are documented fallbacks in [docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md). *Verify current model names/limits at implementation time — provider lineups rotate.*
   - Stored in Supabase using the `pgvector` extension with HNSW indexes.
   - Generates semantic matches for conceptual questions (*"reasoning token overhead"*, *"chip export restrictions"*).
 * **Sparse Retrieval**:
@@ -143,13 +143,13 @@ Agent traces are the troubleshooting backbone for everything above.
 
 > **Decision (2026-10): Langfuse Cloud (Hobby, US region)** — chosen free-first; instrumentation is OpenTelemetry-based, so switching backends later means changing the exporter, not the code. The alternatives comparison (AgentOps, Phoenix, self-hosted Langfuse, LangSmith, Helicone) is archived in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
-**Instrumentation status:** the Phase 0 items are live — Sage routes through `core/ai_gateway` (provenance on every call), token usage is carried and mirrored into the durable `llm_calls` table, and OTel spans export to Langfuse with `trace_id` linkage. Sage-answer faithfulness judging landed with Phase 2. **Remaining:** input-side coverage tracking (Phase 4.1) — the coverage judge returns aggregate recall only; extend it to name missed articles and pair it with a per-run skipped-articles record so summarisation gaps are observable rather than silent.
+**Instrumentation status:** the Phase 0 items are live — Sage routes through `core/ai_gateway` (provenance on every call), token usage is carried and mirrored into the durable `llm_calls` table, and OTel spans export to Langfuse with `trace_id` linkage. Sage-answer faithfulness judging landed with Phase 2. **Input-side coverage tracking landed with Phases 4.1–4.5 (2026-11-27):** per-run skipped/waiting/aged-out article records, a coverage judge that names missed articles (narrative sections only), and map-reduce overflow summarisation — eval-gated at 74.1% narrative coverage. Remaining observability work rides along with the Phase 5 retrieval changes.
 
 ---
 
 ## 4. Supabase Database Schema Additions for Future RAG
 
-> `articles`, `theme_summaries`, and `sage_conversations` **already exist** (see `supabase_schema.sql` + `supabase_migration_sage_conversations.sql` — note the real column is `period_label`, not `period_info`). Also already live from completed phases: `llm_calls` (`supabase_migration_llm_calls.sql`), the `search_vector` FTS column + `match_articles` RPC (`supabase_migration_fts_articles.sql`), and `sage_evaluations` (`supabase_migration_sage_evaluations.sql`). The genuinely new tables are `article_embeddings`, `monthly_syntheses`, and `theme_first_seen`.
+> `articles`, `theme_summaries`, and `sage_conversations` **already exist** (see `supabase_schema.sql` + `supabase_migration_sage_conversations.sql` — note the real column is `period_label`, not `period_info`). Also already live from completed phases: `llm_calls` (`supabase_migration_llm_calls.sql`), the `search_vector` FTS column + `match_articles` RPC (`supabase_migration_fts_articles.sql`), `sage_evaluations` (`supabase_migration_sage_evaluations.sql`), and `article_embeddings` (pgvector + HNSW, `supabase_migration_article_embeddings.sql`). The genuinely new tables are `monthly_syntheses` and `theme_first_seen`.
 
 ```sql
 -- Enable pgvector

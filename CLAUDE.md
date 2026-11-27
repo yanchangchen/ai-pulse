@@ -11,7 +11,7 @@ AI News Intelligence Dashboard — a Streamlit application that aggregates, clas
 ## Running the Application
 
 ```bash
-cd ai-pulse
+cd aipulse
 streamlit run app.py
 ```
 
@@ -28,25 +28,25 @@ python -m pytest tests/test_summariser.py                                   # Su
 python -m pytest tests/test_summariser.py::test_name                        # Single test function
 python -m pytest tests/ -k "sage"                                           # Filter by keyword pattern
 
-# FULL REGRESSION SUITE (444+ tests, ~90s) — ONLY run once as final pre-commit check:
+# FULL REGRESSION SUITE (665 tests, ~2 min) — ONLY run once as final pre-commit check:
 python -m pytest tests/
 python -m pytest -m integration tests/                                      # opt-in: real LLM + Supabase wiring
 ```
 
-- **⚠️ HARNESS DIRECTIVE: NEVER run the full suite (`pytest tests/`) after routine code edits.** The suite has grown to 444+ tests and takes ~90 seconds. Future harnesses MUST run only the 1–2 test files relevant to the modified code during iteration (sub-second feedback), reserving the full regression run strictly for the final verification step before completing the task.
+- **⚠️ HARNESS DIRECTIVE: NEVER run the full suite (`pytest tests/`) after routine code edits.** The suite has grown to 665 tests. Future harnesses MUST run only the 1–2 test files relevant to the modified code during iteration (sub-second feedback), reserving the full regression run strictly for the final verification step before completing the task.
 - Always target `tests/` explicitly — the root-level `test_*.py` files (`test_supabase.py`, `test_backfill.py`, `test_deduplication.py`, `test_llm_optimization.py`) are manual smoke scripts meant to be run directly with `python`, not collected by pytest.
 - `tests/conftest.py` has an autouse fixture that resets `LLMClient` quota flags around every test; keep it in mind when adding fixtures that touch quota state.
 - A second autouse fixture pins the Supabase manager singleton to an offline stub (`is_available() == False`) so tests never touch the production project. This matters on machines with `.streamlit/secrets.toml`: importing `config.settings` makes Streamlit export all secrets (including `SUPABASE_URL`/`SUPABASE_KEY`) into `os.environ`, which `core/supabase_client.py` reads directly. Tests that exercise Supabase-backed behaviour must patch `core.supabase_client.get_supabase_manager` with their own mock (pattern: `test_processed_articles.py::test_supabase_preferred`).
 
 ## Configuration (summary)
 
-- API keys: `ai-pulse/.streamlit/secrets.toml` (`QWEN_BASE_URL`, `QWEN_MODEL`, `QWEN_API_KEY`, `GEMINI_API_KEY`); optional Supabase credentials in `ai-pulse/.env`.
+- API keys: `.streamlit/secrets.toml` (`QWEN_BASE_URL`, `QWEN_MODEL`, `QWEN_API_KEY`, `GEMINI_API_KEY`); optional Supabase credentials in `.env`. Embedding route: `EMBEDDING_PROVIDER` (code default `gemini`; this deployment runs `cloudflare` with `CF_ACCOUNT_ID` / `CF_API_TOKEN`).
 - Gateway provider init resolves keys through `config.settings` (st.secrets → secrets.toml → env vars → default) — both `secrets.toml` and plain OS env vars work. Full details and gotchas: docs/CONFIGURATION.md.
 - Summariser params must be read via `get_summariser_settings()` (merges `config/custom_settings.json`), never hardcoded.
 
 ## Long-Term Work in Progress
 
-**`Future.md`** is the standing roadmap for evolving Sage into a time-aware, multi-stage hierarchical RAG system (hybrid dense+sparse retrieval, 3-tier memory, pgvector schema, multi-agent synthesis). **Read it before any Sage-related work** and consult it when planning larger changes — the phased roadmap (Phases 0.1–0.3 and Phase 2 done; Phases 0.4 and 3–7 pending) tracks where the project is headed. Update the phase checkboxes there as work lands, and move completed phases' implementation notes into `docs/ROADMAP_HISTORY.md` so Future.md stays lean.
+**`Future.md`** is the standing roadmap for evolving Sage into a time-aware, multi-stage hierarchical RAG system (hybrid dense+sparse retrieval, 3-tier memory, pgvector schema, multi-agent synthesis). **Read it before any Sage-related work** and consult it when planning larger changes — the phased roadmap (Phases 0.1–0.3, 2, 3, and 4.1–4.5 done; 0.4 and 4.6 optional; Phases 5–8 pending) tracks where the project is headed. Update the phase checkboxes there as work lands, and move completed phases' implementation notes into `docs/ROADMAP_HISTORY.md` so Future.md stays lean.
 
 ## Documentation Routing
 
