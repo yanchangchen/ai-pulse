@@ -409,6 +409,11 @@ def get_summariser_settings() -> dict:
         "max_articles_per_summary": 50,
         # Per-article summary truncation inside the prompt block (chars).
         "article_summary_chars": 300,
+        # Phase 4.5 map-reduce overflow: batch size for the MAP pass (12 = the
+        # size where the 4.4 gate measured ~93% article naming) and the batch
+        # count bound (cost ceiling; beyond it, articles wait via 4.3 aging).
+        "mapreduce_batch_size": 12,
+        "mapreduce_max_batches": 8,
     }
     defaults.update(load_custom_settings())
     return defaults

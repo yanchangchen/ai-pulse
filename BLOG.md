@@ -4,6 +4,46 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-27 — Phase 4.5: map-reduce, or how to compress without forgetting
+
+**Problem**: 4.4's audited gate left two honest residuals: pools over the ceiling wait (capacity gap), and a 50-article brief names only ~61% of what it's fed (naming gap). One call cannot compress 85 stories into 250 words without forgetting most of them. The roadmap's answer: never ask it to.
+
+**What happened**:
+
+1. **MAP at the size where memory works.** The ranked unprocessed pool is sliced into batches of 12 — the size where the 4.4 gate measured ~93% naming — and each batch gets the *unchanged* gateway brief, three at a time. Small batches name their articles; that is the entire trick.
+
+2. **REDUCE under a preservation mandate.** One call merges the batch briefs into the theme's normal five sections, instructed to compress wording never coverage: every development any batch named must survive, further-reading lists merge whole. Two guards make the mandate enforceable: the output token budget scales with batch count (the default 2200 would have truncated the merged reading list mid-entry — caught before the gate, regression-tested), and a failed reduce degrades to a deterministic concatenation of the batch briefs, so names survive even total reduce failure.
+
+3. **The ledger stays truthful.** `included` is the union of batch-fed hashes — every marked-processed article genuinely appeared in a prompt. Skipped, waiting, and times-seen semantics from 4.1/4.3 carry over untouched. Cost is bounded at 8 batches/theme/run; beyond that, articles wait and age up rather than exploding spend.
+
+4. **The gate cleared the threshold 4.4 left open.** Same pool, arm D: coverage **38.4% (legacy) → 54.9% (cap 50) → 74.1% (map-reduce)**, past the ≥70% bar; processed **92%** of the pool; missed articles 157 → 115 → 66; naming rate back to ~75%. Cost: 66.6k input tokens across 26 calls, zero failures — ~3× a single pass, paid only by overflow themes, so steady-state days mostly stay single-pass. Phase 6.1's gate (no incomplete Tier 2 under monthly rollups) is satisfied.
+
+*Lesson: compression is safe at the size where the model can still name everything; the engineering is in making the merge lossless — by mandate, by budget, and by a fallback that cannot forget. Measure the merge, not just the parts: a map-reduce pipeline is only as faithful as its reduce step.*
+
+**Residuals, honestly**: 66 pool articles still unnamed (reduce compresses somewhat), 23 beyond the batch bound waiting via aging. The next levers are prioritisation (4.6) and retrieval (Phase 5), not more capacity.
+
+**Result**: Phase 4.5 closed; Phase 4's input-side work is complete except optional 4.6. Next: **Phase 5 — hybrid retrieval + temporal awareness**.
+
+---
+
+## 2026-11-27 — Special entry: the day we audited our own instruments
+
+*A retrospective, not a phase log. One session closed the Cloudflare watch, resurrected a lost eval set, shipped two UI pages and Phases 4.3–4.4 — and caught three of our own instruments lying before any of it shipped.*
+
+**Lie 1 — the receipt without the asset.** The Phase 3 retrieval gate's baseline (Recall@10 = 0.833) survived in `app_settings`, but the eight questions that produced it lived in gitignored `data/` and were gone. A score in a database is a receipt; the questions are the asset. We recreated the set (24 questions, curated against the live archive, new baseline 0.917), gave it a git-tracked home with a `.gitignore` exception, and built the Eval Sets page so every future eval set is visible by construction. *Rule adopted: anything a gate depends on lives where git can see it.*
+
+**Lie 2 — the metric that ate the backlog.** The 4.4 gate experiment first reported that raising the article cap *destroyed* coverage (98% → 66%). Impossible numbers deserve an audit, not a decision: `coverage_judge` joined every value of the summary dict, and since 4.1 that dict carries `skipped_articles` — the backlog payload with every skipped title. The judge was scoring the backlog list as brief prose; arm A "covered" 192 articles it was never fed. With narrative-only sections the gate reversed to a honest pass (38.4% → 54.9%). Production had been safe by accident (the evaluator loads only narrative columns); the judge now whitelists prose sections so safety is by construction. *Rule adopted: a recall metric must whitelist what counts as text; metadata carrying titles is a leak waiting for a caller.*
+
+**Lie 3 — the stale fact in the roadmap.** Future.md still described a ~59k-char prompt budget from the Ollama era; on Qwen's 1M window the budget is 1.8M chars and the flat 12-cap used ~0.3% of it. The phase premise ("the context window is not the constraint") was right for the wrong reason. Re-verified numbers replaced the folklore before 4.4 was designed. *Rule adopted: situational facts in a roadmap carry a verification date, and get re-measured when the stack under them changes.*
+
+**Process footnotes.** The permission classifier timed out repeatedly mid-session; a "manual commit" reported by a human never landed in the repo (reflog showed no attempt) and was caught by checking rather than trusting; and two Gemini fallbacks hung 12 and 139 minutes because that provider has no effective timeout bound — queued as a reliability fix. None of these changed the engineering, but all of them changed what we verified: *reports are claims; reflogs, call logs and re-measurements are evidence.*
+
+**What stands at the end of the day**: watch closed (Cloudflare healthy, no Option C), eval set loss-proofed and displayed, fair drain live (backlog drains or gets a death certificate), capacity raised with an audited gate, and a coverage judge that cannot eat metadata. Next: 4.5's map-reduce briefs, to close the naming gap the gate honestly left open.
+
+*Lesson: the most dangerous failures in a measured system are not crashes — they are instruments that keep reporting confidently while measuring the wrong thing. Audit the instrument before you obey the gate.*
+
+---
+
 ## 2026-11-27 — Phase 4.4: raising the cap, and the metric that lied about it
 
 **Problem**: The summariser hard-capped each theme at 12 articles while the Qwen prompt budget sat at 1.8M chars — 12 blocks use ~0.3% of it. The cap, not the context window, was the sole capacity constraint, and bursty themes accumulated backlog faster than 12/run could drain.

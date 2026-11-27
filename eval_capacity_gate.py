@@ -37,7 +37,10 @@ ARMS = {
     "A_legacy12": {"max_articles_per_summary": 12, "article_summary_chars": 300},
     "B_cap50": {"max_articles_per_summary": 50, "article_summary_chars": 300},
     "C_cap50_chars500": {"max_articles_per_summary": 50, "article_summary_chars": 500},
+    "D_mapreduce": {"max_articles_per_summary": 12, "mapreduce_batch_size": 12,
+                    "mapreduce_max_batches": 8},
 }
+RUNNERS = {"D_mapreduce": "mapreduce"}
 
 
 def main():
@@ -67,9 +70,14 @@ def main():
         summaries = {}
         with patch("config.settings.load_custom_settings", return_value=overrides):
             for theme in themes:
-                s, inc = asyncio.run(
-                    summariser.generate_theme_summary_gateway(theme, themed[theme])
-                )
+                if RUNNERS.get(arm) == "mapreduce":
+                    s, inc = asyncio.run(
+                        summariser.generate_theme_summary_mapreduce(theme, themed[theme])
+                    )
+                else:
+                    s, inc = asyncio.run(
+                        summariser.generate_theme_summary_gateway(theme, themed[theme])
+                    )
                 summaries[theme] = s
         # Judge narrative prose only — metadata keys (skipped_articles title
         # payload etc.) must not inflate recall (see evaluator hygiene fix).

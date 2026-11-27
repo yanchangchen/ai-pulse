@@ -296,6 +296,19 @@ classifier/summariser only for backward compatibility and quota state.
   Per-article summary truncation inside each prompt block is
   `article_summary_chars` (default 300). The on-demand Gemini Deep Dive path
   keeps its separate 75-article cap / 45k-char budget.
+- **Chunked overflow / map-reduce (Phase 4.5):** when a theme's unprocessed pool
+  exceeds the ceiling, `generate_theme_summary_mapreduce` splits the ranked pool
+  into batches of `mapreduce_batch_size` (default 12 — the size where the 4.4
+  gate measured ~93% article naming), runs each batch through the normal gateway
+  brief with bounded concurrency (semaphore 3), then one REDUCE gateway call
+  merges the intermediates into the 5-section brief under a preserve-every-name
+  mandate (section-1 word target scales with batch count, capped 600). Reduce
+  failure degrades to `_merge_intermediates_deterministic` (concatenated batch
+  sections, deduped further reading) — names survive, nothing silent.
+  `included` = union of batch-fed hashes (ledger-truthful); cost bounded by
+  `mapreduce_max_batches` (default 8), beyond which articles wait via 4.3 aging.
+  `_generation_log.mapreduce` records batch count/size and reduce source;
+  fallback source token `extractive:mapreduce_merge`.
 - Themes whose article hashes were all seen before are skipped (`gateway:skipped`) —
   summaries are skipped entirely when article content hashes are unchanged
   (`get_articles_hash()` / `_get_existing_article_hashes()`).

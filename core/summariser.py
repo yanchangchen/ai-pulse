@@ -311,6 +311,199 @@ Writing style rules:
         ), []
 
 
+async def generate_theme_summary_mapreduce(
+    theme_name: str,
+    articles: List[Dict],
+) -> Tuple[Dict[str, str], List[str]]:
+    """Phase 4.5 chunked overflow summarisation ("eventually ALL").
+
+    MAP: the ranked pool is split into batches of ``mapreduce_batch_size``
+    (default 12 — the size where the 4.4 gate measured ~93% article naming)
+    and each batch gets its own gateway brief, so no batch is compressed hard
+    enough to drop names.  Batches run with bounded concurrency.
+
+    REDUCE: one gateway call merges the intermediates into the theme's normal
+    5-section brief under an explicit preserve-every-name mandate.  If the
+    reduce call fails, a deterministic merge of the intermediates keeps every
+    named development — no silent loss.
+
+    Returns ``(summary_dict, included_hashes)`` where included is the UNION of
+    batch-fed hashes: every one of them was genuinely surfaced in a prompt, so
+    the 4.1/4.3 ledgers stay truthful.  Cost is bounded by
+    ``mapreduce_max_batches``; anything beyond still waits via 4.3 aging.
+    """
+    from config.settings import get_summariser_settings
+
+    settings = get_summariser_settings()
+    batch_size = max(3, int(settings.get("mapreduce_batch_size", 12)))
+    max_batches = max(1, int(settings.get("mapreduce_max_batches", 8)))
+
+    ranked = _rank_articles_by_relevance(articles, theme_name, batch_size * max_batches)
+    batches = [ranked[i:i + batch_size] for i in range(0, len(ranked), batch_size)]
+    past_context = get_recent_context(theme_name)
+
+    sem = asyncio.Semaphore(3)
+
+    async def _run_batch(batch: List[Dict]) -> Tuple[Dict[str, str], List[str]]:
+        async with sem:
+            return await generate_theme_summary_gateway(theme_name, batch)
+
+    batch_results = await asyncio.gather(*(_run_batch(b) for b in batches))
+
+    included_union: List[str] = []
+    seen: set = set()
+    for _, inc in batch_results:
+        for h in inc:
+            if h not in seen:
+                seen.add(h)
+                included_union.append(h)
+
+    intermediates = [s for s, _ in batch_results]
+    summary, reduce_source = await _reduce_intermediates(
+        theme_name, intermediates, past_context, len(batches)
+    )
+
+    summary["total_articles"] = len(articles)
+    summary["included_count"] = len(included_union)
+    log = summary.get("_generation_log")
+    if isinstance(log, dict):
+        log["mapreduce"] = {
+            "batches": len(batches),
+            "batch_size": batch_size,
+            "reduce_source": reduce_source,
+        }
+    logger.info(
+        "Map-reduce summary for %s: %d batch(es), %d articles surfaced, reduce=%s",
+        theme_name, len(batches), len(included_union), reduce_source,
+    )
+    return summary, included_union
+
+
+async def _reduce_intermediates(
+    theme_name: str,
+    intermediates: List[Dict[str, str]],
+    past_context: str,
+    n_batches: int,
+) -> Tuple[Dict[str, str], str]:
+    """Merge batch briefs into one 5-section brief; deterministic merge on failure."""
+    blocks = []
+    for i, brief in enumerate(intermediates, 1):
+        body = "\n".join(
+            f"{k.replace('_', ' ').title()}: {brief.get(k, '')}"
+            for k in (
+                "what_is_happening", "engineering_tradeoffs", "product_impact",
+                "what_to_watch", "further_reading",
+            )
+        )
+        blocks.append(f"--- BATCH {i} BRIEF ---\n{body}")
+    merged_input = "\n\n".join(blocks)
+
+    target_words = min(600, 120 * n_batches)
+    user_prompt = f"""You are merging {n_batches} batch briefs into ONE intelligence brief for the theme: {theme_name}
+
+--- BATCH BRIEFS ---
+{merged_input}
+
+{f"--- PRIOR CONTEXT ---\n{past_context}" if past_context else ""}
+--- END OF BATCH BRIEFS ---
+
+Produce the merged brief using the exact structure below.
+
+PRESERVATION MANDATE: every development, entity, model name, and article citation
+named in ANY batch brief must survive in the merged brief. Do not drop a batch's
+findings to save space; compress wording, never coverage. Section 1 must name every
+development the batches' Section 1 and Further Reading named.
+
+## 1. WHAT IS HAPPENING
+Write a comprehensive factual narrative naming every development from the batches,
+in chronological order where dates are given. Target {target_words} words. No bullet points.
+Cite the source name in parentheses next to each fact, model, or release.
+
+## 2. ENGINEERING TRADEOFFS & BLUEPRINT
+Merge the batches' tradeoffs into 4–8 sentences of flowing prose, preserving each
+batch's core technical tradeoff. Target 100–160 words.
+
+## 3. PRODUCT IMPACT & FEASIBILITY
+Merge the batches' product impacts into 4–8 sentences of flowing prose with a direct
+production-readiness verdict. Target 100–160 words.
+
+## 4. ACTIONABLE WATCHLIST
+Merge the batches' watchlist items, deduplicate, keep 3–8 items in the format:
+  - **[Item]** — one sentence explaining why it matters and when to act.
+
+## 5. STRATEGIC FURTHER READING
+Merge the batches' further-reading lists, deduplicate by title, keep ALL entries.
+Format each entry exactly as:
+  - **[Article Title]** | [Source] | [URL]
+    *Why read this:* one sentence stating the concrete technical or product takeaway.
+Copy each URL VERBATIM from the batch briefs. Never invent URLs.
+
+If a section would be empty, say so explicitly rather than omitting it.
+"""
+    system_prompt = (
+        "You are an expert AI engineering analyst merging batch briefs into a single "
+        "intelligence brief. Precision over hype; flowing prose in sections 1-3; "
+        "bullets only in sections 4-5. Coverage of every batch finding is mandatory."
+    )
+    from config.settings import get_summariser_settings
+    sum_settings = get_summariser_settings()
+    # The merged brief carries every batch's further-reading entries plus a
+    # longer section 1; the single-pass max_tokens would truncate mid-list and
+    # silently drop names. Scale the output budget with batch count.
+    reduce_max_tokens = min(
+        8000, max(int(sum_settings.get("max_tokens", 2200)), 1600 + 220 * n_batches)
+    )
+    request = AITaskRequest(
+        task=TaskType.SUMMARISE,
+        input=f"System: {system_prompt}\n\nUser: {user_prompt}",
+        temperature=float(sum_settings.get("temperature", 0.3)),
+        max_tokens=reduce_max_tokens,
+    )
+    try:
+        result = await get_gateway().execute(request)
+        if result.is_success() and result.provenance.method != "deterministic":
+            parsed = _parse_summary_sections(str(result.result))
+            if not _summary_contains_failure_text(parsed):
+                prov = result.provenance
+                source = f"{prov.provider}:{prov.model}" if prov.provider else "deterministic:reduce"
+                return _with_provenance(parsed, source=source, model=prov.model,
+                                        note="mapreduce_reduce"), source
+    except Exception as exc:
+        logger.warning("Map-reduce reduce call failed for %s: %s", theme_name, exc)
+
+    logger.info("Deterministic merge of %d batch briefs for %s", n_batches, theme_name)
+    return _merge_intermediates_deterministic(intermediates), "extractive:mapreduce_merge"
+
+
+def _merge_intermediates_deterministic(
+    intermediates: List[Dict[str, str]],
+) -> Dict[str, str]:
+    """Faithful fallback merge: concatenate batch sections, preserving names."""
+    def join(key: str) -> str:
+        parts = [str(b.get(key, "")).strip() for b in intermediates if b.get(key)]
+        return "\n\n".join(parts)
+
+    reading: List[str] = []
+    seen_titles = set()
+    for b in intermediates:
+        for line in str(b.get("further_reading", "")).splitlines():
+            title = line.split("|")[0].strip().lstrip("- ").strip("* ")
+            if line.strip().startswith("-") and title and title not in seen_titles:
+                seen_titles.add(title)
+                reading.append(line)
+    merged = {
+        "what_is_happening": join("what_is_happening"),
+        "engineering_tradeoffs": join("engineering_tradeoffs"),
+        "product_impact": join("product_impact"),
+        "what_to_watch": join("what_to_watch"),
+        "further_reading": "\n".join(reading),
+    }
+    return _with_provenance(
+        merged, source="extractive:mapreduce_merge", model="none",
+        note="deterministic_merge_of_batch_briefs",
+    )
+
+
 def _rank_articles_by_relevance(
     articles: List[Dict],
     theme_name: str,
@@ -1093,7 +1286,12 @@ async def _generate_all_summaries_async(
 
         included: List[str] = []
         try:
-            summary, included = await generate_theme_summary_gateway(theme, selected)
+            if len(unprocessed) > cap:
+                # Phase 4.5: overflow pools get map-reduce briefs so every
+                # article is surfaced and named, not compressed away.
+                summary, included = await generate_theme_summary_mapreduce(theme, unprocessed)
+            else:
+                summary, included = await generate_theme_summary_gateway(theme, selected)
             summaries[theme] = summary
         except Exception as exc:
             logger.error("Summary generation failed for %s: %s", theme, exc)

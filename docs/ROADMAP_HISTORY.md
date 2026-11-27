@@ -168,6 +168,31 @@ see the BLOG.md entry for that week. 4.3 below landed 2026-11-27.)*
     tracked outside this phase.
   - Tests: `tests/test_capacity.py` (6: defaults, ceiling, override, budget bind,
     truncation knob ×2) + adapted skip-complement test.
+- [x] **4.5 Chunked overflow / map-reduce (2026-11-27, eval-gated).**
+  `generate_theme_summary_mapreduce`: MAP = ranked pool sliced into
+  `mapreduce_batch_size` (12) batches, each through the unchanged
+  `generate_theme_summary_gateway` (semaphore 3); REDUCE = one gateway call
+  merging all batch briefs + prior context under a preserve-every-name mandate
+  (section-1 target 120 words/batch capped 600; further reading merged, deduped,
+  kept whole). Reduce failure → `_merge_intermediates_deterministic`
+  (concatenated sections, deduped reading; source `extractive:mapreduce_merge`).
+  Included = union of batch-fed hashes (4.1/4.3 ledgers stay truthful); trigger
+  only when unprocessed pool > ceiling; cost bounded by `mapreduce_max_batches`
+  (8 → 96 articles/theme/run), remainder waits via 4.3.
+  - **Reduce output budget scales** (`min(8000, max(settings, 1600+220×batches))`):
+    the single-pass 2200 max_tokens would truncate the merged reading list
+    mid-entry and silently drop names — caught pre-gate, regression-tested.
+  - **Gate (arm D of `eval_capacity_gate.py`, same pool as 4.4):** coverage
+    **74.12%** (189/255) — clears the ≥70% absolute threshold 4.4 left open;
+    processed **251/274 (92%)**; missed 66 (B 115, A 157); fed-naming ≈75%
+    (B 61%, A 93% at 12 fed). Cost: 26 logged calls, 66.6k tokens in / 34.1k out,
+    340 s, 0 failures (~3× single-pass input; only overflow themes pay it, so
+    steady-state daily runs mostly stay single-pass). **6.1 gate satisfied.**
+  - Residuals: 66 pool articles still unnamed (reduce compression is real but
+    bounded); 23 articles beyond the batch bound wait via aging. 4.6
+    prioritisation and Phase 5 retrieval are the next levers, not more capacity.
+  - Tests: `tests/test_mapreduce.py` (6: defaults, batching+union, cost bound,
+    deterministic merge+dedupe, reduce budget scaling, orchestrator trigger).
 
 ---
 
