@@ -4,6 +4,28 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-27 — Phase 4.3: the backlog now drains or gets a death certificate
+
+**Problem**: The summariser feeds each theme only unprocessed articles, ranked by keyword relevance and hard-capped at 12. An article that loses the ranking re-competes next run while inside the 14-day fetch window — and otherwise ages out *silently*. Nothing counted how long an article had been waiting, and nothing recorded the ones that never made it. Coverage was observable (4.1) but not fair.
+
+**What happened**:
+
+1. **A times-seen counter on `articles`.** `times_seen` counts runs classified-but-not-summarised, reset to 0 on inclusion. The interesting constraint: PostgREST upserts can't express per-row increments, and a partial-column upsert would insert title-less rows for articles whose first save happens *after* summarisation. So the counter is maintained by an UPDATE-only RPC, `record_article_seen(theme, waiting[], included[])` — atomic, insert-proof, one call per theme per run. Offline and pre-migration deployments fall back to `data/times_seen.json`, same Supabase-preferred pattern as the processed ledger.
+
+2. **An aging boost in the shared ranking.** `_rank_articles_by_relevance` now adds `aging_boost_per_run × times_seen` (default 2.0, configurable through `get_summariser_settings()`, 0 disables) to the keyword-relevance score all three engines share. Waiting articles rise monotonically: a zero-relevance article overtakes a score-14 fresh one after seven runs, comfortably inside the 14-day window at daily cadence.
+
+3. **Waiting ≠ skipped.** The 4.1 skipped complement includes already-processed articles (they're "not reflected" but not waiting). The fair-drain set is `unprocessed − surfaced`, computed on all three orchestrator paths and stored as `waiting_hashes` on each summary + generation log. Getting this distinction wrong would have inflated the counter with articles that can never drain.
+
+4. **Aged-out articles get a death certificate.** At persistence, `_record_aged_out()` diffs the previous run's waiting hashes against the current classified set. Anything that departed — window expiry or a feed dropping it — is recorded as `aged_out_articles` with title, source, link, hash, and last-seen run, in history.json and the Supabase generation log, and rendered in History's 🍂 expander. If the article returns later it re-competes as unprocessed; the record stays as audit trail. Silent loss is now structurally impossible: drain, or document.
+
+*Lesson: "observable" and "fair" are different properties. 4.1 made the gap visible; making it close required a state variable the pipeline never had (how long has this been waiting?) and an explicit terminal state for the ones that never close. A backlog without both is a queue that forgets.*
+
+**Also shipped**: `supabase_migration_times_seen.sql` (column + partial index + RPC); History page 🍂 expanders in both local and Supabase modes; 17 tests in `tests/test_fair_drain.py`; ARCHITECTURE/SUPABASE/PAGES docs and the roadmap updated. The migration ships separately from 5.4's `theme_first_seen` — 4.3 needs the counter now.
+
+**Result**: Phase 4.3 closed. Next: **4.4 — budget-aware article cap** (replace the flat 12 with prompt-budget filling, eval-gated on coverage).
+
+---
+
 ## 2026-11-27 — Closing the Cloudflare watch, resurrecting the lost eval set, and giving evals a UI
 
 **Problem**: The Phase 3.6 14-day metrics watch on the Cloudflare embedding migration had matured, but re-running its retrieval-quality gate was impossible: the hand-labelled question set (`data/eval_retrieval_questions.json`, the 8 questions behind Recall@10 = 0.833) lived in gitignored `data/` and was gone — from disk, git history, and scratch. The same set gates Phase 5's old-vs-new retrieval comparison, so losing it blocked two phases, not one.

@@ -397,6 +397,9 @@ def get_summariser_settings() -> dict:
         "temperature": 0.3,
         "max_tokens": 1500,
         "strict_faithfulness_mode": False,
+        # Phase 4.3 fair drain: relevance-score boost per run an article stays
+        # classified-but-unsummarised (times_seen). 0 disables the aging boost.
+        "aging_boost_per_run": 2.0,
     }
     defaults.update(load_custom_settings())
     return defaults

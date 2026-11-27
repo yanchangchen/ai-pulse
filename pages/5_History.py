@@ -105,6 +105,7 @@ def main() -> None:
                 tot_loc = summary.get("total_articles") or gen_log_loc.get("total_articles") or count
                 label_loc = f"📰 {inc_loc} of {tot_loc} reflected" if inc_loc is not None and tot_loc > 0 and inc_loc < tot_loc else f"📰 {count} articles"
                 skipped_loc = summary.get("skipped_articles") or gen_log_loc.get("skipped_articles") or []
+                aged_loc = summary.get("aged_out_articles") or gen_log_loc.get("aged_out_articles") or []
 
                 with cols[col_idx % len(cols)]:
                     st.markdown(f"""
@@ -131,6 +132,15 @@ def main() -> None:
                                     st.caption(f"Source: {sk['source']}")
                                 if sk.get("link"):
                                     st.markdown(f"&nbsp;&nbsp;[Read link →]({sk['link']})")
+                    if aged_loc:
+                        with st.expander(f"🍂 Aged-out Unprocessed ({len(aged_loc)})"):
+                            st.caption("Left the fetch window before ever being summarised.")
+                            for ag in aged_loc:
+                                st.markdown(f"• **{ag.get('title', 'Unknown')}**")
+                                if ag.get("last_seen"):
+                                    st.caption(f"Last seen: {ag['last_seen']}")
+                                if ag.get("link"):
+                                    st.markdown(f"&nbsp;&nbsp;[Read link →]({ag['link']})")
                     st.divider()
 
                 col_idx += 1
@@ -624,6 +634,7 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
                     inc_count = s.get("included_count") if s.get("included_count") is not None else gen_log.get("included_count")
                     tot_count = s.get("total_articles") or gen_log.get("total_articles") or article_count or len(articles)
                     skipped_list = s.get("skipped_articles") or gen_log.get("skipped_articles") or []
+                    aged_list = s.get("aged_out_articles") or gen_log.get("aged_out_articles") or []
 
                     if inc_count is not None and tot_count > 0 and inc_count < tot_count:
                         expander_title = f"🔹 {theme} ({inc_count} of {tot_count} articles reflected)"
@@ -666,6 +677,22 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
                                         st.caption(f"Source: {sk['source']}")
                                     if sk.get("link"):
                                         st.markdown(f"&nbsp;&nbsp;[Read link →]({sk['link']})")
+
+                            if aged_list:
+                                st.markdown("---")
+                                st.markdown(f"**🍂 AGED-OUT UNPROCESSED ({len(aged_list)})**")
+                                st.caption("Waiting articles that left the fetch window before ever being summarised — recorded, not silently lost.")
+                                for ag in aged_list:
+                                    st.markdown(f"• **{ag.get('title', 'Unknown')}**")
+                                    meta = []
+                                    if ag.get("source"):
+                                        meta.append(f"Source: {ag['source']}")
+                                    if ag.get("last_seen"):
+                                        meta.append(f"Last seen: {ag['last_seen']}")
+                                    if meta:
+                                        st.caption(" · ".join(meta))
+                                    if ag.get("link"):
+                                        st.markdown(f"&nbsp;&nbsp;[Read link →]({ag['link']})")
             st.markdown("<br>", unsafe_allow_html=True)
 
         # Pagination footer

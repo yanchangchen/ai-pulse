@@ -12,7 +12,8 @@ Core 4 tables in `supabase_schema.sql`:
 
 - `trend_runs`
 - `theme_summaries`
-- `articles` — deduplicated by `(content_hash, theme_name)`
+- `articles` — deduplicated by `(content_hash, theme_name)`; carries `times_seen`
+  (Phase 4.3 fair-drain counter: runs classified-but-not-summarised, 0 once included)
 - `sync_metadata`
 
 ## Migrations
@@ -30,6 +31,7 @@ Run in the SQL Editor, roughly in order:
 9. `supabase_migration_fts_articles.sql` — `articles.search_vector` (generated tsvector + GIN) and the `match_articles` FTS RPC (Phase 2.3)
 10. `supabase_migration_sage_evaluations.sql` — `sage_evaluations`, the chat-time Sage faithfulness judge's score store (Phase 2 gate)
 11. `supabase_migration_article_embeddings.sql` — `article_embeddings` (pgvector) + `get_unembedded_articles` / `match_article_embeddings` RPCs (Phase 3). Enables `CREATE EXTENSION vector`.
+12. `supabase_migration_times_seen.sql` — `articles.times_seen` + partial index + `record_article_seen(theme, waiting[], included[])` UPDATE-only RPC (Phase 4.3 fair drain). UPDATE-only on purpose: PostgREST upserts cannot express per-row increments, and a partial-column upsert would insert title-less article rows. Pre-migration databases degrade to the local JSON counter (`data/times_seen.json`).
 
 ## `llm_calls`
 

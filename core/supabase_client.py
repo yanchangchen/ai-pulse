@@ -321,6 +321,52 @@ class SupabaseManager:
         except Exception as e:
             logger.error(f"Failed to mark processed for {theme_name}: {e}")
 
+    def get_times_seen(self, theme_name: str) -> Dict[str, int]:
+        """Return {content_hash: times_seen} for waiting articles (Phase 4.3).
+
+        Only positive counts: zero means the article is not in the backlog.
+        Degrades to {} when the column/migration is absent so pre-migration
+        databases keep working (the caller falls back to its local counter).
+        """
+        if not self.available:
+            return {}
+        try:
+            response = self.client.table("articles") \
+                .select("content_hash,times_seen") \
+                .eq("theme_name", theme_name) \
+                .gt("times_seen", 0) \
+                .execute()
+            return {
+                row["content_hash"]: int(row["times_seen"])
+                for row in (response.data or [])
+                if row.get("content_hash")
+            }
+        except Exception as e:
+            logger.error(f"Failed to get times-seen for {theme_name}: {e}")
+        return {}
+
+    def record_run_seen(self, theme_name: str, waiting_hashes: List[str],
+                        included_hashes: List[str]) -> None:
+        """Advance the fair-drain counter via the record_article_seen RPC.
+
+        UPDATE-only (see supabase_migration_times_seen.sql): waiting hashes
+        +1, included hashes reset to 0. Never inserts article rows.
+        """
+        if not self.available or (not waiting_hashes and not included_hashes):
+            return
+        try:
+            self.client.rpc("record_article_seen", {
+                "p_theme": theme_name,
+                "p_waiting": waiting_hashes,
+                "p_included": included_hashes,
+            }).execute()
+            logger.info(
+                f"Times-seen advanced for {theme_name}: "
+                f"+1 on {len(waiting_hashes)}, reset on {len(included_hashes)}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to record times-seen for {theme_name}: {e}")
+
     def get_classifications(self, content_hashes: List[str]) -> Dict[str, str]:
         """
         Return {content_hash: theme_name} for previously saved articles.

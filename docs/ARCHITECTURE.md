@@ -275,6 +275,18 @@ classifier/summariser only for backward compatibility and quota state.
   instructions scaled to article count.
 - Articles are relevance-ranked (`_rank_articles_by_relevance`) and truncated to a char
   budget derived from the primary model's context window (`QWEN_NUM_CTX`).
+- **Fair drain (Phase 4.3):** the ranking score adds `aging_boost_per_run × times_seen`
+  (param via `get_summariser_settings()`, default 2.0, 0 disables) so long-waiting
+  backlog articles outrank fresh ones and drain inside the fetch window. The counter
+  lives in `articles.times_seen` (Supabase, `record_article_seen` RPC) with a local
+  JSON fallback (`core/processed_articles.py`: `get_times_seen` / `record_run_seen`);
+  the orchestrator advances it per run (+1 waiting, reset 0 included) and records
+  `waiting_hashes` = unprocessed − surfaced on each summary. At persistence,
+  `history_manager._record_aged_out()` diffs the previous run's waiting set against
+  the current classified set and records departed articles as `aged_out_articles`
+  (title/source/link/hash/last_seen) in history.json + `generation_log`, surfaced by
+  the History page's 🍂 expander — the backlog drains or is explicitly recorded,
+  never silently lost.
 - Themes whose article hashes were all seen before are skipped (`gateway:skipped`) —
   summaries are skipped entirely when article content hashes are unchanged
   (`get_articles_hash()` / `_get_existing_article_hashes()`).

@@ -319,13 +319,25 @@ def _rank_articles_by_relevance(
 
     Re-using ``non_llm_summariser._score_article_relevance`` keeps the Qwen,
     Gemini, and extractive paths aligned on what counts as a high-signal article.
+
+    Phase 4.3 fair drain: each run an article stays classified-but-unsummarised
+    adds ``aging_boost_per_run`` (``get_summariser_settings()``) times its
+    ``times_seen`` counter to the score, so long-waiting backlog articles
+    eventually outrank fresh ones and drain inside the fetch window instead of
+    ageing out silently.
     """
     from core.non_llm_summariser import _score_article_relevance
+    from config.settings import get_summariser_settings
+
     theme_kws = THEMES.get(theme_name, {}).get("keywords")
-    if not theme_kws:
+    boost = float(get_summariser_settings().get("aging_boost_per_run", 2.0))
+    seen = processed_articles.get_times_seen(theme_name) if boost > 0 else {}
+    if not theme_kws and not seen:
         return list(articles[:top_n])
     scored = [
-        (idx, _score_article_relevance(a, theme_kws))
+        (idx,
+         (_score_article_relevance(a, theme_kws) if theme_kws else 1.0)
+         + boost * seen.get(processed_articles.article_hash(a), 0))
         for idx, a in enumerate(articles)
     ]
     # Sort by score desc, then by original index asc (stable)
@@ -990,8 +1002,17 @@ async def _generate_all_summaries_async(
         # Force Non-LLM Extractive if user selected "Non-LLM Extractive Only" mode
         if user_mode == "⚡ Non-LLM Extractive Only":
             logger.info("User selected Non-LLM Extractive Only mode. Generating LexRank/Luhn summary for %s", theme)
+            processed_before = processed_articles.get_processed_hashes(theme)
             summary, included = extractive_theme_summary(theme, articles)
+            inc_set_mode = set(included)
+            waiting = [
+                processed_articles.article_hash(a) for a in articles
+                if processed_articles.article_hash(a) not in inc_set_mode
+                and processed_articles.article_hash(a) not in processed_before
+            ]
             summaries[theme] = summary
+            summaries[theme]["waiting_hashes"] = waiting
+            processed_articles.record_run_seen(theme, waiting, included)
             if included:
                 processed_articles.mark_processed(theme, included)
             processed_per_theme[theme] = included
@@ -1039,6 +1060,8 @@ async def _generate_all_summaries_async(
             skipped_summary["skipped_count"] = len(articles)
             skipped_summary["skipped_hashes"] = all_hashes
             skipped_summary["skipped_articles"] = all_skipped_payload
+            # Everything here is already processed — nothing is waiting to drain.
+            skipped_summary["waiting_hashes"] = []
             summaries[theme] = skipped_summary
             continue
 
@@ -1095,6 +1118,15 @@ async def _generate_all_summaries_async(
         summaries[theme]["skipped_hashes"] = theme_skipped_hashes
         summaries[theme]["skipped_articles"] = theme_skipped_payload
 
+        # Phase 4.3 fair drain: the waiting backlog is the unprocessed pool
+        # minus what this run actually surfaced (the skipped complement above
+        # also includes already-processed articles, which are not waiting).
+        waiting = [
+            processed_articles.article_hash(a) for a in unprocessed
+            if processed_articles.article_hash(a) not in inc_set
+        ]
+        summaries[theme]["waiting_hashes"] = waiting
+
         gen_log = summaries[theme].get("_generation_log")
         if isinstance(gen_log, dict):
             gen_log.update({
@@ -1103,8 +1135,10 @@ async def _generate_all_summaries_async(
                 "skipped_count": len(theme_skipped_arts),
                 "skipped_hashes": theme_skipped_hashes,
                 "skipped_articles": theme_skipped_payload,
+                "waiting_hashes": waiting,
             })
 
+        processed_articles.record_run_seen(theme, waiting, included)
         if included:
             processed_articles.mark_processed(theme, included)
             processed_per_theme[theme] = included

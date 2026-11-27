@@ -96,6 +96,69 @@ def is_duplicate_run(fingerprint: str) -> bool:
     return False
 
 
+def _record_aged_out(
+    history_data: Dict,
+    summaries: Dict[str, Dict[str, str]],
+    themed_articles: Dict[str, List[Dict]],
+) -> None:
+    """Phase 4.3: explicitly record waiting articles that left the fetch set.
+
+    A hash in the previous run's ``waiting_hashes`` (classified, unprocessed,
+    not surfaced) that is absent from this run's classified set will never
+    re-compete — it aged out of the 14-day window or dropped off its feed.
+    Record it (title/source/link/hash/last_seen) on this run's summary and
+    generation log instead of losing it silently. Mutates ``summaries`` in
+    place so both history.json and the Supabase generation_log carry it.
+    """
+    from core.processed_articles import article_hash
+
+    for summary in summaries.values():
+        summary["aged_out_articles"] = []
+    if not history_data:
+        return
+    prev_key = sorted(history_data.keys(), reverse=True)[0]
+    prev = history_data.get(prev_key) or {}
+    prev_summaries = prev.get("summaries") or {}
+    prev_themed = prev.get("themed_articles") or {}
+
+    for theme, summary in summaries.items():
+        prev_sum = prev_summaries.get(theme) or {}
+        gen_log = prev_sum.get("_generation_log") or {}
+        if isinstance(gen_log, str):
+            try:
+                gen_log = json.loads(gen_log)
+            except Exception:
+                gen_log = {}
+        if not isinstance(gen_log, dict):
+            gen_log = {}
+        prev_waiting = prev_sum.get("waiting_hashes") or gen_log.get("waiting_hashes") or []
+        if not prev_waiting:
+            continue
+        current = {article_hash(a) for a in themed_articles.get(theme, [])}
+        aged_hashes = [h for h in prev_waiting if h not in current]
+        if not aged_hashes:
+            continue
+        prev_articles = {article_hash(a): a for a in prev_themed.get(theme, [])}
+        payload = []
+        for h in aged_hashes:
+            a = prev_articles.get(h) or {}
+            payload.append({
+                "title": a.get("title", ""),
+                "source": a.get("source_name", a.get("source", "")),
+                "link": a.get("link", ""),
+                "hash": h,
+                "last_seen": prev_key,
+            })
+        summary["aged_out_articles"] = payload
+        gen = summary.get("_generation_log")
+        if isinstance(gen, dict):
+            gen["aged_out_articles"] = payload
+        logger.info(
+            "Theme %s: %d waiting article(s) aged out unprocessed (last seen %s)",
+            theme, len(payload), prev_key,
+        )
+
+
 def save_run_to_history(
     summaries: Dict[str, Dict[str, str]],
     article_counts: Dict[str, int],
@@ -113,6 +176,7 @@ def save_run_to_history(
     # that keeps enough runs for get_recent_context() to work.
     MAX_LOCAL_RUNS = 5
     history_data = load_full_history()
+    _record_aged_out(history_data, summaries, themed_articles)
     skipped_per_theme = {
         theme: summaries.get(theme, {}).get("skipped_articles", [])
         for theme in summaries
@@ -313,6 +377,8 @@ def _run_data_from_supabase(supabase, run: Dict) -> Dict:
             "skipped_count",
             "skipped_hashes",
             "skipped_articles",
+            "waiting_hashes",
+            "aged_out_articles",
         ):
             if key in gen_log:
                 summary[key] = gen_log[key]

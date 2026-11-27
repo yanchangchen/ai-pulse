@@ -36,7 +36,10 @@ Three tabs:
   fallbacks, per-model health tracking). Each reply is captioned with the engine
   provenance (provider/model, latency, fallback flag) and the grounding stats
   (summaries/dates plus article-evidence count).
-- **📖 Memory Timeline**
+- **📖 Memory Timeline** — per-run theme cards/expander carry the Phase 4.1 coverage
+  caption ("N of M reflected") and the ⏳ Missed/Backlog list, plus the Phase 4.3
+  🍂 Aged-out Unprocessed list (waiting articles that left the fetch window before
+  ever being summarised, with last-seen run).
 - **⚖️ Compare Runs**
 
 ### Sage agent internals (`core/sage_agent.py`)

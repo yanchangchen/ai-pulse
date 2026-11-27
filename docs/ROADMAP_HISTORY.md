@@ -106,6 +106,43 @@ constrained. Tracking queries for ad-hoc re-checks: [EMBEDDING_PROVIDERS.md §8]
 
 ---
 
+## Phase 4 — Full-coverage article processing (in progress)
+
+*(4.1 skip visibility and 4.2 fallback-ledger truthfulness landed 2026-10-26/27 —
+see the BLOG.md entry for that week. 4.3 below landed 2026-11-27.)*
+
+- [x] **4.3 Fair drain / backlog carryover (2026-11-27).** Three pieces:
+  - **Counter:** `articles.times_seen` (`supabase_migration_times_seen.sql`) counts
+    runs classified-but-not-summarised; reset to 0 on inclusion. Maintained by the
+    `record_article_seen(theme, waiting[], included[])` **UPDATE-only** RPC —
+    PostgREST upserts cannot express per-row increments, and a partial-column
+    upsert would insert title-less rows for articles whose first `save_articles`
+    happens after summarisation. Partial index on `(theme_name, times_seen) WHERE
+    times_seen > 0`. Local JSON fallback `data/times_seen.json` keeps pre-migration
+    and offline deployments working (`core/processed_articles.py`:
+    `get_times_seen` / `record_run_seen`, Supabase-preferred like the processed ledger).
+  - **Aging boost:** `_rank_articles_by_relevance` adds `aging_boost_per_run ×
+    times_seen` (default 2.0 via `get_summariser_settings()`, 0 disables) to the
+    shared keyword-relevance score, so waiting articles monotonically rise and
+    drain inside the 14-day window. The orchestrator computes `waiting_hashes` =
+    unprocessed − surfaced (NOT the skipped complement, which also contains
+    already-processed articles) on all three paths (gateway, extractive fallback,
+    extractive-only mode) and advances the counter before `mark_processed`.
+  - **Aged-out record:** `history_manager._record_aged_out()` at persistence diffs
+    the previous run's `waiting_hashes` against the current classified set;
+    departed hashes become `aged_out_articles` (title/source/link/hash/last_seen)
+    on the summary + `generation_log`, rendered by the History page's 🍂 expander
+    in both local and Supabase modes. A feed dropping an article early is recorded
+    too; if it returns later it re-competes as unprocessed (ledger unchanged).
+  - **Migration batching decision:** Future.md originally batched this migration
+    with 5.4's `theme_first_seen`; shipped separately because 4.3 needs the counter
+    now and 5.4 is gated behind Phase 5 retrieval work. 5.4 adds its own migration.
+  - Tests: `tests/test_fair_drain.py` (17 tests: boost on/off, counter local+cloud,
+    RPC shape, aged-out diff incl. generation_log-only prev runs, orchestrator
+    waiting set).
+
+---
+
 ## Decision: tracing backend — Langfuse Cloud (Hobby) *(2026-10)*
 
 > **Decision (2026-10): Langfuse Cloud (Hobby).** Alternatives recorded below for future reference; since instrumentation is OpenTelemetry-based, switching backends later means changing the exporter, not the code.
