@@ -21,6 +21,8 @@ def render_sidebar_nav() -> None:
         st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics", icon="📈")
         st.page_link("pages/7_Quality_Evaluation.py", label="Quality Evaluation", icon="🔬")
         st.page_link("pages/8_Feedback_&_Roadmap.py", label="Feedback & Roadmap", icon="💡")
+        st.page_link("pages/9_Eval_Sets.py", label="Eval Sets", icon="🧪")
+        st.page_link("pages/10_Blog.py", label="Dev Blog", icon="📓")
 
         # Engine Settings & Mode Selector
         st.divider()

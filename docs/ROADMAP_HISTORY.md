@@ -49,7 +49,60 @@ Future.md.)*
   - **Usage telemetry:** Cloudflare's OpenAI-compatible embeddings response omits `usage` (verified 2026-11-10), so the adapter records an estimated `tokens_in` (~3 chars/token) to keep `llm_calls` quota tracking usable; the Cloudflare dashboard remains exact. Migration rows written before this fix carry zero token counts — use call count / the dashboard for that one-off burst.
   - **Forced re-embed + resumability:** `backfill_embeddings.py --reembed` reads each row's stored `chunk_text` and re-embeds it. `get_articles_for_reembedding(exclude_model=...)` filters out rows already carrying the target model, so every successful upsert removes its rows from the next query — a rerun resumes instead of redoing the first page (observed: the first attempt stopped after 100 rows on a socket error; the retry continued from row 101 without loss).
   - **Migration result (2026-11-10):** 750 existing Gemini rows re-embedded, 5,554 backlog articles embedded → **6,304/6,304 (backlog 0)**, `embedding_model` 100% `@cf/baai/bge-base-en-v1.5`, all rows accepted by the `vector(768)` column. Cloudflare embedding calls all succeeded; the only failures in `llm_calls` were historical Gemini 429s.
-- **Gate (passed 2026-11-10):** `core/retrieval_eval.py` scored **Recall@10 = 0.833** across all 8 questions (per-question 0.67–1.00), snapshot in `app_settings.retrieval_eval_latest`. Caveat: the recorded 0.510 baseline was Gemini on a partial ~100-row index, so the improvement reflects both the model and full coverage — treat it as directional, not a controlled model comparison. The 3.6 14-day quota/error/latency watch now runs.
+- **Gate (passed 2026-11-10):** `core/retrieval_eval.py` scored **Recall@10 = 0.833** across all 8 questions (per-question 0.67–1.00), snapshot in `app_settings.retrieval_eval_latest`. Caveat: the recorded 0.510 baseline was Gemini on a partial ~100-row index, so the improvement reflects both the model and full coverage — treat it as directional, not a controlled model comparison. The 3.6 14-day quota/error/latency watch ran 2026-11-10 → 2026-11-27 and closed healthy (below).
+
+---
+
+## Phase 3.6 — Metrics watch (closed 2026-11-27)
+
+The contingent 14-day watch after the Cloudflare migration (thresholds defined in
+[EMBEDDING_PROVIDERS.md §8](EMBEDDING_PROVIDERS.md)). **Verdict: every gate healthy —
+Option C (Render) is NOT triggered; Cloudflare stays the embedding provider.**
+
+Results over the watch window (steady-state Nov 11–26; the Nov 10 backfill burst —
+268 calls, 58k tokens, 3×429 — excluded per the watch rules):
+
+| Metric | Observed | Threshold | Verdict |
+|---|---|---|---|
+| Quota headroom | 1–3 calls/day, 0.9k–13.2k tokens/day (peak Nov 18) vs ~1–2M tokens/day estimated free → ~1% | ≤25%, no day >50% | ✅ |
+| Errors | 28/28 steady-state calls succeeded. All 9 failures in the window were 429s: 6 pre-migration Gemini (Nov 8–9) + 3 backfill-day | <1%; trigger >5% × 3 days | ✅ |
+| p95 latency | 387–1,794 ms every steady-state day | <2 s | ✅ |
+| Backlog | 0 — 7,006/7,006 embedded (up from 6,304; ~41 new articles/day all kept up) | 0, then < one day's ingest | ✅ |
+| Model uniformity | 100% `@cf/baai/bge-base-en-v1.5`, all rows exactly 768 dims | single model, 768 dims | ✅ |
+| Retrieval quality | Re-gated on a new curated set: **Recall@10 = 0.917** (24/24 scored) | no >5 pp drop vs baseline | ✅ (new baseline) |
+
+Caveats: `tokens_in` is the adapter's ~3-chars/token estimate (Cloudflare omits `usage`);
+the dashboard Neurons graph remains the exact quota source. Zero-call days (Nov 16–17,
+21, 27) had no ingest; backlog 0 confirms nothing pending.
+
+**Eval-set loss & recreation.** The original 8-question seed
+(`data/eval_retrieval_questions.json`, baseline 0.833) lived in gitignored `data/` and
+was lost — the retrieval gate could not be re-run, which also blocked Phase 5's
+old-vs-new comparison. Recreated 2026-11-27 as **`eval_sets/retrieval_hit_rate.json`**
+(git-tracked): 24 questions curated against the live archive, covering all 7 themes,
+each with 2–3 expected keywords verified present in the target article's `chunk_text`
+(title + summary) and a `target_title` provenance field. New baseline **Recall@10 =
+0.917** — 21 questions at 1.00; honest weak spots kept as hard cases: SOCI cold-start
+(q06, 0.00), OpenAI Lockdown Mode (q19, 0.33), Anthropic IPO (q24, 0.67). The old 0.833
+is NOT directly comparable (different questions); 0.917 is the Phase 5 gate baseline.
+Snapshot now carries `set_id`, `ran_at`, and `per_question` scores in
+`app_settings.retrieval_eval_latest`.
+
+**Infrastructure shipped with the closure:**
+- `core/eval_sets.py` — generic registry: any `eval_sets/*.json` matching the schema
+  is discoverable; pagination + best-effort results helpers, no Streamlit imports.
+- `pages/9_Eval_Sets.py` — browses every eval set, 20 questions/page with prev/next,
+  ground-truth keywords + target article + latest per-question score per card.
+- `core/retrieval_eval.py` now loads from the registry (`RETRIEVAL_SET_ID`), and the
+  snapshot includes per-question results for the UI.
+- `pages/10_Blog.py` + `core/blog_index.py` — searchable rendering of BLOG.md
+  (case-insensitive AND search over entry titles + bodies).
+
+**Decision order if a future re-check trips a threshold** (unchanged): **Option C
+(Render, `BAAI/bge-base-en-v1.5`) first** — same weights as Cloudflare → same vector
+space → routing change, no re-embed. **Option B (Jina)** second — different weights →
+full re-embed; reserve for multilingual/long-context needs or if A and C are both
+constrained. Tracking queries for ad-hoc re-checks: [EMBEDDING_PROVIDERS.md §8](EMBEDDING_PROVIDERS.md).
 
 ---
 

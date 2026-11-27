@@ -105,3 +105,29 @@ selector, keyword suggestions): [docs/QUALITY_EVALUATION.md](QUALITY_EVALUATION.
 
 Feature requests / bug reports / UX ideas persisted to the `user_feedback` table, plus SDD
 writing prompts.
+
+## `pages/9_Eval_Sets.py`
+
+Browsable registry of every git-tracked evaluation question set in `eval_sets/*.json`
+(`core/eval_sets.py` discovers them — adding a JSON file with the schema documented in
+that module makes it appear here automatically; this is the standing home for all future
+eval sets).
+
+- Set selector + metadata (description, metric, created date, runner command).
+- **Pagination: 20 questions per page** with Previous/Next and a page indicator;
+  page state is per-set in `st.session_state`.
+- Each question card shows the question, its ground truth (`expected_keywords` for
+  retrieval sets, `answer` for QA-style sets), the `target_title` provenance article,
+  notes, and the latest per-question score when a run snapshot exists.
+- Latest run summary comes from `app_settings` via the set's `results_key`
+  (retrieval set → `retrieval_eval_latest`, written by `python -m core.retrieval_eval`,
+  which now snapshots `set_id`, `ran_at`, and `per_question` scores). Offline or
+  never-run sets degrade gracefully to questions without scores.
+
+## `pages/10_Blog.py`
+
+Searchable rendering of `BLOG.md` — the development journal, newest first.
+`core/blog_index.py` splits the file on `## <date range> — <title>` headings and
+provides case-insensitive AND search across entry titles + bodies (substring terms,
+so partial words match). Results render inline (no expanders) so matches are
+immediately readable; the parse is cached with a 5-minute TTL keyed on file mtime.

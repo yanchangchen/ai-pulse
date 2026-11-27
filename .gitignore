@@ -60,3 +60,7 @@ scratch/
 *.csv
 *.json
 *.parquet
+
+# Eval sets are curated, gate-defining assets — not runtime data. Always tracked
+# (the lost Phase 3 question set died in gitignored data/; never again).
+!eval_sets/*.json

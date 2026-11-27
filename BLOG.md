@@ -4,6 +4,30 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-27 — Closing the Cloudflare watch, resurrecting the lost eval set, and giving evals a UI
+
+**Problem**: The Phase 3.6 14-day metrics watch on the Cloudflare embedding migration had matured, but re-running its retrieval-quality gate was impossible: the hand-labelled question set (`data/eval_retrieval_questions.json`, the 8 questions behind Recall@10 = 0.833) lived in gitignored `data/` and was gone — from disk, git history, and scratch. The same set gates Phase 5's old-vs-new retrieval comparison, so losing it blocked two phases, not one.
+
+**What happened**:
+
+1. **The watch closed healthy on every operational gate.** Steady-state (Nov 11–26, backfill burst excluded): 1–3 embedding calls/day and 0.9k–13.2k tokens/day against an estimated 1–2M tokens/day free (~1% headroom); 28/28 calls succeeded; p95 latency 387–1,794 ms; backlog 0 with the index grown from 6,304 to 7,006 articles (~41/day, all embedded); 100% `@cf/baai/bge-base-en-v1.5` at exactly 768 dims. Every failure in the window was a 429 from the pre-migration Gemini era or the one-off backfill day. **Option C (Render) is not triggered.**
+
+2. **The eval set was recreated, not recovered.** `llm_calls` stores no input text, so the original questions were unrecoverable from the audit trail (and the hand-curated keyword labels wouldn't have been there anyway). Instead: 24 new questions curated against the live archive, covering all 7 themes, each with expected keywords verified present in the target article's actual `chunk_text` and a `target_title` provenance field. New home: **`eval_sets/retrieval_hit_rate.json`, tracked in git** — the loss mode is structurally impossible now.
+
+3. **New baseline: Recall@10 = 0.917** (24/24 scored). 21 questions at 1.00; three honest weak spots kept as hard cases rather than curated away: SOCI container cold-start (0.00 — the one total retrieval miss), OpenAI Lockdown Mode (0.33), and the Anthropic IPO title-only chunk (0.67). The old 0.833 is not directly comparable — different questions — so 0.917 becomes the Phase 5 gate baseline. The `app_settings` snapshot now carries `set_id`, `ran_at`, and per-question scores.
+
+4. **Eval sets got a UI, and a registry.** `core/eval_sets.py` discovers any `eval_sets/*.json` matching a documented schema; `pages/9_Eval_Sets.py` renders them with **20 questions per page** (Previous/Next + page indicator), showing each question's ground-truth keywords, target article, notes, and latest per-question score. Future eval sets — faithfulness, QA, anything — appear on the page automatically by dropping in a JSON file.
+
+5. **The blog got a page too.** `pages/10_Blog.py` + `core/blog_index.py` render BLOG.md newest-first with case-insensitive AND search over entry titles and bodies, so "what did we do about X" is a text box, not a scroll.
+
+*Lesson: an eval set is code, not runtime data. Anything a gate depends on must live where git can see it — a baseline number in a database is a receipt, but the questions that produced it are the asset. And a metric you can't re-measure is a metric you've already lost.*
+
+**Also shipped**: `core/retrieval_eval.py` now loads through the registry; 19 new tests (`tests/test_eval_sets.py`, `tests/test_blog_index.py`); sidebar nav gains 🧪 Eval Sets and 📓 Dev Blog; Future.md 3.6 checked off with details moved to ROADMAP_HISTORY.md.
+
+**Result**: Phase 3 is fully closed including its contingent watch. Next unchecked roadmap item: **Phase 4.3 — fair drain / backlog carryover**.
+
+---
+
 ## 2026-11-10 to 2026-11-11 — Ollama goes paid, and Qwen Cloud takes the generation stage
 
 **Problem**: Ollama Cloud stopped being free, and it was still the primary engine for `summarise`, `synthesise`, `project`, and Sage chat. Keeping it as a dead fallback would leave the routing table lying about capacity; removing it without a replacement would collapse the generation path onto Gemini alone, losing provider diversity and putting cost and availability in one vendor's hands.

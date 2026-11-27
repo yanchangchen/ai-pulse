@@ -12,32 +12,43 @@ the archive:
 
     python -m core.retrieval_eval
 
-The labelled set (data/eval_retrieval_questions.json) is a SEED: its keyword
-lists are thematic placeholders and must be curated against the actual archive
-before the number is trusted.  Results are printed, logged, and (best-effort)
-snapshotted to the Supabase app_settings key ``retrieval_eval_latest`` for a
-durable record; a dedicated Langfuse *score* surface does not exist yet in
-tracing.py, so the metric is captured here rather than fabricated into OTel
-score conventions.
+The labelled set lives in ``eval_sets/retrieval_hit_rate.json`` (git-tracked;
+discoverable by the Eval Sets UI page via ``core/eval_sets.py``).  It was
+curated 2026-11-27 against the live archive, replacing the lost 8-question
+seed that lived in gitignored ``data/``.  Results are printed, logged, and
+(best-effort) snapshotted to the Supabase app_settings key
+``retrieval_eval_latest`` — including per-question scores, which the Eval Sets
+page renders — for a durable record; a dedicated Langfuse *score* surface does
+not exist yet in tracing.py, so the metric is captured here rather than
+fabricated into OTel score conventions.
 """
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_EVAL_FILE = Path(__file__).resolve().parent.parent / "data" / "eval_retrieval_questions.json"
+RETRIEVAL_SET_ID = "retrieval-hit-rate"
 
 
 def load_questions(path: Optional[Path] = None) -> List[Dict]:
-    p = path or _EVAL_FILE
-    if not p.exists():
-        logger.warning("Retrieval eval questions not found at %s", p)
+    if path is not None:
+        if not path.exists():
+            logger.warning("Retrieval eval questions not found at %s", path)
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("questions", [])
+
+    from core.eval_sets import load_eval_set
+
+    eval_set = load_eval_set(RETRIEVAL_SET_ID)
+    if not eval_set:
+        logger.warning("Retrieval eval set '%s' not found in eval_sets/", RETRIEVAL_SET_ID)
         return []
-    with open(p, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return data.get("questions", [])
+    return eval_set.get("questions", [])
 
 
 def _recall_for(question: Dict, retrieved: List[Dict], k: int) -> Dict:
@@ -46,13 +57,14 @@ def _recall_for(question: Dict, retrieved: List[Dict], k: int) -> Dict:
     haystacks = [str(r.get("chunk_text", "")).lower() for r in top_k]
 
     if not expected:
-        return {"question": question.get("question", ""), "recall": None, "hits": 0, "expected": 0}
+        return {"id": question.get("id"), "question": question.get("question", ""), "recall": None, "hits": 0, "expected": 0}
 
     hits = 0
     for kw in expected:
         if any(kw in h for h in haystacks):
             hits += 1
     return {
+        "id": question.get("id"),
         "question": question.get("question", ""),
         "recall": hits / len(expected),
         "hits": hits,
@@ -81,7 +93,7 @@ def run_retrieval_eval(path: Optional[Path] = None, quiet: bool = False) -> Dict
         k = int(q.get("k", 10))
         vectors, _ = embed_texts([q.get("question", "")])
         if not vectors:
-            per_question.append({"question": q.get("question", ""), "recall": None, "hits": 0, "expected": 0, "error": "embed"})
+            per_question.append({"id": q.get("id"), "question": q.get("question", ""), "recall": None, "hits": 0, "expected": 0, "error": "embed"})
             continue
         retrieved = manager.match_article_embeddings(vectors[0], match_count=k) or []
         per_question.append(_recall_for(q, retrieved, k))
@@ -105,11 +117,15 @@ def run_retrieval_eval(path: Optional[Path] = None, quiet: bool = False) -> Dict
             print(f"  {recall}  {r['question']}")
 
     # Best-effort durable snapshot (no Langfuse score surface exists yet).
+    # per_question powers the Eval Sets UI page; ran_at distinguishes reruns.
     try:
         manager.upsert_app_setting("retrieval_eval_latest", {
+            "set_id": RETRIEVAL_SET_ID,
+            "ran_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "mean_recall": mean_recall,
             "n_scored": len(scored),
             "n_questions": len(per_question),
+            "per_question": per_question,
         })
     except Exception as e:
         logger.debug("Failed to snapshot retrieval eval to app_settings: %s", e)

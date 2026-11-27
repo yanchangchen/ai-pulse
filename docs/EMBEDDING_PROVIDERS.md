@@ -510,6 +510,11 @@ until the metrics below show a real Cloudflare limit.
 
 ### Metrics to watch (for at least 14 days after backfill)
 
+> **Watch closed 2026-11-27 — all gates healthy, Option C not triggered.** Full
+> results and the recreated 24-question retrieval baseline (Recall@10 = 0.917):
+> [ROADMAP_HISTORY.md — Phase 3.6](ROADMAP_HISTORY.md#phase-36--metrics-watch-closed-2026-11-27).
+> The definitions and queries below stay for ad-hoc re-checks.
+
 Exclude the one-time backfill burst when judging steady-state headroom. Sources:
 `llm_calls` (`task_type='embedding'`), DB counts, the Cloudflare dashboard Neurons graph, and
 `core/retrieval_eval.py`. Full definitions live in
