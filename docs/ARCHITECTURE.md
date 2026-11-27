@@ -186,7 +186,15 @@ Implementation details for both fallbacks — including the Render Docker/`rende
 reference — are in [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md) §3–4.
 
 All providers have per-request timeouts:
-- **Gemini:** 30s default (configurable via `GEMINI_REQUEST_TIMEOUT`)
+- **Gemini:** 30s default (configurable via `GEMINI_REQUEST_TIMEOUT`), enforced as a
+  **hard wall-clock deadline** (`_await_with_deadline`: `asyncio.wait` + abandon on
+  timeout). Plain `asyncio.wait_for` proved insufficient: it awaits the cancelled
+  task's completion, and the SDK's tenacity/aiohttp retry loop defers
+  `CancelledError` during DNS-executor resolution — observed as 12–139 minute
+  "successful" fallbacks. The SDK is additionally bounded at construction:
+  `HttpOptions.timeout` (**milliseconds** — the SDK divides by 1000; passing
+  seconds silently means a 30 ms timeout) and `HttpRetryOptions(attempts=2,
+  max_delay=2s)` so connection/DNS failures cannot back off for minutes.
 - **Qwen Cloud:** 180s default (configurable via `QWEN_REQUEST_TIMEOUT`) — large summary prompts can exceed 60s under load, which used to trip premature fallbacks
 
 When a provider times out or fails, the gateway classifies the error (retryable vs non-retryable), records the failure for health tracking, and moves to the next model in the chain (each fallback logs a WARNING naming the failed model and error). Health latches: 3 consecutive failures → degraded, 5 → unavailable. An unavailable model is not skipped forever — a circuit-breaker auto-reset retries it in half-open state after a cooldown (`GATEWAY_HEALTH_RESET_SECONDS`, default 300s), and a successful `health_check_all()` probe clears the latch immediately. If all LLMs fail, the deterministic fallback uses `extractive_summarise_from_text()` for SUMMARISE/SYNTHESISE tasks and rule-based extraction for CATEGORISE/EXTRACT.

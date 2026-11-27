@@ -4,6 +4,24 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-27 — The 139-minute "success": why wait_for is not a timeout
+
+**Problem**: During the 4.4/4.5 gate experiments, two Gemini fallbacks logged `success=true` with latencies of 702s and 8329s — a 2.3-hour "successful" call. The provider already wrapped every SDK call in `asyncio.wait_for(..., 30s)`. The timeout existed; it just didn't bind.
+
+**What happened**:
+
+1. **The mechanism**: `asyncio.wait_for` cancels the inner task on timeout and then *awaits its completion*. The google-genai SDK retries connection/DNS failures through tenacity + aiohttp, and cancellation during DNS-executor resolution gets deferred — so the cancelled task keeps running, and `wait_for` patiently waits for it. The deadline becomes a suggestion. (The latency column measures from gateway-execution start, which is why the row also absorbed the preceding Qwen timeouts.)
+
+2. **The fix, two layers**: the provider now uses `asyncio.wait({task}, timeout=...)` and on expiry cancels best-effort and **abandons** the task — the caller returns on time no matter what the SDK does with cancellation. And the SDK itself is bounded at construction: `HttpRetryOptions(attempts=2, max_delay=2s)` plus `HttpOptions.timeout` so abandoned tasks die on their own.
+
+3. **The unit trap, caught by a test**: `HttpOptions.timeout` is **milliseconds**. Passing the seconds value (30) would have meant a 30-millisecond timeout — every real Gemini call failing instantly. A construction test asserting `timeout == 30_000` caught it before any live traffic; a live sanity call then returned in 1.3s.
+
+*Lesson: a timeout is only as strong as its cancellation path. If the callee can defer cancellation, wrap-with-wait_for is not a deadline — use wait-and-abandon, bound the callee's own retries, and test the deadline with a coroutine that deliberately defers cancellation. And read the unit of every timeout field you set: seconds-vs-milliseconds is a silent 1000× bug.*
+
+**Result**: Gemini fallbacks are now bounded at ~30s wall-clock regardless of DNS/network pathology; 5 regression tests (`tests/test_gemini_timeout.py`), gateway suite green, live call verified.
+
+---
+
 ## 2026-11-27 — Phase 4.5: map-reduce, or how to compress without forgetting
 
 **Problem**: 4.4's audited gate left two honest residuals: pools over the ceiling wait (capacity gap), and a 50-article brief names only ~61% of what it's fed (naming gap). One call cannot compress 85 stories into 250 words without forgetting most of them. The roadmap's answer: never ask it to.

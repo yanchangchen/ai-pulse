@@ -77,8 +77,10 @@ also work.
 > landed on the deterministic fallback ("Non-LLM" / "gateway:error" provenance chips).
 
 Gateway behaviour tunables (OS env vars): `QWEN_REQUEST_TIMEOUT` (default 180s — large
-summary prompts can exceed 60s under load), `GEMINI_REQUEST_TIMEOUT` (default 30s),
-`GATEWAY_HEALTH_RESET_SECONDS` (default 300s).
+summary prompts can exceed 60s under load), `GEMINI_REQUEST_TIMEOUT` (default 30s,
+enforced as a hard wall-clock deadline — see ARCHITECTURE.md; the SDK retry loop is
+additionally capped at 2 attempts / 2s max delay), `GATEWAY_HEALTH_RESET_SECONDS`
+(default 300s).
 
 ## Langfuse tracing (Phase 0.3, Pillar F)
 
