@@ -32,6 +32,7 @@ Run in the SQL Editor, roughly in order:
 10. `supabase_migration_sage_evaluations.sql` — `sage_evaluations`, the chat-time Sage faithfulness judge's score store (Phase 2 gate)
 11. `supabase_migration_article_embeddings.sql` — `article_embeddings` (pgvector) + `get_unembedded_articles` / `match_article_embeddings` RPCs (Phase 3). Enables `CREATE EXTENSION vector`.
 12. `supabase_migration_times_seen.sql` — `articles.times_seen` + partial index + `record_article_seen(theme, waiting[], included[])` UPDATE-only RPC (Phase 4.3 fair drain). UPDATE-only on purpose: PostgREST upserts cannot express per-row increments, and a partial-column upsert would insert title-less article rows. Pre-migration databases degrade to the local JSON counter (`data/times_seen.json`).
+13. `supabase_migration_hybrid_retrieval.sql` — `match_article_embeddings` v2 (article metadata join + date/theme bounds applied after a 4x over-fetched ANN scan) and `theme_first_seen` (Phase 5.4, backfilled from the archive).
 
 ## `llm_calls`
 
@@ -75,9 +76,11 @@ returns only articles **without** an embedding, so a re-run resumes wherever the
 previous run stopped (the table is the checkpoint, not a cursor file). `chunk_text`
 records the exact `"title summary"` string that was embedded; `embedding_model` records
 which model produced it. `embedding vector(768)` + HNSW (`vector_cosine_ops`) + a
-`run_date` btree index (denormalized from `trend_runs`). `match_article_embeddings` is a
-minimal top-k cosine lookup used only by the Phase 3 hit-rate gate
-(`core/retrieval_eval.py`); the real hybrid retriever is Phase 5. RLS mirrors
+`run_date` btree index (denormalized from `trend_runs`). `match_article_embeddings` (v2, Phase 5) is the
+dense leg of the hybrid retriever (`core/retrieval.py`) and the Phase 3 gate:
+it joins article metadata (title/summary/theme/source/link/published_at/run_date)
+and applies optional date/theme bounds after a 4x over-fetched ANN scan
+(HNSW+filter under-fill gotcha). RLS mirrors
 `sage_evaluations`: public SELECT + insert. Embeddings go through the gateway
 (`TaskType.EMBEDDING`, `gemini-embedding-001`), so each batch is traced and mirrored to
 `llm_calls` with `task_type='embedding'`.
@@ -91,6 +94,20 @@ table; `embedding_model` is the audit column that makes a partial migration visi
 `insert_article_embeddings()` is append-only (a duplicate `article_id` is logged, not
 upserted), so re-embedding needs a delete-or-upsert path first. Provider options and the
 re-embed runbook: [docs/EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md).
+
+## Hybrid retrieval & `theme_first_seen` (Phase 5)
+
+`core/retrieval.py::hybrid_search()` fuses the `match_articles` FTS leg with
+the `match_article_embeddings` dense leg via Reciprocal Rank Fusion, parses
+temporal bounds from the question, and applies bounded time-decay only to
+unbounded queries. See [docs/ARCHITECTURE.md](ARCHITECTURE.md#hybrid-retrieval-phase-5--coreretrievalpy).
+
+`theme_first_seen` (one row per theme: `first_seen_date`, `first_seen_run_id`,
+`evidence_summary`) is maintained at ingest by `record_theme_first_seen()`
+(upsert with ignore-duplicates => earliest run wins) and read whole by
+`get_theme_first_seen()` for Sage's first-appearance annotation. RLS: public
+read + insert (single-user app). Pre-migration databases degrade to the
+legacy render-time window scan.
 
 ## RLS
 

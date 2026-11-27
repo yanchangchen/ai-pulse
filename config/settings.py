@@ -434,6 +434,36 @@ def get_summariser_settings() -> dict:
     return defaults
 
 
+# ---------------------------------------------------------------------------
+# Phase 5 — Hybrid Retrieval Settings
+# ---------------------------------------------------------------------------
+_RETRIEVAL_DEFAULTS = {
+    # Master switch: False restores the Phase 2.3 FTS-only Sage evidence path.
+    "hybrid_retrieval_enabled": True,
+    # Reciprocal Rank Fusion constant (standard k=60): score = sum 1/(k+rank).
+    "rrf_k": 60,
+    # Candidate pool size per leg before fusion.
+    "retrieval_dense_candidates": 50,
+    "retrieval_sparse_candidates": 50,
+    # Time-decay re-ranking (applied ONLY when the query carries no explicit
+    # temporal bound): final = rrf * (floor + (1-floor) * exp(-age/halflife)).
+    # Gate-tuned 2026-11-28: floor 0.9 / halflife 180d keeps decay a tie-break,
+    # not a filter — the archive spans ~6 months, and the first gate attempt
+    # (floor 0.5 / 30d) halved June/July targets below fresher neighbours
+    # (Recall 0.875 -> 0.833 regression). At 0.9 the freshness preference is
+    # bounded to ~1.11x, so an old rank-1 hit stays inside the top-10.
+    "retrieval_time_decay_floor": 0.9,
+    "retrieval_time_decay_halflife_days": 180.0,
+}
+
+
+def get_retrieval_settings() -> dict:
+    """Return active hybrid-retrieval parameters (custom_settings overlay)."""
+    settings = dict(_RETRIEVAL_DEFAULTS)
+    settings.update(load_custom_settings())
+    return settings
+
+
 def update_summariser_settings(
     temperature: float, max_tokens: int, strict_faithfulness_mode: bool
 ) -> dict:

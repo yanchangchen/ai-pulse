@@ -1176,25 +1176,122 @@ class SupabaseManager:
         return False
 
     def match_article_embeddings(
-        self, query_embedding: List[float], match_count: int = 10
+        self,
+        query_embedding: List[float],
+        match_count: int = 10,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        theme_filter: Optional[str] = None,
     ) -> Optional[List[Dict]]:
-        """Nearest-neighbour lookup for the Phase 3 hit-rate gate.
+        """Dense nearest-neighbour lookup (Phase 3 gate + Phase 5 dense leg).
 
-        Returns the top-k cosine-similar rows, or ``None`` when unavailable
-        or the RPC is missing (the retriever proper is Phase 5; this exists
-        only to measure retrieval quality against a labelled set).
+        Returns the top-k cosine-similar rows joined with article metadata
+        (title/summary/theme/source/link/published_at/run_date), or ``None``
+        when unavailable or the RPC is missing. Optional date/theme bounds
+        are applied by the RPC *after* an over-fetched ANN scan (HNSW+filter
+        under-fill gotcha — see supabase_migration_hybrid_retrieval.sql).
+        Bounds are sent only when set, so the unbounded Phase 3 gate call
+        keeps working on pre-Phase-5 databases; a bounded call there fails
+        to resolve and returns None, degrading the hybrid to its sparse leg.
         """
         if not self.available or not query_embedding:
             return None
         try:
-            response = self.client.rpc(
-                "match_article_embeddings",
-                {"query_embedding": query_embedding, "match_count": match_count},
-            ).execute()
+            params = {"query_embedding": query_embedding, "match_count": match_count}
+            if date_from:
+                params["date_from"] = date_from
+            if date_to:
+                params["date_to"] = date_to
+            if theme_filter:
+                params["theme_filter"] = theme_filter
+            response = self.client.rpc("match_article_embeddings", params).execute()
             return response.data if isinstance(response.data, list) else None
         except Exception as e:
             logger.warning(f"match_article_embeddings RPC failed: {e}")
             return None
+
+    def match_articles_fts(
+        self,
+        query: str,
+        theme_filter: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        source_filter: Optional[str] = None,
+        result_limit: int = 50,
+    ) -> Optional[List[Dict]]:
+        """Pure FTS leg for hybrid retrieval (Phase 5.2).
+
+        Unlike ``get_articles_for_context``, this does NOT fall back to a
+        newest-first window on empty matches — a fusion leg must contain only
+        genuine keyword matches, or RRF would rank recency noise as evidence.
+        Returns ``None`` on failure / missing RPC so the dense leg can carry
+        the query alone.
+        """
+        if not self.available or not (query or "").strip():
+            return None
+        try:
+            params = {"query": query, "result_limit": result_limit}
+            if theme_filter:
+                params["theme_filter"] = theme_filter
+            if date_from:
+                params["date_from"] = date_from
+            if date_to:
+                params["date_to"] = date_to
+            if source_filter:
+                params["source_filter"] = source_filter
+            response = self.client.rpc("match_articles", params).execute()
+            return response.data if isinstance(response.data, list) else None
+        except Exception as e:
+            logger.warning(f"match_articles RPC failed (hybrid sparse leg): {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # theme_first_seen (Phase 5.4)
+    # ------------------------------------------------------------------
+
+    def get_theme_first_seen(self) -> Optional[Dict[str, Dict]]:
+        """Return {theme_name: row} from theme_first_seen, or None on failure.
+
+        Small table (one row per theme); fetched whole for Sage's
+        first-appearance annotation, replacing the render-time window scan.
+        """
+        if not self.available:
+            return None
+        try:
+            response = self.client.table("theme_first_seen").select("*").execute()
+            if isinstance(response.data, list):
+                return {r["theme_name"]: r for r in response.data if r.get("theme_name")}
+            return None
+        except Exception as e:
+            logger.warning(f"theme_first_seen fetch failed: {e}")
+            return None
+
+    def record_theme_first_seen(
+        self, theme_name: str, first_seen_date: str,
+        run_id: str = "", evidence_summary: str = "",
+    ) -> bool:
+        """Insert-if-absent the theme's first appearance (ingest-time, 5.4).
+
+        Upsert with ignore-duplicates => ON CONFLICT DO NOTHING: the earliest
+        archived run wins and later runs never overwrite it.
+        """
+        if not self.available or not theme_name or not first_seen_date:
+            return False
+        try:
+            self.client.table("theme_first_seen").upsert(
+                {
+                    "theme_name": theme_name,
+                    "first_seen_date": first_seen_date,
+                    "first_seen_run_id": run_id or None,
+                    "evidence_summary": (evidence_summary or "")[:500],
+                },
+                on_conflict="theme_name",
+                ignore_duplicates=True,
+            ).execute()
+            return True
+        except Exception as e:
+            logger.warning(f"theme_first_seen record failed for {theme_name}: {e}")
+            return False
 
     def get_keyword_velocity(self, keywords: List[str], limit: int = 30) -> Optional[List[Dict]]:
         """

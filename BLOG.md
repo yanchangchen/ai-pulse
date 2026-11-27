@@ -4,6 +4,26 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-28 — Phase 5: fusion is mechanical, decay is an opinion
+
+**Problem**: Sage found articles by keyword overlap; the dense index existed but served only the eval gate. Phase 5 wires both legs together — and the interesting engineering turned out to be neither the vectors nor the fusion, but how strongly *freshness* should vote.
+
+**What happened**:
+
+1. **Two legs, one rank list.** FTS (`match_articles`) and pgvector top-k fuse via Reciprocal Rank Fusion — `sum 1/(60+rank)`, deduped by article id. Rank-based fusion needs no score normalisation between ts_rank and cosine, which is exactly why it's the right default. The dense RPC grew a metadata join so hits arrive as renderable evidence, and date/theme bounds are applied *after* a 4x over-fetched ANN scan: an HNSW index with a WHERE filter can under-fill LIMIT, so the filter never rides the index scan.
+
+2. **The gate caught an opinion disguised as a formula.** First run: hybrid 0.833 vs dense 0.875 — a regression. Both lost targets were June/July articles. The time-decay (floor 0.5, halflife 30d) halved anything ~5 months old, so fresher neighbours pushed them out of the top-10. On a six-month archive, "decay" was acting as a filter. Retuned to floor 0.9 / halflife 180d — a bounded ~1.11x nudge — and both recovered: **0.875 = 0.875, gate passed**, p95 1.9s against a 3s budget. Decay strength must be calibrated to the archive's age span, not the ingest cadence.
+
+3. **Same-day controls matter.** The recorded baseline was 0.917 (Nov 27); today's dense arm scored 0.875 on the identical set because the archive grew. Comparing hybrid against the stale snapshot would have manufactured a "regression" that was really index drift. The gate runs both arms back-to-back for exactly this reason.
+
+4. **First appearances stopped lying.** The old render-time scan tagged the oldest run *in the fetched window* as a theme's first appearance — every window got one. `theme_first_seen` (insert-if-absent at ingest, backfilled from the archive) makes the tag mean what it says: the theme's true archive debut.
+
+*Lesson: retrieval fusion is the easy half. The re-ranking policy — how much freshness outranks relevance — is a tunable opinion, and the eval gate is where opinions get audited. Run the control the same day as the experiment.*
+
+**Result**: Phase 5 closed (5.1–5.4). Sage answers now ground in hybrid retrieval with temporal awareness; 41 new tests; migration applied; verdict snapshotted to the Eval Sets page. Next: Phase 6 hierarchical memory.
+
+---
+
 ## 2026-11-27 — The run that landed 8 hours in the future
 
 **Problem**: after a headless demo run, the Memory Wiki showed the newest run as *tomorrow morning* (28/11 07:27 instead of 27/11 23:27), and the sidebar reported the cache as "-7h ago".

@@ -126,6 +126,15 @@ local filesystem is wiped on every git push. Accessors:
 `core/supabase_client.py` `get_app_setting()` / `upsert_app_setting()` — see
 [docs/SUPABASE.md](SUPABASE.md).
 
+## Hybrid retrieval settings (Phase 5)
+
+`get_retrieval_settings()` merges `_RETRIEVAL_DEFAULTS` with the same
+`custom_settings.json` / `app_settings` overlay: `hybrid_retrieval_enabled`
+(True; False restores the FTS-only Sage path), `rrf_k` (60),
+`retrieval_dense_candidates` / `retrieval_sparse_candidates` (50 each),
+`retrieval_time_decay_floor` (0.9) and `retrieval_time_decay_halflife_days`
+(180) — gate-tuned so decay is a tie-break, not a filter — the decay applies only to queries without explicit temporal bounds.
+
 ## `config/custom_keywords.json`
 
 Persisted custom theme keywords (added via the Theme Keyword Manager, the classifier's

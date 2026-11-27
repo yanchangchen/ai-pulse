@@ -7,7 +7,7 @@ This document outlines key operational constraints and testing workflows for AI 
 ## ⚡ Critical Testing Rule for AI Harnesses
 
 > ### ⚠️ HARNESS DIRECTIVE: NEVER RUN THE FULL SUITE ON ROUTINE EDITS
-> - The full test suite has grown to **697 tests** and takes **~2–3 minutes** to complete.
+> - The full test suite has grown to **738 tests** and takes **~2–3 minutes** to complete.
 > - Running `pytest tests/` after small edits creates excessive latency and wastes time.
 > - **During active development and iteration, harnesses MUST ONLY run the 1–2 test files directly touching the changed code (< 0.5s execution time).**
 > - Reserve the full `python -m pytest tests/` suite strictly as a final sanity check before declaring a task complete or submitting a PR.
@@ -25,6 +25,7 @@ This document outlines key operational constraints and testing workflows for AI 
 | **Theme Classifier & TF-IDF** | `python -m pytest tests/test_classifier.py tests/test_tfidf_classifier.py` | ~0.3s |
 | **Summariser & Synthesis** | `python -m pytest tests/test_summariser.py` | ~0.3s |
 | **Ranking Refinements (Phase 4.6)** | `python -m pytest tests/test_ranking_refinements.py` | ~1.5s |
+| **Hybrid Retrieval (Phase 5)** | `python -m pytest tests/test_retrieval.py` | ~0.3s |
 | **Fair Drain / Capacity / Map-Reduce (4.3–4.5)** | `python -m pytest tests/test_fair_drain.py tests/test_capacity.py tests/test_mapreduce.py` | ~1s |
 | **Model Gateway & Health** | `python -m pytest tests/test_gateway_health.py tests/test_gateway_evaluate.py` | ~0.5s |
 | **Embeddings & Provider Switch** | `python -m pytest tests/test_embedding.py tests/test_cloudflare_provider.py` | ~60s (builds gateway providers) |

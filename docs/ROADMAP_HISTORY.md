@@ -229,6 +229,59 @@ see the BLOG.md entry for that week. 4.3–4.6 below landed 2026-11-27.)*
     tie-breaks, threshold respect, never-drop guarantees, neutral missing
     fields, legacy path, aging composition, defaults).
 
+## Phase 5 — Hybrid retrieval + temporal awareness (CLOSED 2026-11-28)
+
+- [x] **5.1 Dense leg in Sage.** `core/retrieval.py::hybrid_search()` replaces
+  the keyword-overlap scorer in `_fetch_article_candidates` (real-client
+  guard; stub/mock clients keep the legacy path). `match_article_embeddings`
+  v2 (`supabase_migration_hybrid_retrieval.sql`) joins article metadata
+  (title/summary/theme/source/link/published_at/run_date) so dense hits are
+  renderable evidence, not just chunk text. Hybrid results carry `_rrf_score`
+  and `_select_articles` preserves their order instead of re-scoring.
+  Fallback chain intact: hybrid empty/failed -> Phase 2.3 FTS -> newest-first
+  window -> local client-side scoring. Kill switch:
+  `hybrid_retrieval_enabled` (`get_retrieval_settings()`).
+- [x] **5.2 RRF fusion.** `match_articles_fts` (pure FTS matches — no window
+  fallback inside a fusion leg) + dense top-50, fused by
+  `score = sum 1/(60+rank)`, deduped by article id (sparse `id` vs dense
+  `article_id`). `chunk_text` eval haystack preserved from the dense leg,
+  synthesised title+summary for sparse-only rows.
+- [x] **5.3 Temporal awareness.** `parse_temporal_bounds()`: last/past N
+  days/weeks/months, last week/month, this week/month, today/yesterday,
+  "<month> <year>", "in/during <year>", "since <month>", "between <month>
+  and <month>" (cross-year aware). Bounds intersect caller (UI) filters and
+  constrain both legs. **HNSW gotcha handled in SQL**: the RPC over-fetches
+  4x match_count unfiltered in an ANN CTE, then filters + limits (Pillar C
+  mitigation (a)). Time-decay `rrf * (floor + (1-floor)*exp(-age/halflife))`
+  applies ONLY to unbounded queries.
+  - **Gate-driven tuning:** first attempt (floor 0.5 / halflife 30d)
+    REGRESSED Recall 0.875 -> 0.833 — both lost targets (q05 Voltus/Google
+    VPP, q21 Google Flash Cyber) were June/July articles whose scores the
+    steep decay halved below fresher dense neighbours; on a ~6-month archive
+    decay acted as a filter, not a tie-break. Retuned to **floor 0.9 /
+    halflife 180d** (max ~1.11x freshness preference): both recovered, gate
+    passed. Lesson: decay strength must be calibrated to archive age span,
+    not ingest cadence.
+- [x] **5.4 theme_first_seen.** Table (theme PK, first_seen_date, run_id,
+  evidence) + archive backfill in the migration; insert-if-absent at ingest
+  (`record_theme_first_seen`, upsert ignore-duplicates, skipped themes never
+  claim first appearance); Sage's FIRST APPEARANCE tag compares run_date to
+  the true archive date — the old window scan mislabelled every window's
+  oldest run. Offline/pre-migration keeps the legacy scan.
+- **Gate (PASSED 2026-11-28):** `python -m core.retrieval_eval --gate`,
+  24-question curated set, same-day arms: dense **0.875** -> hybrid
+  **0.875** (no regression), hybrid latency mean 1587ms / p95 **1918ms**
+  (budget 3000ms). The 0.917 snapshot from 2026-11-27 predates archive
+  growth — the same-day control is the valid comparison. Verdict +
+  per-question scores in `app_settings.retrieval_eval_latest` (Eval Sets
+  page). Residuals: q06/q16 missed by both arms (dense-index limits, not
+  fusion); q19/q24 partial keyword recall on both arms.
+- Tests: `tests/test_retrieval.py` (41: temporal parsing x14, RRF math,
+  leg degradation, decay on/off, bounds intersection, source post-filter,
+  Sage wiring incl. legacy-path guard, first-seen accessors, eval hybrid
+  arm). Migration applied to the live project 2026-11-28 (user-approved;
+  the MCP SQL tool is read-only, so it was run via the SQL Editor).
+
 ---
 
 ## Decision: tracing backend — Langfuse Cloud (Hobby) *(2026-10)*

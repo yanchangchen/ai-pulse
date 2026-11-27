@@ -24,7 +24,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 - **Duplicate-run suppression** — a stable article-set fingerprint stops the same fetched set from being persisted twice within a configurable window.
 - **Processed-article ledger** — tracks which articles have actually been included in a summary prompt, so only new/unprocessed articles are summarised and the rest are carried forward to the next run.
 - **Quality evaluation** — 7 automated run metrics (3 LLM-as-judge + 4 deterministic) plus a chat-time Sage faithfulness judge, with in-app and automatic remediation. [Details →](docs/QUALITY_EVALUATION.md)
-- **Sage agent** — conversational AI research analyst grounded in the Memory Wiki archive plus Postgres full-text article retrieval, with clickable citations, per-reply evidence popovers, and a chat-time faithfulness judge.
+- **Sage agent** — conversational AI research analyst grounded in the Memory Wiki archive plus **hybrid article retrieval** (pgvector dense + Postgres FTS, RRF fusion, temporal bounds and freshness-aware re-ranking), with clickable citations, per-reply evidence popovers, and a chat-time faithfulness judge.
 - **Observability** — every gateway call mirrored to the durable `llm_calls` table; OpenTelemetry traces export to Langfuse Cloud with trace-id linkage.
 
 ## 📦 Setup
@@ -128,7 +128,7 @@ streamlit run app.py
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/                    # full suite: 697 tests (final check only)
+python -m pytest tests/                    # full suite: 738 tests (final check only)
 python -m pytest tests/test_summariser.py  # targeted: prefer during iteration (<0.5s)
 python -m pytest -m integration tests/     # opt-in: real LLM + Supabase wiring
 ```

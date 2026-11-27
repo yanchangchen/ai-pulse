@@ -5,13 +5,17 @@
   "kind": "retrieval",
   "metric": "Recall@k",
   "created": "2026-11-27",
-  "runner": "python -m core.retrieval_eval",
+  "runner": "python -m core.retrieval_eval --gate",
   "results_key": "retrieval_eval_latest",
   "questions": [
     {
       "id": "q01",
       "question": "Which diffusion-based language model claims 4x faster text generation?",
-      "expected_keywords": ["diffusiongemma", "4x faster", "text generation"],
+      "expected_keywords": [
+        "diffusiongemma",
+        "4x faster",
+        "text generation"
+      ],
       "k": 10,
       "target_title": "DiffusionGemma: 4x faster text generation",
       "notes": "Title-only chunk (empty summary). June 2026."
@@ -19,7 +23,11 @@
     {
       "id": "q02",
       "question": "What Arabic speech recognition model did TII release, and what word error rate did it report?",
-      "expected_keywords": ["falcon-asr", "20.92", "arabic"],
+      "expected_keywords": [
+        "falcon-asr",
+        "20.92",
+        "arabic"
+      ],
       "k": 10,
       "target_title": "TII Releases Falcon-ASR: 1.6B Arabic Speech Model Hits 20.92% WER",
       "notes": "Exact-number recall test. October 2026."
@@ -27,7 +35,11 @@
     {
       "id": "q03",
       "question": "How did Hermes Agent reduce MCP context bloat, and what accuracy gain was reported on Opus 4?",
-      "expected_keywords": ["tool search", "bm25", "74%"],
+      "expected_keywords": [
+        "tool search",
+        "bm25",
+        "74%"
+      ],
       "k": 10,
       "target_title": "Hermes Agent Ships Tool Search for MCP: Anthropic Evals Show 49% to 74% Accuracy Gain on Opus 4",
       "notes": "May 2026, MarkTechPost."
@@ -35,7 +47,11 @@
     {
       "id": "q04",
       "question": "What always-on personal assistant did Microsoft build on OpenClaw, and which apps does it integrate with?",
-      "expected_keywords": ["microsoft scout", "openclaw", "microsoft 365"],
+      "expected_keywords": [
+        "microsoft scout",
+        "openclaw",
+        "microsoft 365"
+      ],
       "k": 10,
       "target_title": "Microsoft Scout is a new AI personal assistant built on OpenClaw",
       "notes": "June 2026."
@@ -43,7 +59,11 @@
     {
       "id": "q05",
       "question": "Which company signed a virtual power plant deal to help power data centers, and who is the grid partner?",
-      "expected_keywords": ["virtual power plant", "voltus", "google"],
+      "expected_keywords": [
+        "virtual power plant",
+        "voltus",
+        "google"
+      ],
       "k": 10,
       "target_title": "How virtual power plants could provide energy for data centers",
       "notes": "June 2026, MIT Technology Review."
@@ -51,7 +71,11 @@
     {
       "id": "q06",
       "question": "What indexing technique reduces container cold start times on Deep Learning AMIs and containers?",
-      "expected_keywords": ["soci", "cold start", "dlami"],
+      "expected_keywords": [
+        "soci",
+        "cold start",
+        "dlami"
+      ],
       "k": 10,
       "target_title": "Reducing container cold start times using SOCI index on DLAMI and DLC",
       "notes": "June 2026, AWS."
@@ -59,7 +83,11 @@
     {
       "id": "q07",
       "question": "What did the White House demand from Anthropic before it would allow re-releasing Fable 5?",
-      "expected_keywords": ["jailbreak", "fable 5", "guardrails"],
+      "expected_keywords": [
+        "jailbreak",
+        "fable 5",
+        "guardrails"
+      ],
       "k": 10,
       "target_title": "The White House Wants Anthropic to Block All Jailbreaks. That May Not Be Possible",
       "notes": "June 2026, WIRED."
@@ -67,7 +95,11 @@
     {
       "id": "q08",
       "question": "Which Anthropic product targets scientific research, and what audience was it announced to?",
-      "expected_keywords": ["claude science", "scientific research", "pharmaceutical"],
+      "expected_keywords": [
+        "claude science",
+        "scientific research",
+        "pharmaceutical"
+      ],
       "k": 10,
       "target_title": "The Download: Anthropic launches Claude Science, and California’s carbon manure math",
       "notes": "July 2026."
@@ -75,7 +107,11 @@
     {
       "id": "q09",
       "question": "How does Amazon Bedrock AgentCore automate legacy web applications that need human-like interaction?",
-      "expected_keywords": ["agentcore", "browser tool", "strands agents"],
+      "expected_keywords": [
+        "agentcore",
+        "browser tool",
+        "strands agents"
+      ],
       "k": 10,
       "target_title": "Automate legacy web applications with Amazon Bedrock AgentCore Browser Tool",
       "notes": "August 2026, AWS."
@@ -83,7 +119,11 @@
     {
       "id": "q10",
       "question": "How is NVIDIA Earth-2 being used to forecast air quality in the United Kingdom?",
-      "expected_keywords": ["earth-2", "air pollution", "manchester"],
+      "expected_keywords": [
+        "earth-2",
+        "air pollution",
+        "manchester"
+      ],
       "k": 10,
       "target_title": "University of Manchester Uses NVIDIA Earth-2 to Forecast Air Pollution Across the UK",
       "notes": "September 2026."
@@ -91,7 +131,11 @@
     {
       "id": "q11",
       "question": "What did the appeals court decide about the Pentagon designating Anthropic a supply-chain risk?",
-      "expected_keywords": ["pentagon", "supply-chain", "appeals"],
+      "expected_keywords": [
+        "pentagon",
+        "supply-chain",
+        "appeals"
+      ],
       "k": 10,
       "target_title": "Appeals Court Lets the Pentagon Designate Anthropic a Supply-Chain Risk",
       "notes": "September 2026."
@@ -99,7 +143,11 @@
     {
       "id": "q12",
       "question": "What open-weight agentic coding model did Meta release on Together AI, and what context window does it serve?",
-      "expected_keywords": ["muse spark", "1m-token", "agentic coding"],
+      "expected_keywords": [
+        "muse spark",
+        "1m-token",
+        "agentic coding"
+      ],
       "k": 10,
       "target_title": "Meta Muse Spark Open is live on Together AI",
       "notes": "October 2026."
@@ -107,7 +155,11 @@
     {
       "id": "q13",
       "question": "What is Canva Craft, and how does its two-stage architecture differ from other image generation models?",
-      "expected_keywords": ["canva craft", "two-stage", "plan"],
+      "expected_keywords": [
+        "canva craft",
+        "two-stage",
+        "plan"
+      ],
       "k": 10,
       "target_title": "Canva’s first AI image model plans designs before generating them",
       "notes": "October 2026."
@@ -115,7 +167,11 @@
     {
       "id": "q14",
       "question": "What free vulnerability scanner did Anthropic launch for open-source projects, and which models power it?",
-      "expected_keywords": ["oss scanner", "vulnerability", "claude mythos"],
+      "expected_keywords": [
+        "oss scanner",
+        "vulnerability",
+        "claude mythos"
+      ],
       "k": 10,
       "target_title": "Anthropic Launches OSS Scanner, a Free AI Vulnerability Scanner",
       "notes": "October 2026."
@@ -123,7 +179,11 @@
     {
       "id": "q15",
       "question": "How are enterprises rolling out OpenAI Codex on AWS, and which teams need to align on the decisions?",
-      "expected_keywords": ["codex", "bedrock", "governance"],
+      "expected_keywords": [
+        "codex",
+        "bedrock",
+        "governance"
+      ],
       "k": 10,
       "target_title": "OpenAI Codex on Amazon Bedrock",
       "notes": "November 2026, AWS."
@@ -131,7 +191,11 @@
     {
       "id": "q16",
       "question": "What language capability was distilled from Kimi-K3.1-Pro into Qwen3.8-27B, and how much of the teacher's score was retained?",
-      "expected_keywords": ["kimi-k3.1-pro", "lao", "93%"],
+      "expected_keywords": [
+        "kimi-k3.1-pro",
+        "lao",
+        "93%"
+      ],
       "k": 10,
       "target_title": "Distilling Kimi-K3.1-Pro into Qwen3.8-27B: Teaching a model a new language",
       "notes": "November 2026, Together Post-Training."
@@ -139,7 +203,11 @@
     {
       "id": "q17",
       "question": "Which GPT 5.6 variants did OpenAI launch, and what did Codex become inside ChatGPT?",
-      "expected_keywords": ["gpt 5.6", "sol/terra/luna", "superapp"],
+      "expected_keywords": [
+        "gpt 5.6",
+        "sol/terra/luna",
+        "superapp"
+      ],
       "k": 10,
       "target_title": "[AINews] OpenAI launches GPT 5.6 Sol/Terra/Luna, Codex becomes ChatGPT superapp",
       "notes": "July 2026."
@@ -147,7 +215,11 @@
     {
       "id": "q18",
       "question": "What share of game developers now use generative AI at work, according to the GDC industry survey?",
-      "expected_keywords": ["gdc", "forty percent", "36 percent"],
+      "expected_keywords": [
+        "gdc",
+        "forty percent",
+        "36 percent"
+      ],
       "k": 10,
       "target_title": "More game developers are starting to use generative AI",
       "notes": "November 2026. AI-Assisted Software Engineering theme."
@@ -155,7 +227,11 @@
     {
       "id": "q19",
       "question": "What OpenAI feature limits outbound network requests to stop data exfiltration from prompt injection attacks?",
-      "expected_keywords": ["lockdown mode", "prompt injection", "exfiltration"],
+      "expected_keywords": [
+        "lockdown mode",
+        "prompt injection",
+        "exfiltration"
+      ],
       "k": 10,
       "target_title": "OpenAI Help: Lockdown Mode",
       "notes": "June 2026. AI Security & Trust theme."
@@ -163,7 +239,11 @@
     {
       "id": "q20",
       "question": "What framework makes it easier to run Hugging Face models on AWS Trainium?",
-      "expected_keywords": ["torchneuron", "trainium", "hf models"],
+      "expected_keywords": [
+        "torchneuron",
+        "trainium",
+        "hf models"
+      ],
       "k": 10,
       "target_title": "TorchNeuron: running HF models on AWS Trainium is easier than ever",
       "notes": "Title-only chunk (empty summary). October 2026."
@@ -171,7 +251,11 @@
     {
       "id": "q21",
       "question": "Which cost-efficient Google security model is positioned as an alternative to Anthropic's Mythos for finding vulnerabilities?",
-      "expected_keywords": ["flash cyber", "mythos", "vulnerabilities"],
+      "expected_keywords": [
+        "flash cyber",
+        "mythos",
+        "vulnerabilities"
+      ],
       "k": 10,
       "target_title": "Google launches a cheaper alternative to large AI security models like Mythos",
       "notes": "July 2026. AI Security & Trust theme."
@@ -179,7 +263,11 @@
     {
       "id": "q22",
       "question": "What invisible watermarking technology did Meta introduce to flag AI-generated images, after pressure from its Oversight Board?",
-      "expected_keywords": ["content seal", "watermarking", "oversight board"],
+      "expected_keywords": [
+        "content seal",
+        "watermarking",
+        "oversight board"
+      ],
       "k": 10,
       "target_title": "Meta made its own AI detection system. It should have just used Google’s",
       "notes": "July 2026. AI Security & Trust theme."
@@ -187,7 +275,11 @@
     {
       "id": "q23",
       "question": "What point-tracking system targets real-world robotic manipulation?",
-      "expected_keywords": ["robotrack", "point tracking", "robotic manipulation"],
+      "expected_keywords": [
+        "robotrack",
+        "point tracking",
+        "robotic manipulation"
+      ],
       "k": 10,
       "target_title": "RoboTrack: Point tracking for real-world robotic manipulation",
       "notes": "Title-only chunk (empty summary). November 2026."
@@ -195,7 +287,11 @@
     {
       "id": "q24",
       "question": "What did Anthropic announce about going public in November 2026?",
-      "expected_keywords": ["ipo", "model y", "anthropic"],
+      "expected_keywords": [
+        "ipo",
+        "model y",
+        "anthropic"
+      ],
       "k": 10,
       "target_title": "Anthropic's historic IPO 💰, autonomous Model Y 🚗, foundation software 👨‍💻",
       "notes": "Title-only chunk (empty summary). November 2026."

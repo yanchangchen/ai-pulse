@@ -385,6 +385,41 @@ Overview never render an old run with missing provenance.
 `core/history_manager.py` exposes `get_recent_context()` (injects the last 2 runs'
 summaries into LLM prompts) and `purge_run()`.
 
+## Hybrid Retrieval (Phase 5 — `core/retrieval.py`)
+
+Sage's Tier-1 article evidence is retrieved by `hybrid_search()`:
+
+- **Sparse leg:** `match_articles` Postgres FTS RPC (Phase 2.3), ranked by
+  `ts_rank`. Pure matches only — no newest-first window fallback inside a
+  fusion leg (`SupabaseManager.match_articles_fts`).
+- **Dense leg (5.1):** the question is embedded through the gateway's
+  EMBEDDING route (Cloudflare BGE, 768 dims) and looked up via
+  `match_article_embeddings` v2, which joins article metadata and applies
+  date/theme bounds **after** a 4x over-fetched ANN scan — an HNSW index with
+  a WHERE filter can under-fill LIMIT (Pillar C gotcha), so the filter never
+  rides the index scan.
+- **RRF fusion (5.2):** `score = sum 1/(rrf_k + rank)` (k=60), deduped by
+  article id; rank-based fusion needs no ts_rank/cosine normalisation.
+- **Temporal awareness (5.3):** `parse_temporal_bounds()` extracts explicit
+  boxes ("last week", "August 2026", "between June and September", "since
+  July", "in 2026") and constrains both legs; caller (UI) bounds intersect
+  with parsed ones. Time-decay re-ranking
+  (`final = rrf * (floor + (1-floor)*exp(-age/halflife))`, gate-tuned
+  floor 0.9 / halflife 180d — a tie-break, not a filter, on a ~6-month archive) applies **only to unbounded queries** — explicit historical
+  questions are never freshness-biased.
+- **Degradation:** each leg fails independently (no embeddings -> sparse-only;
+  FTS missing -> dense-only; both empty -> Sage's Phase 2.3 FTS path ->
+  newest-first window -> local client-side scoring). `hybrid_retrieval_enabled`
+  (get_retrieval_settings()) is the kill switch back to FTS-only.
+- **First appearances (5.4):** `theme_first_seen` (one row per theme,
+  insert-if-absent at ingest in `_save_to_supabase`, backfilled from the
+  archive) replaces the render-time window scan — a block is tagged FIRST
+  APPEARANCE only when its run date is the theme's true archive first-seen
+  date. Offline/pre-migration falls back to the legacy scan.
+- **Gate:** `python -m core.retrieval_eval --gate` — dense baseline vs hybrid
+  on `eval_sets/retrieval_hit_rate.json` (24 questions), Recall@k +
+  p95 latency budget (3s); verdict snapshotted to `app_settings.retrieval_eval_latest`.
+
 ## Caching & Batching
 
 - **LLM calls are batched** where possible (classification/evaluation), and summaries are

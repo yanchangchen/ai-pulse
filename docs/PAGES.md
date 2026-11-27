@@ -64,6 +64,14 @@ Three tabs:
   ~30% of the char budget, with unused budget flowing back to the summaries.
   With no keyword matches the selection degrades to newest-first, so Sage
   always has some article-level grounding.
+- **Hybrid retrieval (Phase 5):** with the real Supabase client and a
+  question, `core/retrieval.hybrid_search()` replaces the keyword-overlap
+  scorer: FTS + pgvector dense legs fused by RRF, temporal bounds parsed from
+  the question, bounded time-decay for unbounded queries. Results arrive
+  pre-ranked (`_rrf_score`) and `_select_articles` preserves that order.
+  Any failure/empty result falls through to the Phase 2.3 FTS path above.
+  First-appearance tags come from the `theme_first_seen` table (true archive
+  dates), not the window scan. Details: [ARCHITECTURE.md — Hybrid Retrieval](ARCHITECTURE.md#hybrid-retrieval-phase-5--coreretrievalpy).
 - **Article citations (Phase 2.2):** each brief carries a `Link:` line
   (sanitised to http(s) via `_safe_link` — scraped URLs are untrusted), and
   the persona prompt instructs Sage to attach those links to article

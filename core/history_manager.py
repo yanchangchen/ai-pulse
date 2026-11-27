@@ -563,11 +563,26 @@ def _save_to_supabase(
                 article_count=article_counts.get(theme, 0)
             )
         
+        # 2.5 Phase 5.4: maintain theme_first_seen at ingest. Insert-if-absent
+        # (ON CONFLICT DO NOTHING) — the earliest archived run wins; skipped
+        # themes (no new articles) never claim a first appearance. Best-effort:
+        # a missing migration degrades Sage to its legacy window scan.
+        for theme, summary in summaries.items():
+            if summary.get("_source") == "gateway:skipped":
+                continue
+            try:
+                supabase.record_theme_first_seen(
+                    theme, date_key, run_id,
+                    summary.get("what_is_happening", ""),
+                )
+            except Exception as e:
+                logger.debug("theme_first_seen maintenance skipped for %s: %s", theme, e)
+
         # 3. Save articles by theme
         for theme, articles in themed_articles.items():
             if articles:
                 supabase.save_articles(run_id, theme, articles)
-        
+
         # 4. Update sync metadata
         supabase.update_sync_metadata("last_sync_time", timestamp)
         supabase.update_sync_metadata("last_run_id", run_id)

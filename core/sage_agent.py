@@ -275,9 +275,9 @@ def _normalise_article(row: Dict, run_date: str = "") -> Dict:
     ``_safe_link`` so only real http(s) URLs flow into the context and the
     UI evidence list (Phase 2.2 citations).
     """
-    published = row.get("published_at") or row.get("published_date") or ""
-    date = published[:10] if published else (run_date or "")
-    return {
+    published = row.get("published_at") or row.get("published_date") or row.get("run_date") or ""
+    date = str(published)[:10] if published else (run_date or "")
+    out = {
         "theme_name": row.get("theme_name", ""),
         "title": row.get("title", ""),
         "summary": row.get("summary", "") or "",
@@ -285,6 +285,11 @@ def _normalise_article(row: Dict, run_date: str = "") -> Dict:
         "link": _safe_link(row.get("link")),
         "_date": date,
     }
+    # Phase 5: carry hybrid-retrieval provenance through to selection/render.
+    for key in ("_rrf_score", "_retrieval", "chunk_text"):
+        if key in row:
+            out[key] = row[key]
+    return out
 
 
 def _fetch_article_candidates(
@@ -310,6 +315,34 @@ def _fetch_article_candidates(
     candidates: List[Dict] = []
 
     if supabase and supabase.is_available():
+        # Phase 5.1/5.2/5.3: hybrid retrieval (dense + FTS, RRF fusion,
+        # temporal bounds + decay) replaces the keyword-overlap scorer when
+        # it returns results. Any failure or empty result falls through to
+        # the Phase 2.3 FTS path below, then to the local window.
+        if question and question.strip():
+            try:
+                from config.settings import get_retrieval_settings
+                from core.supabase_client import SupabaseManager
+                # Only the real client implements the Phase 5 RPCs; stub/mock
+                # clients keep the legacy FTS path below.
+                if (
+                    isinstance(supabase, SupabaseManager)
+                    and get_retrieval_settings().get("hybrid_retrieval_enabled", True)
+                ):
+                    from core.retrieval import hybrid_search
+                    fused = hybrid_search(
+                        question,
+                        supabase=supabase,
+                        theme_filter=theme_filter,
+                        date_from=date_from,
+                        date_to=date_to,
+                        source_filter=source_filter,
+                        top_k=ARTICLE_TOP_K,
+                    )
+                    if fused:
+                        return [_normalise_article(a) for a in fused]
+            except Exception as e:
+                logger.warning("Hybrid retrieval failed, falling back to FTS: %s", e)
         raw = supabase.get_articles_for_context(
             theme_filter=theme_filter,
             date_from=date_from,
@@ -356,6 +389,10 @@ def _select_articles(candidates: List[Dict], question_kws: List[str]) -> List[Di
     """
     if not candidates:
         return []
+    # Phase 5: hybrid results arrive already fused, decayed, and ranked —
+    # re-scoring them by keyword overlap would undo the retrieval ordering.
+    if any("_rrf_score" in a for a in candidates):
+        return candidates[:ARTICLE_TOP_K]
     for a in candidates:
         a["_score"] = score_article_relevance(a, question_kws)
     ranked = sorted(candidates, key=lambda a: (a["_score"], a["_date"]), reverse=True)
@@ -378,7 +415,7 @@ def _render_article_section(articles: List[Dict], budget: int) -> Tuple[str, Lis
     if not articles or budget < ARTICLE_MIN_BLOCK:
         return "", []
 
-    header = "=== ARTICLE EVIDENCE (top keyword matches, newest first) ===\n\n"
+    header = "=== ARTICLE EVIDENCE (ranked matches: hybrid retrieval or keyword fallback) ===\n\n"
     footer = "\n=== END ARTICLE EVIDENCE ==="
     used = len(header) + len(footer)
     blocks: List[str] = []
@@ -613,15 +650,35 @@ def build_wiki_context(
             break
 
     # ------- Annotate first appearances across selected blocks -------
+    # Phase 5.4: with the theme_first_seen table available, a block is a
+    # first appearance only when its run date IS the theme's true archive
+    # first-seen date — not merely the earliest block in this window (the
+    # old scan mislabelled every window's oldest run). Offline / pre-migration
+    # databases keep the legacy window scan.
     selected.sort(key=lambda s: s["run_timestamp"])
-    seen_themes: set = set()
-    for s in selected:
-        theme = s.get("theme_name", "")
-        if theme not in seen_themes:
-            s["_first_appearance"] = True
-            seen_themes.add(theme)
-        else:
-            s["_first_appearance"] = False
+    first_seen_map: Dict[str, Dict] = {}
+    if supabase and supabase.is_available():
+        try:
+            fetched = supabase.get_theme_first_seen()
+            if isinstance(fetched, dict):
+                first_seen_map = fetched
+        except Exception as e:
+            logger.debug("theme_first_seen lookup failed, using window scan: %s", e)
+    if first_seen_map:
+        for s in selected:
+            fs = first_seen_map.get(s.get("theme_name", ""))
+            s["_first_appearance"] = bool(
+                fs and s.get("run_date", "") == str(fs.get("first_seen_date", ""))[:10]
+            )
+    else:
+        seen_themes: set = set()
+        for s in selected:
+            theme = s.get("theme_name", "")
+            if theme not in seen_themes:
+                s["_first_appearance"] = True
+                seen_themes.add(theme)
+            else:
+                s["_first_appearance"] = False
     # Re-render formatted text with the first-appearance tag now set.
     for s in selected:
         is_recent = s["run_date"] in recent_dates
