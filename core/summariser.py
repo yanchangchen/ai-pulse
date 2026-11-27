@@ -100,13 +100,16 @@ async def generate_theme_summary_gateway(
 
     # Rank articles by relevance to the theme, then format.
     from config.settings import (
-        MAX_ARTICLES_PER_SUMMARY,
         QWEN_NUM_CTX,
         CHARS_PER_TOKEN,
         INPUT_BUDGET_FRACTION,
+        get_summariser_settings,
     )
+    # Phase 4.4: budget-aware capacity — rank up to the configurable ceiling
+    # (default 50), then split_articles_for_prompt fills to the char budget.
+    cap = int(get_summariser_settings().get("max_articles_per_summary", 50))
     ranked_articles = _rank_articles_by_relevance(
-        articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
+        articles, theme_name, cap,
     )
     char_budget = int(QWEN_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
     formatted_articles, included_articles = split_articles_for_prompt(
@@ -356,20 +359,24 @@ def split_articles_for_prompt(
 ) -> Tuple[str, List[Dict]]:
     """Format articles for the summarisation prompt and return those included.
 
-    Each article is capped at ~500 chars (title + 300-char summary + source +
-    link).  If `char_budget` is provided, articles are appended in order
-    until the budget is reached — any tail articles are dropped so the
+    Each article is capped at ~500 chars (title + summary truncated to
+    ``article_summary_chars`` (default 300, ``get_summariser_settings()``) +
+    source + link).  If `char_budget` is provided, articles are appended in
+    order until the budget is reached — any tail articles are dropped so the
     joined text stays inside the LLM's input window.
 
     Callers should derive `char_budget` from the primary model's context window
     (see config.settings.CHARS_PER_TOKEN and INPUT_BUDGET_FRACTION).
     """
+    from config.settings import get_summariser_settings
+    max_summary_chars = int(get_summariser_settings().get("article_summary_chars", 300))
+
     formatted: List[str] = []
     included: List[Dict] = []
 
     for i, article in enumerate(articles, 1):
         title = article.get('title', 'Untitled')
-        summary = article.get('summary', '')[:300]  # Limit length
+        summary = article.get('summary', '')[:max_summary_chars]
         source = article.get('source_name', 'Unknown')
         link = article.get('link', '')
 
@@ -430,17 +437,20 @@ def generate_theme_summary(
             note="fewer_than_3_articles",
         )
 
-    # Rank articles by relevance to the theme, then format.  Cap at
-    # MAX_ARTICLES_PER_SUMMARY and then truncate further to stay inside
-    # the LLM's input budget.
+    # Rank articles by relevance to the theme, then format.  Cap at the
+    # configurable ceiling (Phase 4.4) and then truncate further to stay
+    # inside the LLM's input budget.
     from config.settings import (
-        MAX_ARTICLES_PER_SUMMARY,
         QWEN_NUM_CTX,
         CHARS_PER_TOKEN,
         INPUT_BUDGET_FRACTION,
+        get_summariser_settings,
     )
+    # Phase 4.4: budget-aware capacity — rank up to the configurable ceiling
+    # (default 50), then split_articles_for_prompt fills to the char budget.
+    cap = int(get_summariser_settings().get("max_articles_per_summary", 50))
     ranked_articles = _rank_articles_by_relevance(
-        articles, theme_name, MAX_ARTICLES_PER_SUMMARY,
+        articles, theme_name, cap,
     )
     char_budget = int(QWEN_NUM_CTX * CHARS_PER_TOKEN * INPUT_BUDGET_FRACTION)
     formatted_articles, included_articles = split_articles_for_prompt(
@@ -993,7 +1003,8 @@ async def _generate_all_summaries_async(
     except Exception:
         pass
 
-    from config.settings import MAX_ARTICLES_PER_SUMMARY
+    from config.settings import get_summariser_settings
+    cap = int(get_summariser_settings().get("max_articles_per_summary", 50))
 
     for theme in THEME_ORDER:
         articles = themed_articles.get(theme, [])
@@ -1071,7 +1082,7 @@ async def _generate_all_summaries_async(
             processed_hashes = processed_articles.get_processed_hashes(theme)
             processed = [a for a in articles if processed_articles.article_hash(a) in processed_hashes]
             processed = _rank_articles_by_relevance(
-                processed, theme, MAX_ARTICLES_PER_SUMMARY,
+                processed, theme, cap,
             )
             selected = unprocessed + processed[:max(0, 3 - len(unprocessed))]
         else:

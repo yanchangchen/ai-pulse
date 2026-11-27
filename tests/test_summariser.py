@@ -246,7 +246,8 @@ Enterprise adoption is accelerating.
         from core.summariser import generate_theme_summary_gateway
         from core.ai_gateway import AITaskResult
 
-        # Create 15 articles to exceed MAX_ARTICLES_PER_SUMMARY (12)
+        # Create 15 articles and pin the Phase 4.4 ceiling to the legacy 12
+        # so the pool exceeds the cap and a skipped complement exists.
         articles = [
             {"title": f"Article {i}", "summary": f"Summary {i}", "link": f"https://example.com/{i}", "source_name": "Test"}
             for i in range(15)
@@ -269,7 +270,9 @@ Enterprise adoption is accelerating.
         fake_gateway = MagicMock()
         fake_gateway.execute = AsyncMock(return_value=fake_result)
 
-        with patch("core.summariser.get_gateway", return_value=fake_gateway):
+        with patch("core.summariser.get_gateway", return_value=fake_gateway), \
+                patch("config.settings.load_custom_settings",
+                      return_value={"max_articles_per_summary": 12}):
             summary, included = asyncio.run(
                 generate_theme_summary_gateway("Frontier Models & Benchmarks", articles)
             )

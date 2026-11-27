@@ -140,6 +140,34 @@ see the BLOG.md entry for that week. 4.3 below landed 2026-11-27.)*
   - Tests: `tests/test_fair_drain.py` (17 tests: boost on/off, counter local+cloud,
     RPC shape, aged-out diff incl. generation_log-only prev runs, orchestrator
     waiting set).
+- [x] **4.4 Budget-aware capacity (2026-11-27, eval-gated).** Flat
+  `MAX_ARTICLES_PER_SUMMARY = 12` retired from the run pipeline (constant kept for
+  legacy importers); selection ranks to `max_articles_per_summary` (default 50,
+  `get_summariser_settings()`) then `split_articles_for_prompt` fills to the char
+  budget (1.8M chars on Qwen's 1M window — the ceiling binds, not the window).
+  `article_summary_chars` (default 300) controls per-article truncation.
+  - **Gate experiment** (`eval_capacity_gate.py`, controlled same-pool arms
+    on the freshest run, ~272 articles / 5 themes >12): A = legacy 12/300,
+    B = 50/300, C = 50/500. **True coverage (narrative-only): A 38.4% → B 54.9%
+    (+16.5pp); C 56.5%** (+1.6pp over B, within single-run sampling noise at
+    higher token cost → 300 kept). Processed fraction 22% → 81%; input tokens
+    ~1.7× (17k → ~22-26k per arm). Per-fed-article naming rate 93% → 61%:
+    synthesis compression is real; 4.5's per-batch briefs are the remedy. The
+    70% absolute Coverage threshold remains open until 4.5.
+  - **Measurement bug found & fixed:** the first experiment passed full summary
+    dicts into `coverage_judge`, whose join of *all* dict values read the 4.1
+    `skipped_articles` title payload as prose — inflating A to 98% and reversing
+    the gate's apparent direction. Production was unaffected (the evaluator's
+    `_load_summaries_for_run` selects only narrative columns), but
+    `coverage_judge` now joins `_NARRATIVE_SECTION_KEYS` only, with regression
+    tests (`tests/test_coverage_hygiene.py`). Lesson: a recall metric must
+    whitelist prose sections; any metadata payload carrying titles is a leak.
+  - **Environment note:** two experiment runs hit Qwen 180s timeouts followed by
+    Gemini fallbacks hanging 702s / 8329s (DNS `getaddrinfo failed`); the Gemini
+    provider lacks an effective timeout bound — candidate reliability fix,
+    tracked outside this phase.
+  - Tests: `tests/test_capacity.py` (6: defaults, ceiling, override, budget bind,
+    truncation knob ×2) + adapted skip-complement test.
 
 ---
 

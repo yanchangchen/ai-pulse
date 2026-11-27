@@ -4,6 +4,28 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-27 — Phase 4.4: raising the cap, and the metric that lied about it
+
+**Problem**: The summariser hard-capped each theme at 12 articles while the Qwen prompt budget sat at 1.8M chars — 12 blocks use ~0.3% of it. The cap, not the context window, was the sole capacity constraint, and bursty themes accumulated backlog faster than 12/run could drain.
+
+**What happened**:
+
+1. **The cap became a ceiling, not a guillotine.** `max_articles_per_summary` (default 50, via `get_summariser_settings()`) replaces the flat 12 at all four pipeline sites; the existing char-budget fill stays as the secondary guard. Per-article truncation became a knob (`article_summary_chars`, default 300). The on-demand Gemini Deep Dive keeps its own 75-cap.
+
+2. **The gate experiment said "no" — and was wrong.** Controlled same-pool arms (legacy 12 vs cap 50 vs cap 50 + 500-char summaries), judged by the deterministic Coverage judge: arm A scored 98%, arm B 66%. Raising capacity appeared to *destroy* coverage. Suspicious: a 12-article brief cannot mention 248 of 255 pool articles. The leak: `coverage_judge` joined **all** summary-dict values, and since 4.1 the dict carries `skipped_articles` — the backlog payload *with every skipped title*. The judge was reading the backlog list as brief prose. Arm A "covered" 192 articles it was never fed. Production was unaffected (the evaluator loads only narrative columns), but the experiment wasn't.
+
+3. **With narrative-only sections, the gate reversed to a pass.** True coverage: **38.4% → 54.9% (+16.5pp)**; processed fraction 22% → 81%; input tokens ~1.7×. The 500-char truncation arm added +1.6pp — within single-run noise at higher cost, so 300 stays. `coverage_judge` now whitelists narrative sections (`_NARRATIVE_SECTION_KEYS`) with regression tests, so no future caller can repeat the leak.
+
+4. **Honest residuals.** Per-fed-article naming rate drops 93% → 61%: a 250-word brief compresses 50 articles harder than 12. Total named stories still rises (98 → 140), which is what the pool-recall gate measures — but the compression is real, and 4.5's per-batch map-reduce briefs are the designed remedy. The 70% absolute Coverage threshold stays open until then. Also logged: two runs hit Qwen timeouts followed by Gemini fallbacks hanging 12–139 minutes (DNS failures, no effective timeout bound on the Gemini provider) — a reliability fix of its own, later.
+
+*Lesson: before trusting a gate, audit what the metric actually reads. A recall metric that concatenates "all values" of a rich dict will eventually eat metadata — and a backlog payload full of titles is the most flattering metadata imaginable. Whitelist prose; make the leak impossible, not just unlikely.*
+
+**Also shipped**: `tests/test_capacity.py` (6 tests) + `tests/test_coverage_hygiene.py` (3); Future.md's stale Phase 4 budget facts corrected (1.8M chars, not ~59k); ARCHITECTURE/QUALITY_EVALUATION/ROADMAP_HISTORY updated; gate runner tracked as `eval_capacity_gate.py` (re-runnable for 4.5), results in `scratch/eval_4_4_results.json`.
+
+**Result**: Phase 4.4 closed with a passing, audited gate. Next: **4.5 — chunked overflow summarisation**, which closes the remaining coverage gap and gates Phase 6.
+
+---
+
 ## 2026-11-27 — Phase 4.3: the backlog now drains or gets a death certificate
 
 **Problem**: The summariser feeds each theme only unprocessed articles, ranked by keyword relevance and hard-capped at 12. An article that loses the ranking re-competes next run while inside the 14-day fetch window — and otherwise ages out *silently*. Nothing counted how long an article had been waiting, and nothing recorded the ones that never made it. Coverage was observable (4.1) but not fair.

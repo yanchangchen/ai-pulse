@@ -36,7 +36,7 @@ points as gaps instead of the persisted 1.0 placeholder.
 | **Uniqueness Score** | Hybrid Heuristic + LLM | Are summaries distinct across themes/runs? | Jaccard/cosine text overlap filtering; LLM pairwise judge for ambiguous bands. | ≥ 80% |
 | **Grounding Score** | Deterministic | Do "Further Reading" links point to real articles? | Cross-references cited titles/links against the input source set. Reports *Skipped* (not a vacuous 100%) when a run has no persisted citations — requires `supabase_migration_further_reading.sql`. | 100% |
 | **Structural Compliance** | Deterministic | Is the summary properly formatted? | Validates 5 mandatory sections and sentence count bounds (3–7) on prose. Sections absent from a legacy schema are skipped, not failed. | 100% |
-| **Coverage Score** | Deterministic | Did the summary capture key information from all articles? | Source article title/entity token recall across the generated summary. | ≥ 70% |
+| **Coverage Score** | Deterministic | Did the summary capture key information from all articles? | Source article title/entity token recall across the generated summary's **narrative sections only** (`_NARRATIVE_SECTION_KEYS` — metadata such as the 4.1 `skipped_articles` title payload must never count as prose, or the backlog list inflates recall). | ≥ 70% |
 | **Temporal Coherence** | Deterministic | Is the summary updating week-over-week? | Compares active summary against past runs to flag stale text repetition. | ≥ 75% |
 
 ## Sage Faithfulness (chat-time judge, Phase 2 gate)

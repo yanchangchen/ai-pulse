@@ -1502,6 +1502,12 @@ def structural_compliance_judge(
     return round(score, 4), {"passed": checks_passed, "total": checks_total}
 
 
+_NARRATIVE_SECTION_KEYS = (
+    "what_is_happening", "engineering_tradeoffs", "product_impact",
+    "why_it_matters", "what_to_watch", "further_reading",
+)
+
+
 def coverage_judge(
     summaries_by_run: Dict[str, Dict[str, Dict]],
     articles_by_run: Dict[str, List[Dict]],
@@ -1523,7 +1529,12 @@ def coverage_judge(
         all_articles = articles_by_run.get(run_id, [])
         for theme, sections in summaries.items():
             theme_articles = [a for a in all_articles if a.get("theme_name") == theme]
-            full_summary_text = " ".join(str(v) for v in sections.values()).lower()
+            # Narrative prose only: metadata keys (the 4.1 skipped_articles
+            # title payload, counts, generation logs) must never count as
+            # brief text, or the backlog list inflates recall.
+            full_summary_text = " ".join(
+                str(sections[k]) for k in _NARRATIVE_SECTION_KEYS if k in sections
+            ).lower()
             for art in theme_articles:
                 title = art.get("title", "")
                 tokens = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", title)]

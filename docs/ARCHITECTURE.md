@@ -287,6 +287,15 @@ classifier/summariser only for backward compatibility and quota state.
   (title/source/link/hash/last_seen) in history.json + `generation_log`, surfaced by
   the History page's 🍂 expander — the backlog drains or is explicitly recorded,
   never silently lost.
+- **Budget-aware capacity (Phase 4.4):** the flat `MAX_ARTICLES_PER_SUMMARY = 12`
+  is retired from the run pipeline (constant kept for legacy importers).
+  Selection ranks up to `max_articles_per_summary` (default 50, via
+  `get_summariser_settings()`), then `split_articles_for_prompt` fills ranked
+  articles to the char budget (`QWEN_NUM_CTX × 3 × 0.6` = 1.8M chars on the Qwen
+  1M window) — the ceiling, not the context window, is the binding constraint.
+  Per-article summary truncation inside each prompt block is
+  `article_summary_chars` (default 300). The on-demand Gemini Deep Dive path
+  keeps its separate 75-article cap / 45k-char budget.
 - Themes whose article hashes were all seen before are skipped (`gateway:skipped`) —
   summaries are skipped entirely when article content hashes are unchanged
   (`get_articles_hash()` / `_get_existing_article_hashes()`).

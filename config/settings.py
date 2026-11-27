@@ -273,6 +273,9 @@ def get_qwen_context_window(model: str = None) -> int:
 
 # Context budget used when formatting prompts for the primary model.
 QWEN_NUM_CTX: int = get_qwen_context_window()
+# Legacy flat cap (pre-4.4). The run pipeline now reads the budget-aware
+# ceiling from get_summariser_settings()["max_articles_per_summary"]; this
+# constant remains only for external/legacy importers.
 MAX_ARTICLES_PER_SUMMARY: int = 12
 MAX_ARTICLES_PER_GEMINI_SUMMARY: int = 75
 # Rough chars-per-token ratio.  Used to budget the input side of the context window.
@@ -400,6 +403,12 @@ def get_summariser_settings() -> dict:
         # Phase 4.3 fair drain: relevance-score boost per run an article stays
         # classified-but-unsummarised (times_seen). 0 disables the aging boost.
         "aging_boost_per_run": 2.0,
+        # Phase 4.4 budget-aware capacity: ceiling on ranked articles fed to
+        # split_articles_for_prompt, which then fills to the char budget.
+        # Replaces the flat MAX_ARTICLES_PER_SUMMARY = 12 in the run pipeline.
+        "max_articles_per_summary": 50,
+        # Per-article summary truncation inside the prompt block (chars).
+        "article_summary_chars": 300,
     }
     defaults.update(load_custom_settings())
     return defaults
