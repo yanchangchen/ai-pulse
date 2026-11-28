@@ -13,7 +13,11 @@ persists in `st.session_state["summariser_mode"]`.
 
 ## `app.py` — entry point
 
-Entry point, ingestion state machine, Thematic Pulse dashboard.
+Entry point, ingestion state machine, Thematic Pulse dashboard. The header
+carries a plain-language "what AI Pulse does" intro; a "🧭 New to AI Pulse?
+Start here" expander (visible during first ingestion too) explains the daily
+pipeline and links every page in three groups; each Intelligence Preview
+expander links to Deep Dive and Sage.
 
 ## `pages/1_Overview.py`
 

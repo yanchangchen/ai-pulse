@@ -123,6 +123,12 @@ def main() -> None:
     with col_h1:
         st.title("⚡ AI Pulse")
         st.markdown("### High-Signal AI Industry Intelligence Engine")
+        st.markdown(
+            "AI Pulse reads **30+ engineering blogs and newsletters** every day, sorts them into "
+            "**8 strategic themes**, writes daily intelligence briefs, and **remembers everything** — "
+            "so you can ask **Sage** what changed over weeks or months and get answers with "
+            "clickable citations."
+        )
         from core.design_system import apply_design_system, format_display_timestamp
         last_time = get_last_run_time()
         if last_time:
@@ -143,6 +149,33 @@ def main() -> None:
             st.rerun()
 
     st.divider()
+
+    # Orientation + clickable map of the app (also shows during first ingestion)
+    with st.expander("🧭 New to AI Pulse? Start here", expanded=False):
+        st.markdown(
+            "The pipeline runs daily: **fetch → classify → summarise → store** into a three-tier "
+            "memory (articles → daily briefs → monthly rollups). Each question then triggers "
+            "**retrieve → pack context → cited answer → faithfulness grade**. For the full visual "
+            "tour, read the Dev Blog entry *\"How Sage remembers: from news feeds to cited answers\"*."
+        )
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("**📊 Today's intelligence**")
+            st.page_link("pages/1_Overview.py", label="Overview — theme briefs at a glance", icon="📋")
+            st.page_link("pages/2_Deep_Dive.py", label="Deep Dive — full briefs + articles", icon="🔍")
+            st.page_link("pages/3_Keyword_Analysis.py", label="Keyword Analysis — term momentum", icon="🔑")
+            st.page_link("pages/6_Trend_Analytics.py", label="Trend Analytics — cross-run momentum", icon="📈")
+            st.page_link("pages/4_Sources.py", label="Sources — the 30+ feeds", icon="📰")
+        with c2:
+            st.markdown("**🔮 Ask & remember**")
+            st.page_link("pages/11_Sage.py", label="Sage — ask questions, get cited answers", icon="🔮")
+            st.page_link("pages/5_History.py", label="Memory Wiki — timeline, rollups, compare", icon="🧠")
+        with c3:
+            st.markdown("**🔬 Quality & project**")
+            st.page_link("pages/7_Quality_Evaluation.py", label="Quality Evaluation — judges & metrics", icon="🔬")
+            st.page_link("pages/9_Eval_Sets.py", label="Eval Sets — question sets & gate verdicts", icon="🧪")
+            st.page_link("pages/8_Feedback_&_Roadmap.py", label="Feedback & Roadmap", icon="💡")
+            st.page_link("pages/10_Blog.py", label="Dev Blog — journal & visual tours", icon="📓")
 
     # Main content
     if not st.session_state.data_loaded:
@@ -219,6 +252,9 @@ def main() -> None:
             with st.expander(f"📌 {theme} ({len(articles)} articles)"):
                 st.markdown(f"**The Signal:** {sanitize_summary_html(summary.get('what_is_happening', ''))}")
                 st.markdown(f"**Significance:** {summary.get('why_it_matters', '')}")
+                lc1, lc2 = st.columns(2)
+                lc1.page_link("pages/2_Deep_Dive.py", label="Full brief & articles → Deep Dive", icon="🔍")
+                lc2.page_link("pages/11_Sage.py", label="Ask Sage about this theme", icon="🔮")
 
 
 if __name__ == "__main__":
