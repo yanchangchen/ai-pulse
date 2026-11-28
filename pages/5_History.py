@@ -505,6 +505,16 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
                 )
 
             stats = wiki_ctx if isinstance(wiki_ctx, dict) else {}
+            rollup_note = ""
+            if stats.get("tier3_block_count"):
+                _months = stats.get("tier3_months") or []
+                _mrange = (
+                    f"{_months[0]}→{_months[-1]}" if len(_months) > 1
+                    else (_months[0] if _months else "")
+                )
+                rollup_note = (
+                    f" · 🗓️ **{stats['tier3_block_count']}** monthly rollups ({_mrange})"
+                )
             if stats.get("date_count"):
                 article_note = (
                     f" · **{stats['article_count']}** article evidence"
@@ -514,8 +524,11 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
                 st.caption(
                     f"📚 Grounded in **{stats['run_count']}** summaries across "
                     f"**{stats['date_count']}** dates ({stats['date_range']})"
-                    f"{article_note}"
+                    f"{article_note}{rollup_note}"
                 )
+            elif stats.get("tier3_block_count"):
+                # Rollup-only context (Tier-2 window empty, Tier-3 reached).
+                st.caption(f"📚 Grounded in{rollup_note}")
             elif stats.get("article_count"):
                 # No theme summaries matched, but article evidence did.
                 st.caption(

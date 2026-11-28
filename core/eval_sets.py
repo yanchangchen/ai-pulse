@@ -97,6 +97,29 @@ def paginate(items: List, page: int, page_size: int = DEFAULT_PAGE_SIZE) -> Tupl
     return items[start:start + page_size], page, total_pages
 
 
+def result_score(result: Optional[Dict]) -> Optional[float]:
+    """Per-question score across set kinds: ``recall`` (retrieval sets) or
+    ``score`` (faithfulness sets, Phase 6.2). None when absent/non-numeric."""
+    if not isinstance(result, dict):
+        return None
+    for key in ("recall", "score"):
+        v = result.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    return None
+
+
+def summary_mean(results: Optional[Dict]) -> Optional[float]:
+    """Run-level mean across set kinds: ``mean_recall`` or ``mean_score``."""
+    if not isinstance(results, dict):
+        return None
+    for key in ("mean_recall", "mean_score"):
+        v = results.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    return None
+
+
 def get_latest_results(eval_set: Dict) -> Optional[Dict]:
     """Best-effort fetch of the latest run snapshot from ``app_settings``.
 

@@ -105,3 +105,33 @@ def test_retrieval_eval_recall_carries_id():
     r = _recall_for(q, [{"chunk_text": "Alpha only"}], 10)
     assert r["id"] == "q01"
     assert r["recall"] == 0.5 and r["hits"] == 1 and r["expected"] == 2
+
+
+def test_result_score_across_set_kinds():
+    from core.eval_sets import result_score
+
+    assert result_score({"recall": 0.83}) == 0.83
+    assert result_score({"score": 0.91}) == 0.91
+    assert result_score({"recall": None, "score": 0.5}) == 0.5
+    assert result_score({}) is None
+    assert result_score(None) is None
+    assert result_score({"score": "bad"}) is None
+
+
+def test_summary_mean_across_set_kinds():
+    from core.eval_sets import summary_mean
+
+    assert summary_mean({"mean_recall": 0.875}) == 0.875
+    assert summary_mean({"mean_score": 0.9}) == 0.9
+    assert summary_mean({}) is None
+    assert summary_mean(None) is None
+
+
+def test_sage_macro_set_discoverable():
+    from core.eval_sets import load_eval_set
+
+    s = load_eval_set("sage-macro-faithfulness")
+    assert s is not None
+    assert s["kind"] == "faithfulness"
+    assert s["results_key"] == "sage_eval_latest"
+    assert len(s["questions"]) == 8

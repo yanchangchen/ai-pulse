@@ -254,7 +254,7 @@ class TestBuildWikiContext:
         assert isinstance(result, dict)
         assert set(result.keys()) == {
             "context", "run_count", "date_count", "date_range", "article_count",
-            "articles",
+            "articles", "tier3_block_count", "tier3_months",
         }
         assert isinstance(result["context"], str)
         assert isinstance(result["run_count"], int)
@@ -262,6 +262,8 @@ class TestBuildWikiContext:
         assert isinstance(result["date_range"], str)
         assert isinstance(result["article_count"], int)
         assert isinstance(result["articles"], list)
+        assert isinstance(result["tier3_block_count"], int)
+        assert isinstance(result["tier3_months"], list)
 
     def test_all_dates_in_window_are_represented(self):
         """With many dates and large blocks, every date must still appear in
@@ -928,3 +930,307 @@ class TestPersonaConstants:
     def test_intro_exists(self):
         assert len(SAGE_INTRO) > 20
         assert "Sage" in SAGE_INTRO
+
+    def test_persona_mentions_month_rollup_blocks(self):
+        assert "Month YYYY-MM" in SAGE_SYSTEM_PROMPT
+        assert "macro rollup" in SAGE_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Tier-3 monthly rollups (Phase 6.2)
+# ---------------------------------------------------------------------------
+
+def _t3_summary(date, theme="Theme A"):
+    return {
+        "run_id": f"r-{date}-{theme}",
+        "run_timestamp": f"{date} 10:00:00",
+        "run_date": date,
+        "theme_name": theme,
+        "what_is_happening": "Something happened.",
+        "why_it_matters": "It matters.",
+        "what_to_watch": "Watch.",
+        "article_count": 3,
+    }
+
+
+def _t3_rollup(month, theme="Theme A", milestones=None):
+    return {
+        "year_month": month,
+        "theme_name": theme,
+        "macro_summary": f"Macro arc for {month}. " * 10,
+        "key_milestones": milestones if milestones is not None else [
+            {"date": f"{month}-03", "milestone": f"Milestone in {month}",
+             "source_link": "https://example.com/x"},
+        ],
+        "source_run_count": 20,
+        "generation_source": "qwen:qwen3.8-flash",
+        "updated_at": "2026-11-28T00:00:00+00:00",
+    }
+
+
+def _t3_supabase(summaries, rollups, first_seen=None):
+    """spec=SupabaseManager passes the isinstance guard (real-client path)."""
+    from core.supabase_client import SupabaseManager
+    sb = MagicMock(spec=SupabaseManager)
+    sb.is_available.return_value = True
+    sb.get_summaries_across_runs.return_value = summaries
+    sb.get_monthly_syntheses.return_value = rollups
+    sb.get_articles_for_context.return_value = []
+    sb.get_theme_first_seen.return_value = first_seen or {}
+    return sb
+
+
+def _t3_standard_summaries():
+    # 6 dates across 3 months; recent-2 = Aug 10/20.
+    return [
+        _t3_summary("2025-06-10"), _t3_summary("2025-06-20"),
+        _t3_summary("2025-07-10"), _t3_summary("2025-07-20"),
+        _t3_summary("2025-08-10"), _t3_summary("2025-08-20"),
+    ]
+
+
+class TestTier3Context:
+    @pytest.fixture(autouse=True)
+    def _offline_hybrid(self):
+        """spec=SupabaseManager passes the isinstance guard, so without this
+        patch the real hybrid leg would embed the question over the network.
+        Empty result -> FTS fallback (mocked []) -> local history={} -> no
+        articles, fully offline."""
+        with patch("core.retrieval.hybrid_search", return_value=[]):
+            yield
+
+    def test_kill_switch_restores_legacy_context(self):
+        from config.settings import _SAGE_DEFAULTS
+        summaries = _t3_standard_summaries()
+        rollups = [_t3_rollup("2025-06"), _t3_rollup("2025-07")]
+        sb = _t3_supabase(summaries, rollups)
+        plain = MagicMock()
+        plain.is_available.return_value = True
+        plain.get_summaries_across_runs.return_value = summaries
+        plain.get_articles_for_context.return_value = []
+        plain.get_theme_first_seen.return_value = {}
+        with patch("config.settings.get_sage_settings",
+                   return_value={**_SAGE_DEFAULTS, "sage_tier3_enabled": False}):
+            disabled = build_wiki_context(sb, "anything", history={})
+        legacy = build_wiki_context(plain, "anything", history={})
+        assert disabled["context"] == legacy["context"]
+        sb.get_monthly_syntheses.assert_not_called()
+
+    def test_plain_magicmock_never_fetches_rollups(self):
+        plain = MagicMock()
+        plain.is_available.return_value = True
+        plain.get_summaries_across_runs.return_value = _t3_standard_summaries()
+        plain.get_articles_for_context.return_value = []
+        plain.get_theme_first_seen.return_value = {}
+        result = build_wiki_context(plain, "anything", history={})
+        plain.get_monthly_syntheses.assert_not_called()
+        assert result["tier3_block_count"] == 0
+
+    def test_completed_months_render_rollup_blocks(self):
+        sb = _t3_supabase(_t3_standard_summaries(),
+                          [_t3_rollup("2025-06"), _t3_rollup("2025-07")])
+        result = build_wiki_context(sb, "anything", history={})
+        ctx = result["context"]
+        assert "(macro rollup," in ctx
+        assert "Month 2025-06" in ctx and "Month 2025-07" in ctx
+        # Replaced months lose their per-date blocks; recent-2 stay full.
+        assert "Run 2025-06-10" not in ctx
+        assert "Run 2025-07-10" not in ctx
+        assert ctx.count("Significance:") == 2
+        assert result["tier3_months"] == ["2025-06", "2025-07"]
+        assert result["tier3_block_count"] == 2
+
+    def test_current_month_stays_tier2(self):
+        from datetime import datetime, timezone
+        summaries = [
+            _t3_summary("2025-07-10"), _t3_summary("2025-07-20"),
+            _t3_summary("2025-08-10"), _t3_summary("2025-08-20"),
+        ]
+        sb = _t3_supabase(summaries, [_t3_rollup("2025-07"), _t3_rollup("2025-08")])
+        dt = MagicMock()
+        dt.now.return_value = datetime(2025, 8, 15, tzinfo=timezone.utc)
+        with patch("core.sage_agent.datetime", dt):
+            result = build_wiki_context(sb, "anything", history={})
+        assert "Month 2025-07" in result["context"]
+        assert "Month 2025-08" not in result["context"]
+
+    def test_single_month_window_unchanged(self):
+        summaries = [_t3_summary(f"2025-07-{d:02d}") for d in (5, 10, 15, 20)]
+        sb = _t3_supabase(summaries, [_t3_rollup("2025-07")])
+        result = build_wiki_context(sb, "anything", history={})
+        assert "(macro rollup," not in result["context"]
+        assert ", condensed)" in result["context"]
+        assert result["tier3_block_count"] == 0
+
+    def test_full_archive_truncated_window_still_activates(self):
+        """6.2 gate regression: a Full Archive Tier-2 fetch truncated by
+        `limit` to ONE recent month must not disable Tier-3 — extending
+        that reach is the whole point. Eligibility comes from the rollup
+        table, not the fetched window's month span."""
+        summaries = [_t3_summary("2025-11-10"), _t3_summary("2025-11-20")]
+        rollups = [_t3_rollup(m) for m in
+                   ("2025-05", "2025-06", "2025-07", "2025-08", "2025-09", "2025-10")]
+        sb = _t3_supabase(summaries, rollups)
+        result = build_wiki_context(sb, "anything", history={})
+        assert result["tier3_months"] == [
+            "2025-05", "2025-06", "2025-07", "2025-08", "2025-09", "2025-10",
+        ]
+        # The recent month keeps its full Tier-2 detail.
+        assert result["context"].count("Significance:") == 2
+
+    def test_month_without_rollups_keeps_condensed(self):
+        sb = _t3_supabase(_t3_standard_summaries(), [_t3_rollup("2025-06")])
+        result = build_wiki_context(sb, "anything", history={})
+        assert "Month 2025-06" in result["context"]
+        assert "Run 2025-07-10" in result["context"]
+        assert ", condensed)" in result["context"]
+
+    def test_recent_dates_exclude_their_month(self):
+        summaries = [
+            _t3_summary("2025-06-10"), _t3_summary("2025-06-20"),
+            _t3_summary("2025-07-10"), _t3_summary("2025-07-20"),
+        ]
+        sb = _t3_supabase(summaries, [_t3_rollup("2025-06"), _t3_rollup("2025-07")])
+        result = build_wiki_context(sb, "anything", history={})
+        # Recent-2 = July 10/20 -> July keeps full Tier-2 detail.
+        assert "Month 2025-06" in result["context"]
+        assert "Month 2025-07" not in result["context"]
+        assert "Run 2025-07-10" in result["context"]
+
+    def test_partial_coverage_month_stays_condensed(self):
+        summaries = [
+            _t3_summary("2025-06-20"), _t3_summary("2025-06-25"),
+            _t3_summary("2025-07-05"), _t3_summary("2025-08-10"),
+            _t3_summary("2025-08-20"),
+        ]
+        sb = _t3_supabase(summaries, [_t3_rollup("2025-06"), _t3_rollup("2025-07")])
+        result = build_wiki_context(
+            sb, "anything", date_from="2025-06-15", date_to="2025-08-31", history={},
+        )
+        # June is only partially inside the window -> not eligible.
+        assert "Month 2025-06" not in result["context"]
+        assert "Run 2025-06-20" in result["context"]
+        assert "Month 2025-07" in result["context"]
+
+    def test_question_bounds_scope_tier2_fetch(self):
+        sb = _t3_supabase(_t3_standard_summaries(), [_t3_rollup("2025-06")])
+        build_wiki_context(sb, "What happened in July 2025?", history={})
+        kwargs = sb.get_summaries_across_runs.call_args.kwargs
+        assert kwargs["date_from"] == "2025-07-01"
+        assert kwargs["date_to"] == "2025-07-31"
+
+    def test_theme_filter_applied_client_side(self):
+        summaries = _t3_standard_summaries() + [
+            _t3_summary(d, theme="Theme B") for d in ("2025-06-10", "2025-08-20")
+        ]
+        rollups = [_t3_rollup("2025-06", theme=t) for t in ("Theme A", "Theme B")]
+        sb = _t3_supabase(summaries, rollups)
+        result = build_wiki_context(sb, "anything", theme_filter="Theme A", history={})
+        assert "[Theme A] · Month 2025-06" in result["context"]
+        assert "[Theme B] · Month" not in result["context"]
+
+    def test_source_filter_disables_tier3(self):
+        sb = _t3_supabase(_t3_standard_summaries(), [_t3_rollup("2025-06")])
+        result = build_wiki_context(sb, "anything", source_filter="Some Source", history={})
+        sb.get_monthly_syntheses.assert_not_called()
+        assert result["tier3_block_count"] == 0
+
+    def test_milestone_query_drives_hybrid_only(self):
+        sb = _t3_supabase(_t3_standard_summaries(),
+                          [_t3_rollup("2025-06"), _t3_rollup("2025-07")])
+        question = "How did things evolve?"
+        with patch("core.retrieval.hybrid_search", return_value=[]) as hs, \
+             patch("config.settings.get_retrieval_settings",
+                   return_value={"hybrid_retrieval_enabled": True}):
+            build_wiki_context(sb, question, history={})
+        hybrid_query = hs.call_args.args[0]
+        assert hybrid_query.startswith(question)
+        assert "Related milestone evidence:" in hybrid_query
+        # FTS fallback keeps the raw question.
+        assert sb.get_articles_for_context.call_args.kwargs["query"] == question
+
+    def test_milestone_query_strips_temporal_tokens(self):
+        milestones = [{"date": "2025-06-03",
+                       "milestone": "Launched in June 2025 on 2025-06-03",
+                       "source_link": None}]
+        sb = _t3_supabase(_t3_standard_summaries(),
+                          [_t3_rollup("2025-06", milestones=milestones),
+                           _t3_rollup("2025-07", milestones=milestones)])
+        with patch("core.retrieval.hybrid_search", return_value=[]) as hs, \
+             patch("config.settings.get_retrieval_settings",
+                   return_value={"hybrid_retrieval_enabled": True}):
+            build_wiki_context(sb, "evolution?", history={})
+        tail = hs.call_args.args[0].split("Related milestone evidence:", 1)[1]
+        assert "2025" not in tail
+
+    def test_unsafe_milestone_link_dropped(self):
+        milestones = [{"date": "2025-06-03", "milestone": "Bad link",
+                       "source_link": "javascript:alert(1)"}]
+        sb = _t3_supabase(_t3_standard_summaries(),
+                          [_t3_rollup("2025-06", milestones=milestones)])
+        result = build_wiki_context(sb, "anything", history={})
+        assert "javascript:" not in result["context"]
+
+    def test_stats_and_chronological_merge(self):
+        sb = _t3_supabase(_t3_standard_summaries(),
+                          [_t3_rollup("2025-06"), _t3_rollup("2025-07")])
+        result = build_wiki_context(sb, "anything", history={})
+        ctx = result["context"]
+        assert result["tier3_block_count"] >= 2
+        assert result["tier3_months"] == sorted(result["tier3_months"])
+        assert ctx.index("Month 2025-06") < ctx.index("Run 2025-08-10")
+        assert "monthly rollups" in ctx  # metadata clause
+
+    def test_none_rollups_degrade_to_legacy(self):
+        sb = _t3_supabase(_t3_standard_summaries(), None)
+        result = build_wiki_context(sb, "anything", history={})
+        assert result["tier3_block_count"] == 0
+        assert ", condensed)" in result["context"]
+
+    def test_first_appearance_tag_on_month_block(self):
+        sb = _t3_supabase(
+            _t3_standard_summaries(),
+            [_t3_rollup("2025-06"), _t3_rollup("2025-07")],
+            first_seen={"Theme A": {"first_seen_date": "2025-06-03"}},
+        )
+        result = build_wiki_context(sb, "anything", history={})
+        assert "[Theme A] · Month 2025-06 [FIRST APPEARANCE]" in result["context"]
+        assert "Month 2025-07 [FIRST APPEARANCE]" not in result["context"]
+
+    def test_rollup_only_context_when_no_summaries(self):
+        sb = _t3_supabase(None, [_t3_rollup("2025-06"), _t3_rollup("2025-07")])
+        result = build_wiki_context(sb, "anything", history={})
+        assert "=== WIKI CONTEXT" in result["context"]
+        assert "Month 2025-06" in result["context"]
+        assert result["run_count"] == 0
+        assert result["tier3_block_count"] == 2
+
+    def test_coverage_guarantee_one_block_per_month(self):
+        summaries = [
+            _t3_summary("2025-06-10"), _t3_summary("2025-07-10"),
+            _t3_summary("2025-09-10"), _t3_summary("2025-09-20"),
+        ]
+        rollups = [_t3_rollup(m) for m in ("2025-06", "2025-07", "2025-08")]
+        sb = _t3_supabase(summaries, rollups)
+        result = build_wiki_context(sb, "anything", history={}, max_chars=12_000)
+        for m in ("2025-06", "2025-07", "2025-08"):
+            assert f"Month {m}" in result["context"]
+
+    def test_tight_budget_caps_blocks_and_keeps_condensed(self):
+        # July has no rollup -> legacy older dates remain -> Tier-3 gets
+        # only its share (0.6) of the older budget, not the whole of it.
+        sb = _t3_supabase(_t3_standard_summaries(), [_t3_rollup("2025-06")])
+        result = build_wiki_context(sb, "anything", history={}, max_chars=2_000)
+        assert result["tier3_block_count"] <= 1
+        # Budget-starved Tier-3 must not silently drop Tier-2 content.
+        assert "Run 2025-07-10" in result["context"]
+
+
+def test_sage_settings_merge_key_filtered():
+    from config.settings import get_sage_settings
+    with patch("config.settings.load_custom_settings",
+               return_value={"sage_tier3_enabled": False, "unrelated_key": 1}):
+        settings = get_sage_settings()
+    assert settings["sage_tier3_enabled"] is False
+    assert settings["sage_tier3_budget_share"] == 0.6
+    assert "unrelated_key" not in settings

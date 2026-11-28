@@ -36,7 +36,8 @@ Three tabs:
   routed through the Model Gateway (`sage_chat` policy: Qwen Cloud primary, Gemini
   fallbacks, per-model health tracking). Each reply is captioned with the engine
   provenance (provider/model, latency, fallback flag) and the grounding stats
-  (summaries/dates plus article-evidence count).
+  (summaries/dates plus article-evidence count, and — Phase 6.2 — "🗓️ N monthly
+  rollups (range)" when Tier-3 month blocks grounded the answer).
 - **📖 Memory Timeline** — run-level caption ("🆕 N new unprocessed articles this
   run · ✅ M summarised · ⏳ K waiting", from `compute_run_processing_stats()`);
   per-theme cards/expanders always show "N of M reflected · K left unprocessed"
@@ -57,6 +58,13 @@ Three tabs:
   routes the fully-formed prompt (persona + wiki context + conversation) through
   the Model Gateway — no deterministic fallback, so total engine failure surfaces
   as a friendly notice string (quota exhaustion gets a dedicated 429 notice).
+- **Tier-aware assembly (Phase 6.2):** older completed months with
+  `monthly_syntheses` rows render as Tier-3 macro rollup blocks (prose + dated
+  milestones with real links) instead of condensed per-date blocks; the current
+  month and the recent-2-dates full tier stay Tier-2. The hybrid article leg gets
+  a milestone-biased query (the drill-down); the grounding caption appends
+  "🗓️ N monthly rollups (range)". Kill switch `sage_tier3_enabled`
+  (`get_sage_settings()`); details in docs/ARCHITECTURE.md.
 - **Tier-1 article evidence (Phases 2.1/2.3):** alongside the summary narrative,
   articles are fetched via `SupabaseManager.get_articles_for_context()` — with
   the question passed as `query`, keyword matching runs in Postgres FTS (the
@@ -139,9 +147,14 @@ eval sets).
   retrieval sets, `answer` for QA-style sets), the `target_title` provenance article,
   notes, and the latest per-question score when a run snapshot exists.
 - Latest run summary comes from `app_settings` via the set's `results_key`
-  (retrieval set → `retrieval_eval_latest`, written by `python -m core.retrieval_eval`,
-  which now snapshots `set_id`, `ran_at`, and `per_question` scores). Offline or
-  never-run sets degrade gracefully to questions without scores.
+  (retrieval set → `retrieval_eval_latest`, written by `python -m core.retrieval_eval`;
+  Sage macro-faithfulness set → `sage_eval_latest`, written by
+  `python -m core.sage_eval --gate`). Snapshots carry `set_id`, `ran_at`, and
+  `per_question` scores. Score rendering is kind-agnostic (`result_score` /
+  `summary_mean` in `core/eval_sets.py`): recall for retrieval sets, faithfulness
+  score + context chars + latency (+ legacy-arm comparison) for the Phase 6.2 set;
+  a ✅/❌ gate-verdict caption appears when the snapshot carries `gate_passed`.
+  Offline or never-run sets degrade gracefully to questions without scores.
 
 ## `pages/10_Blog.py`
 

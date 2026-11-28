@@ -561,3 +561,29 @@ def get_monthly_synthesis_settings() -> dict:
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Sage tier-aware assembly (Phase 6.2 — Tier-3 consumption)
+# ---------------------------------------------------------------------------
+_SAGE_DEFAULTS = {
+    # Kill switch: False restores byte-identical pre-6.2 assembly (no rollup
+    # fetch, no milestone-biased query, no question-temporal Tier-2 scoping).
+    "sage_tier3_enabled": True,
+    "sage_tier3_block_char_limit": 1200,   # macro prose ceiling per month block
+    "sage_tier3_milestones_per_block": 3,  # rendered milestones per block
+    "sage_tier3_max_blocks_per_month": 2,  # relevance-fill cap per month
+    "sage_tier3_budget_share": 0.6,        # Tier-3 share of the older-tier budget
+    "sage_tier3_query_rollups": 3,         # top-N rollups feeding the biased query
+    "sage_tier3_query_char_limit": 600,    # cap on the appended milestone tail
+}
+
+
+def get_sage_settings() -> dict:
+    """Return Sage assembly settings, merging defaults with custom_settings.json."""
+    custom = load_custom_settings()
+    merged = dict(_SAGE_DEFAULTS)
+    for key in _SAGE_DEFAULTS:
+        if key in custom:
+            merged[key] = custom[key]
+    return merged
+
+

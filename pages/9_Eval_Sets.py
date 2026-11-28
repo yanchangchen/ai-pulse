@@ -15,6 +15,8 @@ from core.eval_sets import (
     discover_eval_sets,
     get_latest_results,
     paginate,
+    result_score,
+    summary_mean,
 )
 
 # Page configuration
@@ -44,9 +46,9 @@ def _render_question(idx: int, q: dict, result: dict) -> None:
         with head_col:
             st.markdown(f"**Q{idx}. {q.get('question', '')}**")
         with score_col:
-            recall = (result or {}).get("recall")
-            if recall is not None:
-                pct = recall * 100
+            score = result_score(result)
+            if score is not None:
+                pct = score * 100
                 icon = "🟢" if pct >= 99 else ("🟡" if pct >= 50 else "🔴")
                 st.markdown(f"{icon} **{pct:.0f}%**")
             elif result:
@@ -68,6 +70,19 @@ def _render_question(idx: int, q: dict, result: dict) -> None:
                 f"Latest run: {result.get('hits', 0)}/{result.get('expected', 0)} "
                 f"keywords found in top-{q.get('k', 10)} retrieved chunks"
             )
+        elif result and result.get("score") is not None:
+            claims = result.get("unsupported_claims") or []
+            claims_note = f" · {len(claims)} unsupported claims" if claims else ""
+            st.caption(
+                f"Latest run: faithfulness {result['score']:.2f} · "
+                f"{result.get('context_chars', 0):,} context chars · "
+                f"{result.get('latency_ms', 0):.0f}ms{claims_note}"
+            )
+            if result.get("legacy_score") is not None:
+                st.caption(
+                    f"Legacy arm: {result['legacy_score']:.2f} · "
+                    f"{result.get('legacy_context_chars', 0):,} chars"
+                )
 
 
 def main() -> None:
@@ -104,16 +119,19 @@ def main() -> None:
     m1.metric("Questions", len(questions))
     m2.metric("Metric", eval_set.get("metric", "—"))
     m3.metric("Created", eval_set.get("created", "—"))
-    mean_recall = results.get("mean_recall")
+    mean = summary_mean(results)
     m4.metric(
         "Latest mean score",
-        f"{mean_recall:.3f}" if isinstance(mean_recall, (int, float)) else "no run yet",
+        f"{mean:.3f}" if mean is not None else "no run yet",
     )
     if results.get("ran_at"):
         st.caption(
             f"🕒 Latest run: {results['ran_at']} · "
             f"{results.get('n_scored', 0)}/{results.get('n_questions', 0)} questions scored"
         )
+    if "gate_passed" in results:
+        icon = "✅" if results["gate_passed"] else "❌"
+        st.caption(f"{icon} Gate verdict: {'PASSED' if results['gate_passed'] else 'NOT PASSED'}")
     if eval_set.get("runner"):
         st.caption(f"▶️ Run this eval: `{eval_set['runner']}`")
 

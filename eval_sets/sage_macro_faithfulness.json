@@ -1,0 +1,60 @@
+{
+  "id": "sage-macro-faithfulness",
+  "name": "Sage Macro Faithfulness (Phase 6.2)",
+  "description": "Multi-month macro questions gating tier-aware Sage assembly (Phase 6.2). Two arms (legacy Tier-2-only vs Tier-3 rollups) answer each question through the real gateway; the Phase 2 faithfulness judge scores each answer against its own arm's assembled context. Gate: faithfulness no-regression (eps 0.02), >=30% reduction in context chars per covered month, and >=75% expected-month coverage in the Tier-3 arm (guards against high-scoring 'no data' refusals). Curated 2026-11-28 against the live monthly_syntheses archive (2026-05 -> 2026-11; AI Security & Trust and AI-Assisted Software Engineering start 2026-06).",
+  "kind": "faithfulness",
+  "metric": "Faithfulness (0-1)",
+  "created": "2026-11-28",
+  "runner": "python -m core.sage_eval --gate",
+  "results_key": "sage_eval_latest",
+  "questions": [
+    {
+      "id": "m01",
+      "question": "How did frontier model releases evolve between May and October 2026?",
+      "expected_months": ["2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"],
+      "notes": "Frontier Models & Benchmarks arc: Gemini 3.5/Spark at I/O, Opus 4.8 honesty training, on-device MoE releases."
+    },
+    {
+      "id": "m02",
+      "question": "Trace the arc of agentic coding tools between June and September 2026.",
+      "expected_months": ["2026-06", "2026-07", "2026-08", "2026-09"],
+      "notes": "Agentic Systems & DevTools; uses the parsed 'between X and Y' pattern. ('from X through Y' would hit the '<month> <year>' fallback and bound to September only — a parser limitation, not an assembly property.)"
+    },
+    {
+      "id": "m03",
+      "question": "What major AI governance and policy shifts occurred since May 2026?",
+      "expected_months": ["2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"],
+      "notes": "Governance, Safety & Policy; exercises the 'since <month>' temporal bound (APRA directive, Illinois auditing law, encyclical)."
+    },
+    {
+      "id": "m04",
+      "question": "How did enterprise AI adoption and ROI discussions change between July and October 2026?",
+      "expected_months": ["2026-07", "2026-08", "2026-09", "2026-10"],
+      "notes": "Enterprise Strategy & ROI; 'between X and Y' parsed bound narrows both tiers."
+    },
+    {
+      "id": "m05",
+      "question": "Compare how hardware and compute constraints evolved between May and November 2026.",
+      "expected_months": ["2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"],
+      "notes": "Hardware, Compute & LLMOps; November is the current month (Tier-2 recent detail), completed months via rollups."
+    },
+    {
+      "id": "m06",
+      "question": "What AI security threats and defenses emerged between June and October 2026?",
+      "expected_months": ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"],
+      "notes": "AI Security & Trust (theme starts 2026-06)."
+    },
+    {
+      "id": "m07",
+      "question": "How did AI-assisted software engineering practices shift across the whole archive?",
+      "expected_months": ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"],
+      "notes": "AI-Assisted Software Engineering; unbounded question exercises Full Archive reach extension (Tier-2 limit truncation never reaches June)."
+    },
+    {
+      "id": "m08",
+      "question": "When did reasoning-model benchmarks first appear in the archive, and how did they progress through the year?",
+      "expected_months": ["2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"],
+      "notes": "Cross-theme; exercises FIRST APPEARANCE annotation on month blocks plus the chronological arc."
+    }
+  ]
+}

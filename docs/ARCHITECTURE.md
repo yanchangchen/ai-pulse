@@ -404,8 +404,37 @@ further-reading URLs (the only citable links). Calls use `TaskType.SYNTHESISE`
 with `allow_deterministic_fallback=False`; failures write no row and retry next
 run. The pipeline caps calls per run (`monthly_synthesis_max_per_run`, 7);
 offline/pre-migration the job skips silently. Knobs:
-`get_monthly_synthesis_settings()`. Sage's tier-aware consumption is Phase 6.2;
-the History page's Memory Timeline tab shows the rollups read-only.
+`get_monthly_synthesis_settings()`. The History page's Memory Timeline tab
+shows the rollups read-only.
+
+### Tier-aware Sage assembly (Phase 6.2 — `core/sage_agent.py`)
+
+`build_wiki_context()` consumes Tier 3: older **completed** months with
+rollup rows render as one macro block per theme (prose condensed to
+`sage_tier3_block_char_limit` + ≤3 dated milestones with verbatim links)
+instead of per-date condensed Tier-2 blocks. The current month always stays
+Tier-2 (rollup staleness); the recent-2-dates full-detail tier is untouched;
+months without rollups keep condensed blocks; a month containing a
+recent-detail date is never double-represented. Activation: real
+SupabaseManager client, no source filter (rollups aggregate across sources),
+≥1 eligible month — the full-coverage + recent-exclusion rules already keep
+single-month windows unchanged (gating on the fetched window's month span
+would break Full Archive, whose limit-truncated Tier-2 fetch can span just
+one month — the 6.2 gate finding). Effective
+bounds = UI filters ∩ `parse_temporal_bounds(question)` — applied to the
+Tier-2 fetch too. Eligible months come from the rollup **table**, so Tier 3
+extends macro reach beyond the limit-truncated Tier-2 window. Selection:
+one coverage block per month first, then relevance fill
+(`sage_tier3_max_blocks_per_month`), within `sage_tier3_budget_share` of the
+older-tier budget (surplus flows back to condensed blocks). **Drill-down:**
+the hybrid article leg receives a milestone-biased query (question + top
+milestones of the most relevant rollups, temporal tokens stripped so they
+can't poison bounds parsing); the FTS fallback keeps the raw question.
+Kill switch `sage_tier3_enabled` restores byte-identical pre-6.2 assembly.
+Knobs: `get_sage_settings()`. Stats: `tier3_block_count` / `tier3_months`
+in the builder dict, surfaced in the grounding caption. Gate:
+`python -m core.sage_eval --gate` (macro-faithfulness two-arm eval,
+`eval_sets/sage_macro_faithfulness.json`, snapshot `sage_eval_latest`).
 
 ## Hybrid Retrieval (Phase 5 — `core/retrieval.py`)
 

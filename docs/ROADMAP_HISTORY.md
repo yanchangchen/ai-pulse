@@ -284,7 +284,7 @@ see the BLOG.md entry for that week. 4.3–4.6 below landed 2026-11-27.)*
 
 ---
 
-## Phase 6 — Hierarchical memory & monthly rollups (IN PROGRESS)
+## Phase 6 — Hierarchical memory & monthly rollups (CLOSED 2026-11-28)
 
 - [x] **6.1 monthly_syntheses + monthly rollup job (2026-11-28).**
   - **Schema:** `supabase_migration_monthly_syntheses.sql` —
@@ -346,6 +346,71 @@ see the BLOG.md entry for that week. 4.3–4.6 below landed 2026-11-27.)*
     retry/upsert contract), `tests/test_bg_refresher.py` (+2: hook on
     no-persistence path, hook failure doesn't fail the run). Full suite:
     791 passed, 1 skipped.
+- [x] **6.2 Tier-aware Sage assembly (2026-11-28, eval-gated).**
+  - **Assembly** (`core/sage_agent.py::build_wiki_context`): older
+    COMPLETED months with rollup rows render as Tier-3 macro blocks
+    (`_format_month_block`: prose condensed to `sage_tier3_block_char_limit`
+    1200 + ≤3 dated milestones with verbatim `_safe_link` URLs) instead of
+    per-date condensed blocks. Current month always stays Tier-2 (rollup
+    staleness); recent-2 dates keep full detail; a month containing a
+    recent date is never double-represented; months without rollups keep
+    condensed blocks. Selection: one coverage block per month (ascending),
+    then global relevance fill capped at `sage_tier3_max_blocks_per_month`,
+    within `sage_tier3_budget_share` (0.6) of the older budget — surplus
+    flows back to condensed; a budget-starved selection never silently
+    drops Tier-2 content. Chronological merge keys month blocks
+    'YYYY-MM-00'. FIRST APPEARANCE on a month block when the theme's true
+    first-seen month matches. Stats: `tier3_block_count` / `tier3_months`
+    (return dict 6 → 8 keys); grounding caption gains "🗓️ N monthly
+    rollups". Knobs: `get_sage_settings()` (`_SAGE_DEFAULTS`, key-filtered);
+    `sage_tier3_enabled=False` restores byte-identical pre-6.2 assembly
+    (regression-tested). Source filters disable Tier 3 (rollups aggregate
+    across sources). Effective bounds = UI ∩ `parse_temporal_bounds(question)`,
+    applied to the Tier-2 fetch too.
+  - **Drill-down (user-chosen scope):** milestone-biased query — the hybrid
+    article leg receives question + top milestones of the ≤3 most relevant
+    coverage rollups (`sage_tier3_query_char_limit` 600), with ISO dates
+    and 4-digit years stripped so milestone text cannot poison
+    `parse_temporal_bounds`. FTS fallback keeps the raw question
+    (websearch_to_tsquery dilution). Zero extra retrieval calls;
+    per-milestone sub-queries stay with Phase 7's Sage Scout.
+  - **Gate finding that changed the design:** activation must NOT gate on
+    the fetched Tier-2 window's month span — a Full Archive fetch truncated
+    by `limit=300` to one recent month (November) is precisely the case
+    Tier 3 must extend. First gate run FAILED coverage (0.38) because of
+    this; eligibility comes from the rollup TABLE, and the full-coverage +
+    recent-exclusion rules already keep single-month windows unchanged.
+    Regression test: `test_full_archive_truncated_window_still_activates`.
+  - **Gate metric finding:** absolute context-char reduction is
+    unachievable — both arms fill the same 40k budget greedily and Tier-3
+    ADDS reach. Operationalized as chars PER COVERED MONTH (≥30% reduction)
+    plus a ≥0.75 expected-month coverage guard (stops the judge rewarding
+    high-scoring "no data" refusals). Also: the faithfulness judge truncates
+    context to `EVAL_SAGE_CONTEXT_CHARS` (8000) — the harness patches it to
+    60k for BOTH arms symmetrically, else the legacy arm is penalized
+    asymmetrically (contexts are chronological ascending, articles last).
+  - **Eval harness:** `core/sage_eval.py` (pattern: `core/retrieval_eval.py`)
+    + git-tracked `eval_sets/sage_macro_faithfulness.json` (8 multi-month
+    questions curated against the live rollups). Two arms (legacy via
+    single-knob settings patch / tier3 live defaults), real gateway chats,
+    `judge_sage_answer` against each arm's own context; chat/judge failures
+    are excluded rows, never zeros; eval rows NOT written to
+    `sage_evaluations` (rolling baseline stays clean). Verdict snapshot
+    `app_settings.sage_eval_latest`, rendered on the Eval Sets page via new
+    kind-agnostic helpers `result_score`/`summary_mean` (`core/eval_sets.py`).
+    Console-safe ASCII prints + snapshot-before-print (a cp1252 `Δ` crash
+    after a completed first run lost its verdict — both fixed).
+  - **Gate (PASSED 2026-11-28):** `python -m core.sage_eval --gate`,
+    8 questions, 32 LLM calls: faithfulness legacy **0.925** → tier3
+    **0.975** (eps 0.02); chars/covered-month 33,640 → **6,848**
+    (**−80%**, need ≥30%); month coverage **0.90** (need ≥0.75); 8/8
+    scored both arms. Residual: m01 tier3 0.80 (one judge-flagged claim,
+    within noise); October sometimes budget-dropped from coverage (6 of 7
+    months at the live budget).
+  - Tests: `tests/test_sage_agent.py` (+22: TestTier3Context incl. offline
+    autouse hybrid patch — spec-mocks pass the isinstance guard and would
+    otherwise embed over the network), `tests/test_sage_eval.py` (16),
+    `tests/test_eval_sets.py` (+4). Full suite: 833 passed, 1 skipped.
 
 ---
 

@@ -12,8 +12,10 @@ theme summaries and articles).  Every response follows a strict format:
 from __future__ import annotations
 
 import asyncio
+import calendar
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
 
 from core.ai_gateway.contracts import AITaskRequest, AITaskResult, TaskType
@@ -59,6 +61,12 @@ Grounding rules:
   attach it to the citation as a Markdown hyperlink, e.g. "[OpenAI Blog · \
   2026-09-12](https://openai.com/...)" so the reader can open the original \
   article.  Only use links that appear in the context — never invent URLs.
+- The WIKI CONTEXT may contain monthly macro rollup blocks ("Month YYYY-MM \
+  (macro rollup)") covering older periods.  Use them for the multi-month arc \
+  and cite them as "[Theme · Month YYYY-MM]".  Milestone lines inside a \
+  rollup carry real dates and sometimes a Link line — when a claim rests on \
+  a milestone, cite its date and attach the link as a Markdown hyperlink, \
+  exactly as for article evidence.
 - If the context does not contain enough data to answer, say so explicitly — \
   never fabricate or guess.  When the evidence covers only part of the \
   question, give that partial answer and state its scope (which dates, \
@@ -109,6 +117,12 @@ ARTICLE_TOP_K = 15             # max article briefs in the context
 ARTICLE_BUDGET_SHARE = 0.3     # fraction of max_chars for the article section
 ARTICLE_SNIPPET_CHARS = 300    # per-article summary snippet ceiling
 ARTICLE_MIN_BLOCK = 200        # skip the section if the budget is below this
+
+# --- Tier-3 monthly rollups (Phase 6.2) ---
+# Older completed months with monthly_syntheses rows render as one macro
+# block per theme instead of per-date condensed blocks; the current month
+# always stays Tier-2 (its rollup can be up to monthly_refresh_days stale).
+MIN_TIER3_BLOCK = 400          # skip a month block if its quota is below this
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +314,7 @@ def _fetch_article_candidates(
     date_to: Optional[str],
     source_filter: Optional[str],
     question: str = "",
+    hybrid_query: Optional[str] = None,
 ) -> List[Dict]:
     """Fetch the candidate pool of articles for Tier-1 evidence.
 
@@ -330,8 +345,11 @@ def _fetch_article_candidates(
                     and get_retrieval_settings().get("hybrid_retrieval_enabled", True)
                 ):
                     from core.retrieval import hybrid_search
+                    # Phase 6.2: the milestone-biased query (question + top
+                    # rollup milestones) drives the hybrid leg only; the FTS
+                    # fallback below keeps the raw question.
                     fused = hybrid_search(
-                        question,
+                        hybrid_query or question,
                         supabase=supabase,
                         theme_filter=theme_filter,
                         date_from=date_from,
@@ -449,6 +467,231 @@ def _render_article_section(articles: List[Dict], budget: int) -> Tuple[str, Lis
 
 
 # ---------------------------------------------------------------------------
+# Tier-3 monthly rollups (Phase 6.2)
+# ---------------------------------------------------------------------------
+
+def _fetch_monthly_rollups(supabase, theme_filter: Optional[str]) -> List[Dict]:
+    """Fetch monthly_syntheses rows for the Tier-3 path, sanitised.
+
+    Guarded like the hybrid leg: only the real SupabaseManager implements
+    the table, so MagicMock stubs in the legacy tests never reach it.
+    Returns [] on any failure / pre-migration / non-list response.
+    """
+    try:
+        from config.settings import get_sage_settings
+        from core.supabase_client import SupabaseManager
+        if not get_sage_settings().get("sage_tier3_enabled", True):
+            return []
+        if not (supabase and isinstance(supabase, SupabaseManager) and supabase.is_available()):
+            return []
+        rows = supabase.get_monthly_syntheses()
+        if not isinstance(rows, list):
+            return []
+    except Exception as e:
+        logger.debug("monthly_syntheses fetch failed, Tier-3 inactive: %s", e)
+        return []
+
+    from core.design_system import sanitize_summary_html
+    out: List[Dict] = []
+    for r in rows:
+        if theme_filter and r.get("theme_name") != theme_filter:
+            continue
+        row = dict(r)
+        row["macro_summary"] = sanitize_summary_html(row.get("macro_summary", "") or "")
+        milestones = []
+        for m in (row.get("key_milestones") or []):
+            if not isinstance(m, dict):
+                continue
+            mm = dict(m)
+            mm["milestone"] = sanitize_summary_html(str(mm.get("milestone", "") or ""))
+            mm["source_link"] = _safe_link(mm.get("source_link"))
+            milestones.append(mm)
+        row["key_milestones"] = milestones
+        out.append(row)
+    return out
+
+
+def _month_end(year_month: str) -> str:
+    """Last day of a 'YYYY-MM' month as 'YYYY-MM-DD'."""
+    year, month = int(year_month[:4]), int(year_month[5:7])
+    return f"{year_month}-{calendar.monthrange(year, month)[1]:02d}"
+
+
+def _eligible_rollup_months(
+    rollups: List[Dict],
+    eff_from: Optional[str],
+    eff_to: Optional[str],
+    recent_dates: set,
+    today: Optional[Any] = None,
+) -> List[str]:
+    """Months eligible for Tier-3 rendering, ascending.
+
+    A month qualifies iff it has >=1 rollup row, is COMPLETED (strictly
+    before the current month — the current month's rollup can be up to
+    monthly_refresh_days stale, so it always stays Tier-2), is FULLY
+    covered by the effective bounds (None = open), and contains none of
+    the recent-detail dates (the newest month in any window keeps its
+    full/condensed Tier-2 detail — no double representation).
+    """
+    now = today or datetime.now(timezone.utc).date()
+    current_month = now.strftime("%Y-%m")
+    recent_months = {d[:7] for d in recent_dates}
+    months = sorted({r.get("year_month", "") for r in rollups if r.get("year_month")})
+    eligible: List[str] = []
+    for m in months:
+        if m >= current_month or m in recent_months:
+            continue
+        if eff_from and f"{m}-01" < eff_from[:10]:
+            continue
+        if eff_to and _month_end(m) > eff_to[:10]:
+            continue
+        eligible.append(m)
+    return eligible
+
+
+def _score_rollup(row: Dict, question_kws: List[str]) -> float:
+    """Relevance of a rollup: macro prose + milestone sentences vs question."""
+    milestone_text = " ".join(
+        str(m.get("milestone", "")) for m in (row.get("key_milestones") or [])
+        if isinstance(m, dict)
+    )
+    return score_summary_relevance(
+        {
+            "what_is_happening": f"{row.get('macro_summary', '')} {milestone_text}",
+            "theme_name": row.get("theme_name", ""),
+        },
+        question_kws,
+    )
+
+
+def _format_month_block(row: Dict, settings: Dict) -> str:
+    """Render one Tier-3 month block (macro prose + dated milestones)."""
+    first_tag = " [FIRST APPEARANCE]" if row.get("_first_appearance") else ""
+    macro = _condense_text(
+        row.get("macro_summary", "N/A"),
+        int(settings.get("sage_tier3_block_char_limit", 1200)),
+    )
+    lines = [
+        f"--- [{row.get('theme_name', '')}] · Month {row.get('year_month', '')}{first_tag} "
+        f"(macro rollup, {row.get('source_run_count', '?')} runs) ---",
+        f"Macro: {macro}",
+    ]
+    milestones = (row.get("key_milestones") or [])[: int(settings.get("sage_tier3_milestones_per_block", 3))]
+    if milestones:
+        lines.append("Milestones:")
+        for m in milestones:
+            date_str = str(m.get("date") or "")
+            sentence = _condense_text(str(m.get("milestone", "")), 200)
+            prefix = f"- {date_str} — " if date_str else "- "
+            lines.append(f"{prefix}{sentence}")
+            link = m.get("source_link")
+            if link:
+                lines.append(f"  Link: {link}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _coverage_rollups(
+    rollups: List[Dict], eligible_months: List[str], question_kws: List[str],
+) -> List[Dict]:
+    """Top-scoring rollup per eligible month (the coverage guarantee set),
+    ordered by score desc. Used both for the milestone-biased query and as
+    round 1 of budgeted selection."""
+    best: Dict[str, Dict] = {}
+    for r in rollups:
+        m = r.get("year_month", "")
+        if m not in eligible_months:
+            continue
+        score = _score_rollup(r, question_kws)
+        if m not in best or score > best[m]["_rollup_score"]:
+            best[m] = {**r, "_rollup_score": score}
+    return sorted(best.values(), key=lambda r: (-r["_rollup_score"], r["year_month"]))
+
+
+def _select_rollups(
+    rollups: List[Dict],
+    eligible_months: List[str],
+    question_kws: List[str],
+    budget: int,
+    settings: Dict,
+) -> Tuple[List[Dict], int]:
+    """Budgeted Tier-3 selection: coverage first, then relevance fill.
+
+    Round 1 renders each eligible month's top rollup (ascending month) so
+    every covered month is represented when budget allows; round 2 fills
+    the remainder globally by relevance, capped at
+    sage_tier3_max_blocks_per_month per month. Returns (selected rows with
+    _formatted, chars used).
+    """
+    if budget < MIN_TIER3_BLOCK or not eligible_months:
+        return [], 0
+    coverage = _coverage_rollups(rollups, eligible_months, question_kws)
+    selected: List[Dict] = []
+    used = 0
+    seen: set = set()
+    per_month: Dict[str, int] = {}
+
+    def _try_add(row: Dict) -> bool:
+        nonlocal used
+        key = (row.get("year_month"), row.get("theme_name"))
+        if key in seen:
+            return False
+        text = _format_month_block(row, settings)
+        if used + len(text) > budget:
+            return False  # strict fit — never emit a block over budget
+        seen.add(key)
+        per_month[row["year_month"]] = per_month.get(row["year_month"], 0) + 1
+        selected.append({**row, "_formatted": text})
+        used += len(text)
+        return True
+
+    for row in sorted(coverage, key=lambda r: r["year_month"]):
+        _try_add(row)
+
+    max_per_month = int(settings.get("sage_tier3_max_blocks_per_month", 2))
+    scored = [
+        {**r, "_rollup_score": _score_rollup(r, question_kws)}
+        for r in rollups if r.get("year_month") in eligible_months
+    ]
+    scored.sort(key=lambda r: (-r["_rollup_score"], r["year_month"], r.get("theme_name", "")))
+    for row in scored:
+        if per_month.get(row["year_month"], 0) >= max_per_month:
+            continue
+        _try_add(row)
+
+    selected.sort(key=lambda r: (r["year_month"], r.get("theme_name", "")))
+    return selected, used
+
+
+def _strip_temporal_tokens(text: str) -> str:
+    """Remove ISO dates and 4-digit years so milestone text appended to the
+    hybrid query cannot poison parse_temporal_bounds' window extraction."""
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", "", text)
+    return re.sub(r"\b(?:19|20)\d{2}\b", "", text)
+
+
+def _build_milestone_query(question: str, coverage: List[Dict], settings: Dict) -> str:
+    """Milestone-biased hybrid query (Phase 6.2 drill-down): the question
+    plus the top milestones of the most relevant coverage rollups. Zero
+    extra retrieval calls; the hybrid leg only — FTS keeps the raw question.
+    """
+    if not coverage:
+        return question
+    top_n = int(settings.get("sage_tier3_query_rollups", 3))
+    sentences: List[str] = []
+    for row in coverage[:top_n]:
+        for m in (row.get("key_milestones") or [])[:2]:
+            s = str(m.get("milestone", "")).strip()
+            if s:
+                sentences.append(_strip_temporal_tokens(s))
+    if not sentences:
+        return question
+    tail = _condense_text(
+        " ".join(sentences), int(settings.get("sage_tier3_query_char_limit", 600))
+    )
+    return f"{question}\nRelated milestone evidence: {tail}" if tail else question
+
+
+# ---------------------------------------------------------------------------
 # Context builder
 # ---------------------------------------------------------------------------
 
@@ -465,7 +708,7 @@ def build_wiki_context(
 ) -> Dict[str, Any]:
     """Assemble a per-date-budgeted, time-decayed context string from wiki data.
 
-    Two grounding layers are packed into the ``max_chars`` budget:
+    Three grounding layers are packed into the ``max_chars`` budget:
       - Tier-2 wiki summaries, split across two tiers:
         * Recent tier (last ``RECENT_DETAIL_COUNT`` dates): full 3-field blocks.
         * Older tier (all earlier dates): condensed blocks (only
@@ -473,46 +716,75 @@ def build_wiki_context(
           at sentence boundary).  This guarantees every date in the window
           is represented rather than the latest run's themes greedily
           consuming the whole budget.
-      - Tier-1 article evidence (Phase 2.1): a bounded, newest-first
-        candidate window is fetched and the top keyword matches against the
-        question are rendered as compact briefs, within an
-        ``ARTICLE_BUDGET_SHARE`` slice of the budget.  Whatever the article
-        section doesn't use flows back to the wiki section.
+      - Tier-3 monthly rollups (Phase 6.2): older COMPLETED months with
+        ``monthly_syntheses`` rows render as one macro block per theme
+        (prose + dated milestones with real links) instead of per-date
+        condensed blocks, extending macro reach without raising ``limit``.
+        The current month always stays Tier-2 (its rollup can be stale);
+        months without rollups keep condensed blocks.  Active only for the
+        real Supabase client, no source filter, and >=1 eligible month
+        (the full-coverage + recent-exclusion rules keep single-month
+        windows unchanged); ``sage_tier3_enabled`` is the kill switch.
+      - Tier-1 article evidence (Phase 2.1): a bounded candidate window is
+        fetched and the top matches rendered as compact briefs within an
+        ``ARTICLE_BUDGET_SHARE`` slice.  When Tier 3 is active the hybrid
+        leg receives a milestone-biased query (question + top rollup
+        milestones — the 6.2 drill-down); the FTS fallback keeps the raw
+        question.  Unused article budget flows back to the wiki section.
 
     Returns:
         A dict ``{"context": str, "run_count": int, "date_count": int,
-        "date_range": str, "article_count": int, "articles": List[Dict]}``
-        so the caller can surface how far Sage actually reached.  The
-        ``articles`` list (Phase 2.2) carries the exact briefs rendered into
-        the context — title, source, date, sanitised link, snippet — so the
-        UI can show an evidence popover per reply.
+        "date_range": str, "article_count": int, "articles": List[Dict],
+        "tier3_block_count": int, "tier3_months": List[str]}`` so the caller
+        can surface how far Sage actually reached.  The ``articles`` list
+        (Phase 2.2) carries the exact briefs rendered into the context —
+        title, source, date, sanitised link, snippet — so the UI can show an
+        evidence popover per reply.
     """
     from collections import defaultdict
+    from config.settings import get_sage_settings
     question_kws = _tokenise(question)
+    settings = get_sage_settings()
 
-    # ------- Fetch Tier-1 article candidates & render within budget -------
-    # The raw question goes to SQL (websearch_to_tsquery does its own
-    # parsing); the tokenised keywords are for client-side scoring.
-    article_candidates = _fetch_article_candidates(
-        supabase, history, theme_filter, date_from, date_to, source_filter, question
-    )
-    selected_articles = _select_articles(article_candidates, question_kws)
-    article_section, article_list = _render_article_section(
-        selected_articles, int(max_chars * ARTICLE_BUDGET_SHARE)
-    )
-    article_count = len(article_list)
-    # Wiki gets whatever budget the article section didn't consume; with no
-    # articles found it keeps the full budget (existing behaviour).
-    wiki_max = max_chars - len(article_section)
+    # ------- Tier-3 activation & effective temporal bounds -------
+    # Rollups aggregate across sources, so a source-scoped question must
+    # not get cross-source macro content.  MagicMock stubs (legacy tests)
+    # fail the isinstance guard and keep the exact pre-6.2 path.
+    tier3_active = False
+    try:
+        from core.supabase_client import SupabaseManager
+        tier3_active = (
+            bool(settings.get("sage_tier3_enabled", True))
+            and supabase is not None
+            and isinstance(supabase, SupabaseManager)
+            and supabase.is_available()
+            and not source_filter
+        )
+    except Exception:
+        tier3_active = False
 
-    # ------- Fetch summaries -------
+    eff_from, eff_to = date_from, date_to
+    if tier3_active:
+        # Intersect UI bounds with the question's own temporal expression
+        # (same rule hybrid_search applies internally — idempotent there).
+        try:
+            from core.retrieval import parse_temporal_bounds
+            parsed_from, parsed_to = parse_temporal_bounds(question)
+            froms = [x for x in (date_from, parsed_from) if x]
+            tos = [x for x in (date_to, parsed_to) if x]
+            eff_from = max(froms)[:10] if froms else None
+            eff_to = min(tos)[:10] if tos else None
+        except Exception as e:
+            logger.debug("Question temporal-bounds parse failed: %s", e)
+
+    # ------- Fetch Tier-2 summaries (effective bounds) -------
     summaries: List[Dict] = []
 
     if supabase and supabase.is_available():
         raw = supabase.get_summaries_across_runs(
             theme_filter=theme_filter,
-            date_from=date_from,
-            date_to=date_to,
+            date_from=eff_from,
+            date_to=eff_to,
             source_filter=source_filter,
             limit=limit,
             prefer_recent=True,
@@ -528,9 +800,9 @@ def build_wiki_context(
             for ts in sorted(history.keys()):
                 entry = history[ts]
                 run_date = entry.get("date", ts[:10])
-                if date_from and run_date < date_from[:10]:
+                if eff_from and run_date < eff_from[:10]:
                     continue
-                if date_to and run_date > date_to[:10]:
+                if eff_to and run_date > eff_to[:10]:
                     continue
                 for theme_name, summary in entry.get("summaries", {}).items():
                     if theme_filter and theme_name != theme_filter:
@@ -545,70 +817,103 @@ def build_wiki_context(
                         "article_count": entry.get("counts", {}).get(theme_name, 0),
                     })
 
-    if not summaries and not article_section:
-        return {
-            "context": "[No wiki data available for the selected filters.]",
-            "run_count": 0,
-            "date_count": 0,
-            "date_range": "",
-            "article_count": 0,
-            "articles": [],
-        }
-    if not summaries:
-        # Summaries empty but article evidence exists — render it alone.
-        return {
-            "context": article_section,
-            "run_count": 0,
-            "date_count": 0,
-            "date_range": "",
-            "article_count": article_count,
-            "articles": article_list,
-        }
-
-    from core.design_system import sanitize_summary_html
-
-    # ------- Score & sanitise -------
-    for s in summaries:
-        s["what_is_happening"] = sanitize_summary_html(s.get("what_is_happening", ""))
-        s["why_it_matters"] = sanitize_summary_html(s.get("why_it_matters", ""))
-        s["what_to_watch"] = sanitize_summary_html(s.get("what_to_watch", ""))
-        s["_relevance"] = score_summary_relevance(s, question_kws)
-
-    # ------- Group by date, sort chronologically ascending -------
+    # ------- Sanitise, score, group by date (chronological ASC) -------
     by_date: Dict[str, List[Dict]] = defaultdict(list)
-    for s in summaries:
-        by_date[s["run_date"]].append(s)
+    dates: List[str] = []
+    recent_dates: set = set()
+    if summaries:
+        from core.design_system import sanitize_summary_html
+        for s in summaries:
+            s["what_is_happening"] = sanitize_summary_html(s.get("what_is_happening", ""))
+            s["why_it_matters"] = sanitize_summary_html(s.get("why_it_matters", ""))
+            s["what_to_watch"] = sanitize_summary_html(s.get("what_to_watch", ""))
+            s["_relevance"] = score_summary_relevance(s, question_kws)
+        for s in summaries:
+            by_date[s["run_date"]].append(s)
+        dates = sorted(by_date.keys())
+        recent_dates = set(dates[-RECENT_DETAIL_COUNT:])
 
-    dates = sorted(by_date.keys())
-    if not dates:
+    # ------- Tier-3 candidates & activation -------
+    # Eligible months come from the rollup TABLE (not the fetched Tier-2
+    # dates): the limit-truncated Tier-2 window may not reach them at all —
+    # extending that reach is the point of Tier 3.  Activation needs >=1
+    # eligible month; the full-coverage + recent-dates-exclusion rules
+    # already keep single-month windows (Current Month / Last 30 Days /
+    # one-month questions) unchanged.  Do NOT gate on the fetched window's
+    # month span: a Full Archive fetch truncated to one month by `limit`
+    # is precisely the case Tier 3 must extend (6.2 gate finding).
+    rollups: List[Dict] = []
+    eligible_months: List[str] = []
+    coverage: List[Dict] = []
+    if tier3_active:
+        rollups = _fetch_monthly_rollups(supabase, theme_filter)
+        if rollups:
+            eligible_months = _eligible_rollup_months(rollups, eff_from, eff_to, recent_dates)
+            if eligible_months:
+                coverage = _coverage_rollups(rollups, eligible_months, question_kws)
+
+    # ------- Fetch Tier-1 article candidates & render within budget -------
+    # The raw question goes to SQL (websearch_to_tsquery does its own
+    # parsing); the tokenised keywords are for client-side scoring.  The
+    # milestone-biased query (Phase 6.2) drives the hybrid leg only.
+    hybrid_query = _build_milestone_query(question, coverage, settings) if coverage else None
+    article_candidates = _fetch_article_candidates(
+        supabase, history, theme_filter, eff_from, eff_to, source_filter, question,
+        hybrid_query=hybrid_query,
+    )
+    selected_articles = _select_articles(article_candidates, question_kws)
+    article_section, article_list = _render_article_section(
+        selected_articles, int(max_chars * ARTICLE_BUDGET_SHARE)
+    )
+    article_count = len(article_list)
+    # Wiki gets whatever budget the article section didn't consume; with no
+    # articles found it keeps the full budget (existing behaviour).
+    wiki_max = max_chars - len(article_section)
+
+    # ------- Split budget: recent / Tier-3 / condensed older -------
+    recent_dates_list = [d for d in dates if d in recent_dates]
+    older_dates_all = [d for d in dates if d not in recent_dates]
+
+    recent_budget = int(wiki_max * RECENT_BUDGET_SHARE) if dates else 0
+    older_budget = wiki_max - recent_budget
+
+    eligible_set = set(eligible_months)
+    selected_rollups: List[Dict] = []
+    tier3_chars = 0
+    if eligible_months:
+        prospective_older = [d for d in older_dates_all if d[:7] not in eligible_set]
+        tier3_budget = (
+            older_budget if not prospective_older
+            else int(older_budget * float(settings.get("sage_tier3_budget_share", 0.6)))
+        )
+        selected_rollups, tier3_chars = _select_rollups(
+            rollups, eligible_months, question_kws, tier3_budget, settings
+        )
+    # Only months that ACTUALLY rendered lose their condensed blocks — a
+    # budget-starved Tier-3 selection must not silently drop Tier-2 content.
+    rendered_months = {r["year_month"] for r in selected_rollups}
+    older_dates_list = [d for d in older_dates_all if d[:7] not in rendered_months]
+    condensed_budget = older_budget - tier3_chars
+    tier3_months = sorted(rendered_months)
+
+    per_recent_date = recent_budget // max(len(recent_dates_list), 1)
+    per_older_date = condensed_budget // max(len(older_dates_list), 1)
+
+    # ------- Early exits (no Tier-2 data) -------
+    if not summaries and not selected_rollups:
         if article_section:
             return {
                 "context": article_section,
-                "run_count": 0,
-                "date_count": 0,
-                "date_range": "",
-                "article_count": article_count,
-                "articles": article_list,
+                "run_count": 0, "date_count": 0, "date_range": "",
+                "article_count": article_count, "articles": article_list,
+                "tier3_block_count": 0, "tier3_months": [],
             }
         return {
             "context": "[No wiki data available for the selected filters.]",
-            "run_count": 0,
-            "date_count": 0,
-            "date_range": "",
-            "article_count": 0,
-            "articles": [],
+            "run_count": 0, "date_count": 0, "date_range": "",
+            "article_count": 0, "articles": [],
+            "tier3_block_count": 0, "tier3_months": [],
         }
-
-    # ------- Split budget between recent & older tiers -------
-    recent_dates = set(dates[-RECENT_DETAIL_COUNT:])
-    recent_dates_list = [d for d in dates if d in recent_dates]
-    older_dates_list = [d for d in dates if d not in recent_dates]
-
-    recent_budget = int(wiki_max * RECENT_BUDGET_SHARE)
-    older_budget = wiki_max - recent_budget
-
-    per_recent_date = recent_budget // max(len(recent_dates_list), 1)
-    per_older_date = older_budget // max(len(older_dates_list), 1)
 
     # Minimum block sizes used as a guard: if a date's per-date quota is smaller
     # than this, we skip that date rather than emit a half-formed block.
@@ -619,6 +924,8 @@ def build_wiki_context(
     char_count = 0
 
     for date in dates:
+        if date not in recent_dates and date[:7] in rendered_months:
+            continue  # this month is represented by its Tier-3 block(s)
         blocks = by_date[date]
         # Within each date, rank themes by relevance so the most relevant
         # themes survive when the per-date quota is tight.
@@ -685,20 +992,45 @@ def build_wiki_context(
         formatter = _format_full_block if is_recent else _format_condensed_block
         s["_formatted"] = formatter(s)
 
+    # Tier-3 month blocks: FIRST APPEARANCE when the theme's true archive
+    # first-seen month IS this rollup's month (no window-scan equivalent —
+    # rollups span the whole month by construction).
+    for r in selected_rollups:
+        fs = first_seen_map.get(r.get("theme_name", ""))
+        r["_first_appearance"] = bool(
+            fs and str(fs.get("first_seen_date", ""))[:7] == r.get("year_month")
+        )
+        r["_formatted"] = _format_month_block(r, settings)
+
     # ------- Assemble output with metadata header -------
     date_range_str = (
         f"{dates[0]} → {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "")
     )
     run_count = len(summaries)
     date_count = len(dates)
+    rollup_clause = ""
+    if tier3_months:
+        rollup_range = (
+            f"{tier3_months[0]} → {tier3_months[-1]}"
+            if len(tier3_months) > 1 else tier3_months[0]
+        )
+        rollup_clause = f" · {len(selected_rollups)} monthly rollups ({rollup_range})"
     metadata = (
         f"[Sage context: {run_count} runs across {date_count} dates, "
-        f"{date_range_str}]\n\n"
+        f"{date_range_str}{rollup_clause}]\n\n"
     )
 
+    # Chronological merge: Tier-2 blocks sort by run_timestamp; month blocks
+    # key on 'YYYY-MM-00' so a rollup precedes any later-month run block.
+    # Eligible months contain no Tier-2 blocks, so there is no interleaving
+    # conflict within a month.
+    merged: List[Tuple[str, str]] = [(s["run_timestamp"], s["_formatted"]) for s in selected]
+    merged += [(r["year_month"] + "-00", r["_formatted"]) for r in selected_rollups]
+    merged.sort(key=lambda t: t[0])
+
     lines: List[str] = ["=== WIKI CONTEXT (chronological, time-decayed resolution) ===\n", metadata]
-    for s in selected:
-        lines.append(s["_formatted"])
+    for _, text in merged:
+        lines.append(text)
     lines.append("=== END WIKI CONTEXT ===")
 
     # Tier-1 evidence rides after the Tier-2 narrative.
@@ -715,6 +1047,8 @@ def build_wiki_context(
         "date_range": date_range_str,
         "article_count": article_count,
         "articles": article_list,
+        "tier3_block_count": len(selected_rollups),
+        "tier3_months": tier3_months,
     }
 
 
