@@ -42,7 +42,12 @@ Three tabs:
   per-theme cards/expanders always show "N of M reflected · K left unprocessed"
   (even when K = 0 — full coverage is stated, not implied), the ⏳ Missed/Backlog
   list, and the Phase 4.3 🍂 Aged-out Unprocessed list (waiting articles that left
-  the fetch window before ever being summarised, with last-seen run).
+  the fetch window before ever being summarised, with last-seen run). A collapsed
+  **🗓️ Monthly Syntheses (Tier 3)** expander (Phase 6.1) lists the monthly macro
+  rollups per theme (months descending, theme-filter aware): macro prose, a
+  🔑 Key milestones sub-expander (date — milestone, verbatim source links), and an
+  "Updated … · covers N runs · engine" caption. Read-only; silent when the
+  `monthly_syntheses` table is empty or missing.
 - **⚖️ Compare Runs**
 
 ### Sage agent internals (`core/sage_agent.py`)

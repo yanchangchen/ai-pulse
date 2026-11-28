@@ -33,6 +33,7 @@ Run in the SQL Editor, roughly in order:
 11. `supabase_migration_article_embeddings.sql` — `article_embeddings` (pgvector) + `get_unembedded_articles` / `match_article_embeddings` RPCs (Phase 3). Enables `CREATE EXTENSION vector`.
 12. `supabase_migration_times_seen.sql` — `articles.times_seen` + partial index + `record_article_seen(theme, waiting[], included[])` UPDATE-only RPC (Phase 4.3 fair drain). UPDATE-only on purpose: PostgREST upserts cannot express per-row increments, and a partial-column upsert would insert title-less article rows. Pre-migration databases degrade to the local JSON counter (`data/times_seen.json`).
 13. `supabase_migration_hybrid_retrieval.sql` — `match_article_embeddings` v2 (article metadata join + date/theme bounds applied after a 4x over-fetched ANN scan) and `theme_first_seen` (Phase 5.4, backfilled from the archive).
+14. `supabase_migration_monthly_syntheses.sql` — `monthly_syntheses` (Phase 6.1 Tier-3 memory): one LLM macro synthesis per theme per month, `UNIQUE(year_month, theme_name)`. No inline backfill — rollups need LLM calls, so backfill via `python backfill_monthly_syntheses.py`.
 
 ## `llm_calls`
 
@@ -109,10 +110,39 @@ unbounded queries. See [docs/ARCHITECTURE.md](ARCHITECTURE.md#hybrid-retrieval-p
 read + insert (single-user app). Pre-migration databases degrade to the
 legacy render-time window scan.
 
+## `monthly_syntheses` (Phase 6.1 — Tier-3 memory)
+
+One row per `(year_month, theme_name)` (composite UNIQUE — the Future.md draft's
+single-column UNIQUE was a bug): `macro_summary` prose, `key_milestones` JSONB
+(`[{date, milestone, source_link?}]`, links copied verbatim from the briefs'
+further-reading URLs), `source_run_count` (briefs fed), `generation_source`
+(provider:model audit), `created_at` / `updated_at`.
+
+Write path: `core/monthly_synthesis.py::synthesize_due_monthly()` — shared by the
+best-effort post-save hook in `core/bg_refresher.py` (runs even on no-new-article
+runs so month rollover isn't skipped) and the `backfill_monthly_syntheses.py` CLI
+(the future scheduled-pipeline entry point). Cadence: completed months synthesized
+once; the current month re-synthesized every `monthly_refresh_days` (default 14);
+a month whose row was written mid-month regenerates once after rollover.
+`upsert_monthly_synthesis()` stamps `updated_at` explicitly on every upsert
+(DEFAULT NOW() only fires on INSERT; the staleness rules read it). LLM calls route
+through `TaskType.SYNTHESISE` with `allow_deterministic_fallback=False` — a failed
+call writes no row and is retried next run.
+
+Read path: `get_monthly_syntheses()` (due-check + History-page expander);
+`get_theme_briefs_for_month()` bounds on `trend_runs.run_date` (not
+`run_timestamp`) and retries without optional columns on schema drift.
+
+RLS: public read + insert + update (FOR ALL, like `app_settings` — rows are
+upserted on refresh). Degradation: offline / pre-migration the rollup job skips
+silently and the expander renders nothing; Supabase is the single source of
+truth for rollups (no local fallback — `history.json` keeps only 5 runs).
+Knobs: `get_monthly_synthesis_settings()` in `config/settings.py`.
+
 ## RLS
 
-RLS is enabled with read-only public access (`app_settings` / `custom_keywords` allow
-public write — single-user app).
+RLS is enabled with read-only public access (`app_settings` / `custom_keywords` /
+`monthly_syntheses` allow public write — single-user app).
 
 ## `app_settings` KV store
 

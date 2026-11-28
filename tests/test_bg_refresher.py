@@ -72,6 +72,42 @@ def test_run_pipeline_skips_save_when_no_processed_articles():
     mock_save.assert_not_called()
 
 
+def test_run_pipeline_checks_monthly_rollups_even_without_new_articles():
+    """Phase 6.1: the rollup due-check must run on the no-persistence path too
+    (month rollover and the biweekly current-month refresh can't be skipped)."""
+    from unittest.mock import MagicMock, patch as _patch
+    from core import bg_refresher as bg
+
+    with _patch.object(bg.BackgroundRefresher, "_lock", MagicMock()):
+        with _patch("core.bg_refresher.BackgroundRefresher.update_progress"):
+            with _patch("core.fetcher.fetch_all_news", return_value=[{"title": "T", "link": "http://x"}]):
+                with _patch("core.classifier.classify_articles", return_value={"Frontier Models & Benchmarks": []}):
+                    with _patch("core.summariser.generate_all_summaries", return_value=({}, {})):
+                        with _patch("core.history_manager.save_run_to_history") as mock_save:
+                            with _patch("core.monthly_synthesis.synthesize_due_monthly", return_value=0) as mock_rollup:
+                                with _patch.object(bg.BackgroundRefresher, "_get_state", return_value={}):
+                                    bg.BackgroundRefresher._run_pipeline()
+    mock_save.assert_not_called()
+    mock_rollup.assert_called_once()
+
+
+def test_run_pipeline_rollup_failure_does_not_fail_the_run():
+    """A rollup exception is best-effort: the pipeline still completes."""
+    from unittest.mock import MagicMock, patch as _patch
+    from core import bg_refresher as bg
+
+    state = {}
+    with _patch.object(bg.BackgroundRefresher, "_lock", MagicMock()):
+        with _patch("core.bg_refresher.BackgroundRefresher.update_progress"):
+            with _patch("core.fetcher.fetch_all_news", return_value=[{"title": "T", "link": "http://x"}]):
+                with _patch("core.classifier.classify_articles", return_value={"Frontier Models & Benchmarks": []}):
+                    with _patch("core.summariser.generate_all_summaries", return_value=({}, {})):
+                        with _patch("core.monthly_synthesis.synthesize_due_monthly", side_effect=RuntimeError("rollup boom")):
+                            with _patch.object(bg.BackgroundRefresher, "_get_state", return_value=state):
+                                bg.BackgroundRefresher._run_pipeline()
+    assert state.get("status") == "completed"
+
+
 def test_run_pipeline_saves_when_articles_processed():
     """If summariser processes articles, the pipeline should persist a run (when not a duplicate)."""
     from unittest.mock import MagicMock, patch as _patch

@@ -537,3 +537,27 @@ def get_embedding_settings() -> dict:
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Monthly synthesis rollups (Phase 6.1 — Tier-3 hierarchical memory)
+# ---------------------------------------------------------------------------
+_MONTHLY_SYNTHESIS_DEFAULTS = {
+    "monthly_synthesis_enabled": True,        # kill switch for the rollup job
+    "monthly_refresh_days": 14,               # current-month re-synthesis staleness
+    "monthly_synthesis_max_tokens": 2500,     # output budget per theme-month call
+    "monthly_synthesis_temperature": 0.3,
+    "monthly_synthesis_max_input_chars": 120_000,  # ~40k tokens at 3 chars/token
+    "monthly_synthesis_max_runs": 40,         # input bound: briefs per theme-month
+    "monthly_synthesis_max_per_run": 7,       # pipeline cost cap (one month's themes)
+}
+
+
+def get_monthly_synthesis_settings() -> dict:
+    """Return monthly-rollup settings, merging defaults with custom_settings.json."""
+    custom = load_custom_settings()
+    merged = dict(_MONTHLY_SYNTHESIS_DEFAULTS)
+    for key in _MONTHLY_SYNTHESIS_DEFAULTS:
+        if key in custom:
+            merged[key] = custom[key]
+    return merged
+
+

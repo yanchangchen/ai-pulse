@@ -149,7 +149,7 @@ Agent traces are the troubleshooting backbone for everything above.
 
 ## 4. Supabase Database Schema Additions for Future RAG
 
-> `articles`, `theme_summaries`, and `sage_conversations` **already exist** (see `supabase_schema.sql` + `supabase_migration_sage_conversations.sql` — note the real column is `period_label`, not `period_info`). Also already live from completed phases: `llm_calls` (`supabase_migration_llm_calls.sql`), the `search_vector` FTS column + `match_articles` RPC (`supabase_migration_fts_articles.sql`), `sage_evaluations` (`supabase_migration_sage_evaluations.sql`), and `article_embeddings` (pgvector + HNSW, `supabase_migration_article_embeddings.sql`). The genuinely new tables are `monthly_syntheses` and `theme_first_seen`.
+> `articles`, `theme_summaries`, and `sage_conversations` **already exist** (see `supabase_schema.sql` + `supabase_migration_sage_conversations.sql` — note the real column is `period_label`, not `period_info`). Also already live from completed phases: `llm_calls` (`supabase_migration_llm_calls.sql`), the `search_vector` FTS column + `match_articles` RPC (`supabase_migration_fts_articles.sql`), `sage_evaluations` (`supabase_migration_sage_evaluations.sql`), and `article_embeddings` (pgvector + HNSW, `supabase_migration_article_embeddings.sql`). `theme_first_seen` (Phase 5.4) and `monthly_syntheses` (Phase 6.1) are now live too — no genuinely new tables remain in this blueprint.
 
 ```sql
 -- Enable pgvector
@@ -172,14 +172,18 @@ ON article_embeddings USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_article_embeddings_run_date
 ON article_embeddings (run_date);  -- supports the temporal bounding box
 
--- Monthly macro rollups
+-- Monthly macro rollups (live since Phase 6.1; supabase_migration_monthly_syntheses.sql)
 CREATE TABLE IF NOT EXISTS monthly_syntheses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    year_month VARCHAR(7) NOT NULL UNIQUE, -- e.g. '2026-09'
+    year_month VARCHAR(7) NOT NULL,        -- e.g. '2026-09'
     theme_name VARCHAR(255) NOT NULL,
     macro_summary TEXT NOT NULL,
-    key_milestones JSONB NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    key_milestones JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source_run_count INT NOT NULL DEFAULT 0,
+    generation_source VARCHAR(100),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    UNIQUE (year_month, theme_name)        -- one row per theme per month
 );
 
 -- First-appearance index (Pillar C #2) — maintained at ingest, replaces render-time scan
@@ -200,7 +204,7 @@ CREATE TABLE IF NOT EXISTS theme_first_seen (
 
 Phases are deliberately small — each sub-step is independently shippable and verifiable, and most have an explicit evaluation gate before moving on.
 
-**Where we are (2026-11):** Phase 0 foundations are live — Sage is routed through the gateway (fallback + provenance), every LLM call is mirrored to `llm_calls`, and OTel traces land in Langfuse Cloud; the gate was verified end-to-end with a live trace + matching `llm_calls` row. Phase 2 (article-level grounding) is **closed**: Sage answers are grounded in retrieved `articles` via Postgres FTS, citations render as clickable evidence popovers, and a chat-time faithfulness judge writes `sage_evaluations` rows (no pre-2.1 baseline exists — Phase 3 changes are measured against the post-2.3 batch). **Embedding provider decision (2026-11-09):** replace Gemini with **Cloudflare Workers AI** (Option A); keep **Render self-hosted BGE** (Option C, same model/vector space) and **Jina** (Option B, different space) as documented fallbacks. **Status (2026-11-10):** migration complete — the live index is 6,304/6,304 articles, 100% `@cf/baai/bge-base-en-v1.5`, backlog 0; retrieval gate Recall@10 = 0.833. **Watch closed (2026-11-27):** the 3.6 14-day metrics watch passed every gate (no Option C trigger); the retrieval gate was re-run on a new curated 24-question set (`eval_sets/retrieval_hit_rate.json`, git-tracked, rendered on the Eval Sets page) — **Recall@10 = 0.917 is now the Phase 5 baseline**. **Phases 4.3–4.6 landed 2026-11-27** (fair drain; budget-aware capacity; map-reduce overflow; prioritisation refinements — coverage threshold cleared, 6.1 gate satisfied). **Phase 5 closed 2026-11-28**: hybrid retrieval (dense + FTS, RRF fusion, temporal bounds + gate-tuned decay) is live in Sage; gate PASSED — hybrid Recall@10 **0.875 = dense baseline 0.875** (same-day control; the 0.917 snapshot predates archive growth), p95 latency 1.9s ≤ 3s budget. Next: **Phase 6** (hierarchical memory; 6.1 gate already satisfied by 4.5). Rationale and the contingent thresholds for building Option C live in Phase 3.6; implementation detail is in [docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md). Direction from here: **embeddings (Phase 3) → full-coverage processing (Phase 4) → hybrid retrieval + temporal awareness (Phase 5) → hierarchical memory (Phase 6) → multi-agent synthesis (Phase 7) → closed-loop agent improvement (Phase 8)**. Full implementation notes for everything landed so far: [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
+**Where we are (2026-11):** Phase 0 foundations are live — Sage is routed through the gateway (fallback + provenance), every LLM call is mirrored to `llm_calls`, and OTel traces land in Langfuse Cloud; the gate was verified end-to-end with a live trace + matching `llm_calls` row. Phase 2 (article-level grounding) is **closed**: Sage answers are grounded in retrieved `articles` via Postgres FTS, citations render as clickable evidence popovers, and a chat-time faithfulness judge writes `sage_evaluations` rows (no pre-2.1 baseline exists — Phase 3 changes are measured against the post-2.3 batch). **Embedding provider decision (2026-11-09):** replace Gemini with **Cloudflare Workers AI** (Option A); keep **Render self-hosted BGE** (Option C, same model/vector space) and **Jina** (Option B, different space) as documented fallbacks. **Status (2026-11-10):** migration complete — the live index is 6,304/6,304 articles, 100% `@cf/baai/bge-base-en-v1.5`, backlog 0; retrieval gate Recall@10 = 0.833. **Watch closed (2026-11-27):** the 3.6 14-day metrics watch passed every gate (no Option C trigger); the retrieval gate was re-run on a new curated 24-question set (`eval_sets/retrieval_hit_rate.json`, git-tracked, rendered on the Eval Sets page) — **Recall@10 = 0.917 is now the Phase 5 baseline**. **Phases 4.3–4.6 landed 2026-11-27** (fair drain; budget-aware capacity; map-reduce overflow; prioritisation refinements — coverage threshold cleared, 6.1 gate satisfied). **Phase 5 closed 2026-11-28**: hybrid retrieval (dense + FTS, RRF fusion, temporal bounds + gate-tuned decay) is live in Sage; gate PASSED — hybrid Recall@10 **0.875 = dense baseline 0.875** (same-day control; the 0.917 snapshot predates archive growth), p95 latency 1.9s ≤ 3s budget. **Phase 6.1 landed 2026-11-28** (monthly_syntheses + rollup job + backfill CLI + History expander; 47 rollups backfilled, idempotency verified). Next: **6.2** (tier-aware Sage assembly). Rationale and the contingent thresholds for building Option C live in Phase 3.6; implementation detail is in [docs/EMBEDDING_PROVIDERS.md](docs/EMBEDDING_PROVIDERS.md). Direction from here: **embeddings (Phase 3) → full-coverage processing (Phase 4) → hybrid retrieval + temporal awareness (Phase 5) → hierarchical memory (Phase 6) → multi-agent synthesis (Phase 7) → closed-loop agent improvement (Phase 8)**. Full implementation notes for everything landed so far: [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
 ### Phase 0 — Foundations *(0.1–0.3 done, gate verified — one item remains)*
 - [ ] **0.4** (optional but cheap) `Dockerfile` + `docker-compose.yml` (app + nothing else — Supabase stays cloud) for reproducible deploys.
@@ -239,7 +243,7 @@ Phases are deliberately small — each sub-step is independently shippable and v
 - **Gate**: side-by-side eval old-vs-new retrieval on the labelled question set + latency budget check. **PASSED 2026-11-28** (`python -m core.retrieval_eval --gate`, 24 questions): dense 0.875 → hybrid **0.875** (no regression; q05/q21 recovered after decay tuning), hybrid p95 **1918ms** ≤ 3000ms budget (mean 1587ms). Verdict + per-question scores snapshotted to `app_settings.retrieval_eval_latest`. Note: same-day dense control is 0.875, not the 0.917 recorded 2026-11-27 — the archive grew; the controlled comparison is the valid one.
 
 ### Phase 6 — Hierarchical memory & monthly rollups
-- [ ] **6.1** `monthly_syntheses` table + monthly rollup job generating Tier 3 syntheses per theme (runs in the scheduled pipeline, not pg_cron — external LLM calls). *(Gated on 4.5 chunked summarisation — rolling up incomplete Tier 2 summaries bakes the gaps into Tier 3 permanently.)*
+- [x] **6.1** `monthly_syntheses` table + monthly rollup job generating Tier 3 syntheses per theme *(landed 2026-11-28; the 4.5 coverage gate prerequisite was satisfied 2026-11-27)*. Runs best-effort in `BackgroundRefresher` (the scheduled GitHub Actions pipeline is still the §6 target) + `backfill_monthly_syntheses.py` CLI as the future cron entry point. Cadence: completed months once (idempotent), current month every 14 days, mid-month-written completed months regenerate once after rollover. 47 rollups backfilled across 2026-05→11; History page shows them read-only. Details: [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 - [ ] **6.2** Tier-aware assembly: macro queries pull Tier 3 rollups; drill down to Tier 1 only for cited milestones.
 
 ### Phase 7 — Multi-agent synthesis (Pillar E; gated on Phase 0 tracing being live)

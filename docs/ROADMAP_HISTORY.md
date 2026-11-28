@@ -284,6 +284,71 @@ see the BLOG.md entry for that week. 4.3–4.6 below landed 2026-11-27.)*
 
 ---
 
+## Phase 6 — Hierarchical memory & monthly rollups (IN PROGRESS)
+
+- [x] **6.1 monthly_syntheses + monthly rollup job (2026-11-28).**
+  - **Schema:** `supabase_migration_monthly_syntheses.sql` —
+    `UNIQUE(year_month, theme_name)` (fixes the Future.md §4 draft's
+    single-column UNIQUE bug, which would have allowed only one row per
+    month), `macro_summary`, `key_milestones` JSONB, `source_run_count`,
+    `generation_source`, `created_at`/`updated_at`. RLS FOR ALL + anon
+    SELECT/INSERT/UPDATE (rows are upserted on refresh, like
+    `app_settings`). Applied via SQL Editor (MCP SQL is read-only).
+  - **Cadence** (`compute_due_syntheses`, pure/unit-tested): missing
+    (month, theme) rows are due; the current month re-synthesizes every
+    `monthly_refresh_days` (14, user-chosen biweekly); a completed month
+    whose row was written mid-month (`updated_at` < next-month-start UTC)
+    regenerates once after rollover, then never again. `updated_at` is
+    stamped explicitly on every upsert — DEFAULT NOW() only fires on
+    INSERT, and the staleness rules read it.
+  - **Runner:** `core/monthly_synthesis.py::synthesize_due_monthly()`
+    shared by the best-effort `bg_refresher` hook (placed AFTER the
+    persistence if/else so month rollover is checked even on
+    no-new-article runs; capped at `monthly_synthesis_max_per_run`=7) and
+    `backfill_monthly_syntheses.py` (`--dry-run/--month/--force/--limit`)
+    — the future GitHub Actions cron entry point. Offline/pre-migration
+    skips silently; Supabase is the single source of truth (no local
+    fallback — history.json keeps only 5 runs).
+  - **Input:** `get_theme_briefs_for_month()` bounds on
+    `trend_runs.run_date` (not run_timestamp), chunks run_ids by 50,
+    retries without optional columns on schema drift. Feeds only the
+    narrative sections (what_is_happening/why_it_matters/what_to_watch)
+    plus ≤3 verbatim further-reading URLs per brief (LINKS lines are the
+    only citable URL source); >`max_runs` (40) briefs → evenly-spaced
+    chronological sample keeping first+last.
+  - **LLM:** `TaskType.SYNTHESISE` (the previously-unused gateway route),
+    `allow_deterministic_fallback=False` — an extractive "macro synthesis"
+    would be misleading, so failures write no row and retry next run.
+    Milestone JSON parsed defensively (last ```json fence → bare fence →
+    bracket slice; any failure → [] while keeping the prose).
+  - **Gotchas:** WinError 10035 transient socket errors under backfill
+    traffic → one retry on the idempotent upsert (same pattern as
+    `insert_article_embeddings`); two smoke-run "write failures" had
+    actually landed server-side. The May archive predates 2 of the 7
+    current themes — brief-less theme-months skip without a row and
+    re-check cheaply each run (self-heals if briefs appear).
+  - **Backfill (2026-11-28):** 47 rollups across 2026-05→2026-11 (May:
+    5 themes × 22 briefs; Jun–Sep hit the 40-brief sampling cap). 47
+    `synthesise` calls in `llm_calls`: 726.9k in / 60.4k out tokens, avg
+    latency 12.2s, ~10 min wall clock, all qwen3.8-flash, 0 synthesis
+    failures. Re-run → **0 writes in 1.7s** (idempotency proven).
+    Spot-check: milestone dates/content faithful to source briefs; no
+    fabricated URLs (May briefs have empty further_reading → milestones
+    correctly carry no links).
+  - **UI:** History → Memory Timeline 🗓️ Monthly Syntheses (Tier 3)
+    expander — read-only, months desc, theme-filter aware, milestone
+    sub-expander, "Updated … · covers N runs · engine" caption; silent
+    pre-migration. Sage tier-aware consumption is 6.2 (pending).
+  - Tests: `tests/test_monthly_synthesis.py` (41: due-check rules incl.
+    14-day boundary/clock-skew/force, input bounding/sampling/LINKS,
+    parser validation, gateway request contract, runner isolation/caps),
+    `tests/test_supabase_client.py` (+11: month bounds/chunking/drift
+    retry/upsert contract), `tests/test_bg_refresher.py` (+2: hook on
+    no-persistence path, hook failure doesn't fail the run). Full suite:
+    791 passed, 1 skipped.
+
+---
+
 ## Decision: tracing backend — Langfuse Cloud (Hobby) *(2026-10)*
 
 > **Decision (2026-10): Langfuse Cloud (Hobby).** Alternatives recorded below for future reference; since instrumentation is OpenTelemetry-based, switching backends later means changing the exporter, not the code.

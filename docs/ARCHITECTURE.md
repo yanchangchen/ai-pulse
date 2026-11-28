@@ -4,7 +4,10 @@
 
 `fetcher` → `classifier` → `summariser` → `history_manager` → (optional) `supabase_client`.
 Runs synchronously on first run or in a background daemon thread via `core/bg_refresher.py`
-(singleton `BackgroundRefresher`).
+(singleton `BackgroundRefresher`). After persistence, two best-effort steps run:
+article embedding (Phase 3, only when a run was saved) and the monthly-synthesis
+due-check (Phase 6.1, on **every** pipeline run — month rollover must not be
+skipped when no new articles arrived). Neither can fail the run.
 
 ## Classification Modes
 
@@ -384,6 +387,25 @@ Overview never render an old run with missing provenance.
 
 `core/history_manager.py` exposes `get_recent_context()` (injects the last 2 runs'
 summaries into LLM prompts) and `purge_run()`.
+
+### Monthly rollups (Phase 6.1 — `core/monthly_synthesis.py`)
+
+Tier 3 of the hierarchical memory (Pillar B): one LLM macro synthesis per theme
+per month in Supabase `monthly_syntheses`, rolled up from that month's Tier-2
+daily briefs (`get_theme_briefs_for_month`, bounded on `trend_runs.run_date`).
+`synthesize_due_monthly()` is the single runner shared by the pipeline hook and
+`backfill_monthly_syntheses.py` (the future scheduled-pipeline entry point).
+Due rules: missing (month, theme) rows; the current month when its row is
+≥ `monthly_refresh_days` (14) old; a completed month whose row was written
+mid-month (regenerates once after rollover). Input is bounded
+(`monthly_synthesis_max_input_chars` / `max_runs`, evenly-spaced sampling keeps
+first+last brief) and feeds only the narrative sections plus verbatim
+further-reading URLs (the only citable links). Calls use `TaskType.SYNTHESISE`
+with `allow_deterministic_fallback=False`; failures write no row and retry next
+run. The pipeline caps calls per run (`monthly_synthesis_max_per_run`, 7);
+offline/pre-migration the job skips silently. Knobs:
+`get_monthly_synthesis_settings()`. Sage's tier-aware consumption is Phase 6.2;
+the History page's Memory Timeline tab shows the rollups read-only.
 
 ## Hybrid Retrieval (Phase 5 — `core/retrieval.py`)
 

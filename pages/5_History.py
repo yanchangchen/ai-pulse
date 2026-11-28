@@ -569,6 +569,61 @@ def _render_sage_tab(supabase, default_theme_filter=None, default_date_from=None
 # Timeline tab
 # ---------------------------------------------------------------------------
 
+def _render_monthly_syntheses(supabase, selected_theme):
+    """Read-only Tier-3 monthly syntheses expander (Phase 6.1).
+
+    Silent when the table is empty, missing (pre-migration), or Supabase
+    is unavailable — the rollups are additive, never a hard dependency.
+    """
+    rows = supabase.get_monthly_syntheses() or []
+    if not rows:
+        return
+    themes_to_show = THEME_ORDER if selected_theme == "All Themes" else [selected_theme]
+    rows = [r for r in rows if r.get("theme_name") in themes_to_show]
+    if not rows:
+        return
+
+    with st.expander(f"🗓️ Monthly Syntheses (Tier 3) — {len(rows)} rollup(s)", expanded=False):
+        st.caption(
+            "Macro monthly rollups per theme, synthesized from the daily briefs. "
+            "Completed months are final; the current month refreshes every two weeks."
+        )
+        by_month = {}
+        for r in rows:
+            by_month.setdefault(r.get("year_month", ""), []).append(r)
+        for year_month in sorted(by_month, reverse=True):
+            st.markdown(f"#### {year_month}")
+            month_rows = {r["theme_name"]: r for r in by_month[year_month]}
+            for theme in themes_to_show:
+                r = month_rows.get(theme)
+                if not r:
+                    continue
+                color = THEME_COLORS.get(theme, "#666")
+                st.markdown(
+                    f'<div style="border-left:4px solid {color};padding-left:10px;margin:8px 0 4px 0;">'
+                    f'<strong>{theme}</strong></div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(sanitize_summary_html(r.get("macro_summary", "")), unsafe_allow_html=True)
+                milestones = r.get("key_milestones") or []
+                if isinstance(milestones, list) and milestones:
+                    with st.expander(f"🔑 Key milestones ({len(milestones)})", expanded=False):
+                        for m in milestones:
+                            if not isinstance(m, dict):
+                                continue
+                            date_str = m.get("date") or ""
+                            line = f"- **{date_str}** — {m.get('milestone', '')}" if date_str else f"- {m.get('milestone', '')}"
+                            link = m.get("source_link")
+                            if isinstance(link, str) and link.startswith("http"):
+                                line += f" [link →]({link})"
+                            st.markdown(line)
+                updated = format_display_timestamp(r.get("updated_at", ""))
+                st.caption(
+                    f"Updated {updated} · covers {r.get('source_run_count', 0)} runs · "
+                    f"{r.get('generation_source') or 'unknown engine'}"
+                )
+
+
 def _render_timeline_tab(supabase, selected_theme, source_filter_val):
     """Render the existing Memory Timeline browser."""
     total_runs = supabase.get_total_run_count()
@@ -588,6 +643,9 @@ def _render_timeline_tab(supabase, selected_theme, source_filter_val):
     if total_runs == 0:
         st.info("No runs found in Memory Wiki timeline.")
         return
+
+    # Tier-3 monthly rollups (Phase 6.1) — read-only, silent pre-migration.
+    _render_monthly_syntheses(supabase, selected_theme)
 
     if 'wiki_page_index' not in st.session_state:
         st.session_state.wiki_page_index = 0

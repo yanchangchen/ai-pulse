@@ -254,3 +254,184 @@ def test_get_sage_evaluations_unavailable_returns_none():
     manager.available = False
 
     assert manager.get_sage_evaluations() is None
+
+
+# ---------------------------------------------------------------------------
+# monthly_syntheses (Phase 6.1)
+# ---------------------------------------------------------------------------
+
+def test_get_run_months_dedupes_and_sorts():
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [
+        {"run_date": "2026-07-02"}, {"run_date": "2026-06-15"},
+        {"run_date": "2026-06-20"}, {"run_date": None},
+    ]
+    manager.client = MagicMock()
+    manager.client.table.return_value = _query_chain(rows)
+
+    assert manager.get_run_months() == ["2026-06", "2026-07"]
+    manager.client.table.assert_called_with("trend_runs")
+
+
+def test_get_run_months_unavailable_returns_none():
+    manager = SupabaseManager()
+    manager.available = False
+    assert manager.get_run_months() is None
+
+
+def test_get_monthly_syntheses_shapes_and_filters():
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [{"year_month": "2026-06", "theme_name": "T", "macro_summary": "p"}]
+    q = _query_chain(rows)
+    q.in_.return_value = q
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    result = manager.get_monthly_syntheses(year_months=["2026-06"])
+
+    assert result == rows
+    manager.client.table.assert_called_with("monthly_syntheses")
+    q.in_.assert_called_with("year_month", ["2026-06"])
+    q.order.assert_called_with("year_month", desc=True)
+
+
+def test_get_monthly_syntheses_unavailable_returns_none():
+    manager = SupabaseManager()
+    manager.available = False
+    assert manager.get_monthly_syntheses() is None
+
+
+def test_upsert_monthly_synthesis_conflict_and_updated_at():
+    manager = SupabaseManager()
+    manager.available = True
+    q = MagicMock()
+    q.upsert.return_value = q
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    ok = manager.upsert_monthly_synthesis(
+        "2026-06", "Theme A", "macro prose",
+        [{"milestone": "X"}], 12, "qwen:qwen3.8-flash",
+    )
+
+    assert ok is True
+    payload = q.upsert.call_args.args[0]
+    assert q.upsert.call_args.kwargs["on_conflict"] == "year_month,theme_name"
+    assert payload["year_month"] == "2026-06"
+    assert payload["theme_name"] == "Theme A"
+    assert payload["key_milestones"] == [{"milestone": "X"}]
+    assert payload["source_run_count"] == 12
+    # updated_at must be stamped on EVERY upsert (staleness rules read it);
+    # created_at must be absent so UPDATE preserves the original.
+    assert payload["updated_at"]
+    assert "created_at" not in payload
+
+
+def test_upsert_monthly_synthesis_degrades():
+    manager = SupabaseManager()
+    manager.available = False
+    assert manager.upsert_monthly_synthesis("2026-06", "T", "p", [], 1) is False
+
+    manager.available = True
+    assert manager.upsert_monthly_synthesis("2026-06", "T", "", [], 1) is False
+
+    q = MagicMock()
+    q.upsert.return_value = q
+    q.execute.side_effect = RuntimeError("db down")
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+    assert manager.upsert_monthly_synthesis("2026-06", "T", "p", [], 1) is False
+
+
+def _month_query_mocks(run_rows, brief_rows):
+    """trend_runs + theme_summaries query chains for get_theme_briefs_for_month."""
+    runs_q = _query_chain(run_rows)
+    sums_q = _query_chain(brief_rows)
+    sums_q.in_.return_value = sums_q
+    client = MagicMock()
+    client.table.side_effect = lambda name: runs_q if name == "trend_runs" else sums_q
+    return client, runs_q, sums_q
+
+
+def test_get_theme_briefs_for_month_bounds_and_join():
+    manager = SupabaseManager()
+    manager.available = True
+    run_rows = [
+        {"id": "r2", "run_timestamp": "2026-06-20T12:00:00+00:00", "run_date": "2026-06-20"},
+        {"id": "r1", "run_timestamp": "2026-06-02T12:00:00+00:00", "run_date": "2026-06-02"},
+    ]
+    brief_rows = [
+        {"run_id": "r2", "theme_name": "T", "what_is_happening": "later"},
+        {"run_id": "r1", "theme_name": "T", "what_is_happening": "earlier"},
+    ]
+    client, runs_q, sums_q = _month_query_mocks(run_rows, brief_rows)
+    manager.client = client
+
+    result = manager.get_theme_briefs_for_month("2026-06")
+
+    # Bounds on run_date (the local DATE key), not run_timestamp.
+    runs_q.gte.assert_called_with("run_date", "2026-06-01")
+    runs_q.lte.assert_called_with("run_date", "2026-06-30")
+    assert [r["run_date"] for r in result] == ["2026-06-02", "2026-06-20"]
+    assert result[0]["what_is_happening"] == "earlier"
+
+
+def test_get_theme_briefs_for_month_chunks_run_ids():
+    manager = SupabaseManager()
+    manager.available = True
+    run_rows = [
+        {"id": f"r{i}", "run_timestamp": f"2026-06-{(i % 28) + 1:02d}T12:00:00+00:00",
+         "run_date": f"2026-06-{(i % 28) + 1:02d}"}
+        for i in range(60)
+    ]
+    client, _, sums_q = _month_query_mocks(run_rows, [])
+    manager.client = client
+
+    manager.get_theme_briefs_for_month("2026-06")
+
+    assert sums_q.in_.call_count == 2  # 50 + 10
+    assert len(sums_q.in_.call_args_list[0].args[1]) == 50
+    assert len(sums_q.in_.call_args_list[1].args[1]) == 10
+
+
+def test_get_theme_briefs_for_month_schema_drift_retry():
+    manager = SupabaseManager()
+    manager.available = True
+    run_rows = [{"id": "r1", "run_timestamp": "2026-06-02T12:00:00+00:00", "run_date": "2026-06-02"}]
+    brief_rows = [{"run_id": "r1", "theme_name": "T", "what_is_happening": "x"}]
+    client, _, sums_q = _month_query_mocks(run_rows, brief_rows)
+    sums_q.execute.side_effect = [RuntimeError("column further_reading does not exist"),
+                                  MagicMock(data=brief_rows)]
+    manager.client = client
+
+    result = manager.get_theme_briefs_for_month("2026-06")
+
+    assert len(result) == 1
+    assert sums_q.select.call_count == 2
+    first_select = sums_q.select.call_args_list[0].args[0]
+    retry_select = sums_q.select.call_args_list[1].args[0]
+    assert "further_reading" in first_select
+    assert "further_reading" not in retry_select
+    assert "generation_source" not in retry_select
+
+
+def test_get_theme_briefs_for_month_invalid_input_and_degradation():
+    manager = SupabaseManager()
+    manager.available = True
+    manager.client = MagicMock()
+    assert manager.get_theme_briefs_for_month("garbage") is None
+    assert manager.get_theme_briefs_for_month("2026-13") is None
+    assert manager.get_theme_briefs_for_month("") is None
+
+    manager.available = False
+    assert manager.get_theme_briefs_for_month("2026-06") is None
+
+
+def test_get_theme_briefs_for_month_no_runs_returns_empty():
+    manager = SupabaseManager()
+    manager.available = True
+    client, _, _ = _month_query_mocks([], [])
+    manager.client = client
+    assert manager.get_theme_briefs_for_month("2026-06") == []

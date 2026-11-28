@@ -1293,6 +1293,186 @@ class SupabaseManager:
             logger.warning(f"theme_first_seen record failed for {theme_name}: {e}")
             return False
 
+    # ------------------------------------------------------------------
+    # monthly_syntheses (Phase 6.1 — Tier-3 hierarchical memory)
+    # ------------------------------------------------------------------
+
+    def get_run_months(self) -> Optional[List[str]]:
+        """Sorted unique 'YYYY-MM' months that have archived runs.
+
+        Cheap date-column scan of trend_runs; the due-check input for the
+        monthly rollup job. None on failure/unavailable (never raises).
+        """
+        if not self.available:
+            return None
+        try:
+            response = self.client.table("trend_runs")\
+                .select("run_date")\
+                .order("run_date", desc=False)\
+                .execute()
+            if not isinstance(response.data, list):
+                return None
+            months = sorted({
+                str(r["run_date"])[:7] for r in response.data
+                if r.get("run_date")
+            })
+            return months
+        except Exception as e:
+            logger.warning(f"Failed to list run months: {e}")
+            return None
+
+    def get_theme_briefs_for_month(self, year_month: str) -> Optional[List[Dict]]:
+        """All themes' daily briefs for one calendar month, chronological.
+
+        Bounds on trend_runs.run_date (the local DATE key — not
+        run_timestamp), then chunks run_ids into theme_summaries. Selects
+        the narrative sections plus further_reading/generation_source for
+        the rollup; on schema drift (older DB without those columns) it
+        retries with the core select. Returns [] when the month has no
+        runs, None on failure/unavailable/invalid input.
+        """
+        if not self.available:
+            return None
+        import re
+        if not year_month or not re.fullmatch(r"\d{4}-\d{2}", year_month):
+            return None
+        try:
+            import calendar
+            year, month = int(year_month[:4]), int(year_month[5:7])
+            if not 1 <= month <= 12:
+                return None
+            last_day = calendar.monthrange(year, month)[1]
+            date_first = f"{year_month}-01"
+            date_last = f"{year_month}-{last_day:02d}"
+
+            runs_resp = self.client.table("trend_runs")\
+                .select("id, run_timestamp, run_date")\
+                .gte("run_date", date_first)\
+                .lte("run_date", date_last)\
+                .execute()
+            if not runs_resp.data:
+                return []
+            run_lookup = {r["id"]: r for r in runs_resp.data}
+            run_ids = list(run_lookup.keys())
+
+            full_select = (
+                "run_id, theme_name, what_is_happening, why_it_matters, "
+                "what_to_watch, further_reading, generation_source, article_count"
+            )
+            core_select = (
+                "run_id, theme_name, what_is_happening, why_it_matters, "
+                "what_to_watch, article_count"
+            )
+            all_briefs: List[Dict] = []
+            select_cols = full_select
+            chunk_size = 50
+            i = 0
+            while i < len(run_ids):
+                chunk = run_ids[i:i + chunk_size]
+                try:
+                    resp = self.client.table("theme_summaries")\
+                        .select(select_cols)\
+                        .in_("run_id", chunk)\
+                        .execute()
+                except Exception:
+                    if select_cols == full_select:
+                        # Schema drift: retry without the migration-added
+                        # columns (read-side analogue of save_theme_summary's
+                        # retry ladder).
+                        logger.warning(
+                            "theme_summaries optional columns missing; retrying "
+                            "core select (run supabase_migration_provenance.sql "
+                            "/ supabase_migration_further_reading.sql if not yet)"
+                        )
+                        select_cols = core_select
+                        continue  # retry the same chunk
+                    raise
+                if resp.data:
+                    all_briefs.extend(resp.data)
+                i += chunk_size
+
+            results: List[Dict] = []
+            for s in all_briefs:
+                run_meta = run_lookup.get(s["run_id"])
+                if run_meta:
+                    results.append({
+                        **s,
+                        "run_timestamp": run_meta["run_timestamp"],
+                        "run_date": run_meta["run_date"],
+                    })
+            results.sort(key=lambda r: r["run_timestamp"])
+            return results
+        except Exception as e:
+            logger.warning(f"Failed to fetch theme briefs for {year_month}: {e}")
+            return None
+
+    def get_monthly_syntheses(self, year_months: Optional[List[str]] = None) -> Optional[List[Dict]]:
+        """Full monthly_syntheses rows (tiny table), newest month first.
+
+        Serves both the rollup due-check and the History-page expander.
+        None on failure/unavailable/pre-migration (never raises).
+        """
+        if not self.available:
+            return None
+        try:
+            query = self.client.table("monthly_syntheses").select("*")
+            if year_months:
+                query = query.in_("year_month", year_months)
+            response = query.order("year_month", desc=True).execute()
+            if isinstance(response.data, list):
+                return response.data
+            return None
+        except Exception as e:
+            logger.warning(
+                f"Failed to read monthly_syntheses "
+                f"(run supabase_migration_monthly_syntheses.sql if not yet): {e}"
+            )
+            return None
+
+    def upsert_monthly_synthesis(
+        self, year_month: str, theme_name: str, macro_summary: str,
+        key_milestones: List[Dict], source_run_count: int,
+        generation_source: str = "",
+    ) -> bool:
+        """Idempotent overwrite of one (month, theme) Tier-3 synthesis.
+
+        updated_at is stamped explicitly on EVERY upsert — DEFAULT NOW()
+        only fires on INSERT, and the refresh-staleness rules read it.
+        created_at is omitted so the INSERT default applies and UPDATE
+        preserves the original. Returns False (never raises) on failure.
+        """
+        if not self.available or not year_month or not theme_name or not macro_summary:
+            return False
+        payload = {
+            "year_month": year_month,
+            "theme_name": theme_name,
+            "macro_summary": macro_summary,
+            "key_milestones": key_milestones if isinstance(key_milestones, list) else [],
+            "source_run_count": int(source_run_count),
+            "generation_source": (generation_source or "")[:100],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        last_error = None
+        # One retry: the sync Supabase client occasionally surfaces a
+        # transient Windows socket error (WinError 10035) under rapid
+        # backfill traffic, which is safe to retry on an idempotent upsert
+        # (same pattern as insert_article_embeddings).
+        for attempt in range(2):
+            try:
+                self.client.table("monthly_syntheses").upsert(
+                    payload, on_conflict="year_month,theme_name",
+                ).execute()
+                return True
+            except Exception as e:
+                last_error = e
+                if attempt == 0:
+                    time.sleep(1.0)
+        logger.warning(
+            f"Failed to upsert monthly synthesis {year_month}/{theme_name} "
+            f"(run supabase_migration_monthly_syntheses.sql if not yet): {last_error}"
+        )
+        return False
+
     def get_keyword_velocity(self, keywords: List[str], limit: int = 30) -> Optional[List[Dict]]:
         """
         Count keyword mentions per run across article titles and summaries.

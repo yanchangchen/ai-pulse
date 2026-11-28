@@ -196,6 +196,17 @@ class BackgroundRefresher:
                     except Exception as cache_err:
                         logger.debug("BG Pipeline: Failed to clear streamlit cache (expected if run outside main thread): %s", cache_err)
 
+            # 5. Monthly rollups (Phase 6.1) — best-effort Tier-3 synthesis.
+            # Runs even when no new articles were persisted: month rollover
+            # and the biweekly current-month refresh must not be skipped.
+            try:
+                from core.monthly_synthesis import synthesize_due_monthly
+                n_rollups = synthesize_due_monthly(progress=cls.update_progress)
+                if n_rollups:
+                    cls.update_progress(f"[ROLLUP] Wrote {n_rollups} monthly theme synthesis(es)")
+            except Exception as rollup_err:
+                logger.warning("Monthly synthesis step failed: %s", rollup_err)
+
             with cls._lock:
                 state = cls._get_state()
                 state["status"] = "completed"
