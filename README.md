@@ -27,6 +27,26 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 - **Sage agent** — conversational AI research analyst grounded in the Memory Wiki archive plus **hybrid article retrieval** (pgvector dense + Postgres FTS, RRF fusion, temporal bounds and freshness-aware re-ranking), with clickable citations, per-reply evidence popovers, and a chat-time faithfulness judge.
 - **Observability** — every gateway call mirrored to the durable `llm_calls` table; OpenTelemetry traces export to Langfuse Cloud with trace-id linkage.
 
+## 🧠 How Sage's Data Works (brief)
+
+Sage answers questions about months of AI news without reading it all at question time. A daily pipeline **fetches → classifies (7 themes) → summarises** articles into a three-tier memory, and each question triggers **hybrid retrieval → budgeted context assembly → a cited answer** that a second LLM judges for faithfulness.
+
+```
+ Tier 3 🗺️  monthly_syntheses     macro rollups: 1 per theme per month
+ Tier 2 🏙️  theme_summaries       daily briefs: 1 per theme per run
+ Tier 1 🚶  articles + embeddings every article + its 768-dim meaning vector
+                │
+   question → word search (FTS) + meaning search (pgvector)
+                → rank fusion (RRF) + date bounds
+                → pack the context: recent days in full, older months
+                  as rollups, top articles as evidence (~40k char budget)
+                → Sage answers with clickable citations → judge scores it
+```
+
+The tier-aware assembly was eval-gated: faithfulness **0.925 → 0.975** while context cost per covered month dropped **80%** and archive reach extended from ~2 to 6–7 months.
+
+**New to AI/data engineering?** Read the diagram-heavy tour: [BLOG.md → "How Sage's data works: a visual tour for newcomers"](BLOG.md). Deeper references: [Architecture](docs/ARCHITECTURE.md) · [Supabase schema](docs/SUPABASE.md) · [Roadmap](Future.md).
+
 ## 📦 Setup
 
 ### 1. Configure Secrets

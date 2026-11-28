@@ -4,6 +4,211 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-28 — How Sage's data works: a visual tour for newcomers
+
+**Who this is for**: you're new to AI engineering or data engineering, and you want to understand *how an AI assistant can answer questions about months of news without having read it all*. No prior knowledge assumed — every term is explained where it first appears. This is the long, diagram-heavy companion to the brief in the README.
+
+Sage is the conversational analyst inside AI Pulse. Ask it *"How did agentic coding tools evolve between June and September 2026?"* and it answers with a chronological account, citations you can click, and its own assessment. The trick is that Sage never "remembers" the news itself. A **data pipeline** collects, organises, and compresses the news ahead of time, and a **retrieval system** picks out just the relevant pieces for each question. This post follows the data through that whole journey.
+
+The one-picture overview:
+
+```
+  30+ engineering blogs & newsletters
+              │  fetched daily
+              ▼
+   ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+   │     CLASSIFY     │ → │    SUMMARISE     │ → │  STORE & INDEX   │
+   │ sort into 7      │   │ one daily brief  │   │ 3 tiers of       │
+   │ strategic themes │   │ per theme        │   │ memory + vectors │
+   └──────────────────┘   └──────────────────┘   └──────────────────┘
+                                                          │
+              your question                               ▼
+   ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+   │      SAGE        │ ← │     ASSEMBLE     │ ← │     RETRIEVE     │
+   │ the LLM writes   │   │ pack a budgeted  │   │ two search styles│
+   │ a cited answer   │   │ context "suitcase"│  │ fused into one   │
+   └──────────────────┘   └──────────────────┘   └──────────────────┘
+              │
+              ▼
+   a second LLM ("judge") grades the answer's faithfulness
+```
+
+Everything below zooms into one box of that picture.
+
+### 1. Every article's journey: fetch → classify → summarise
+
+Once a day (or on demand), the pipeline visits 30+ sources — company engineering blogs, research newsletters, security write-ups — and collects new articles. Each article then goes through two machines:
+
+**The classifier** decides which of the 7 strategic themes an article belongs to (things like *Frontier Models & Benchmarks* or *AI Security & Trust*). It's a "waterfall" of four checks, cheapest first:
+
+1. **Keywords** — weighted word lists per theme. Fast, free, surprisingly effective.
+2. **TF-IDF** — a statistical measure of how characteristic each word is of a theme. Catches articles that use different vocabulary than the keyword lists.
+3. **An LLM call** — only for the genuinely ambiguous leftovers. (This gate can be switched off entirely once the keyword lists mature.)
+4. **A heuristic fallback** — a relaxed best-guess so nothing falls through the floor.
+
+**The summariser** then writes one intelligence brief per theme per day, in five sections: what happened, engineering trade-offs, product impact, why it matters, what to watch. Two details matter for data quality:
+
+- **Nothing is silently dropped.** If a theme has more articles than one prompt can hold, the summariser splits them into batches, summarises each, then merges the batch briefs into one ("map-reduce" — a pattern borrowed from big-data processing: *map* over the pieces, *reduce* them into one result). Articles that still don't fit get an "aging boost" next run, so the backlog drains fairly instead of starving.
+- **Every run records its own coverage** — "22 of 37 articles reflected, 15 waiting" — so gaps are visible, not invisible.
+
+The results land in **Supabase** (a hosted Postgres database — think of it as the project's shared, cloud filing cabinet) and a local JSON cache.
+
+### 2. Three tiers of memory: the map-zoom idea
+
+Here is the core design. Storing every article forever is easy; *finding the right altitude* for a question is the hard part. So the same intelligence is stored at **three zoom levels**, like a map app:
+
+```
+                        ┌─────────────────────────┐
+   TIER 3  🗺️ country   │   monthly_syntheses     │  "What changed across
+   macro rollups        │   1 rollup per theme    │   the whole quarter?"
+                        │   per month             │
+                        ├─────────────────────────┤
+   TIER 2  🏙️ city      │   theme_summaries       │  "What happened in
+   daily briefs         │   1 brief per theme     │   agentic tools last
+                        │   per run (day)         │   Tuesday?"
+                        ├─────────────────────────┤
+   TIER 1  🚶 street    │   articles +            │  "What exactly did
+   article evidence     │   article_embeddings    │   Simon Willison say
+                        │   every article, with   │   about X? Link me."
+                        │   its meaning-vector    │
+                        └─────────────────────────┘
+```
+
+- **Tier 1 — the raw evidence.** Every article: title, summary, source, date, and the original URL. This is what Sage cites when a claim needs a primary source.
+- **Tier 2 — the diary.** The daily theme briefs from step 1. Good for "what happened recently" questions.
+- **Tier 3 — the chapter summaries.** Once a month completes, a background job reads that month's daily briefs for each theme and asks an LLM to write one **macro synthesis**: the month's arc in ~400 words, plus a list of dated key milestones. Completed months are written once and never change; the current month refreshes every two weeks. This is what makes multi-month questions affordable — more on that in step 4.
+
+**What's an embedding?** Each Tier-1 article also gets an *embedding*: a list of 768 numbers produced by a small model (here, Cloudflare's BGE) that represents the article's **meaning as coordinates**. Articles about similar ideas land near each other in that 768-dimensional space, even if they share no words. "Reasoning token overhead" and "chain-of-thought latency costs" end up as neighbours. The vectors live in Postgres via the **pgvector** extension, with an **HNSW index** — a shortcut structure so a search hops through nearby candidates instead of comparing against every single row.
+
+### 3. Finding the right data: two search styles, one ranked list
+
+When you ask a question, Sage doesn't scan the archive linearly. It runs **hybrid retrieval** — two complementary searches, then a merge:
+
+```
+   "What did labs say about reasoning costs between June and September?"
+              │
+              ▼
+   ┌─────────────────────┐
+   │  parse the dates    │  → window: 2026-06-01 … 2026-09-30
+   └─────────────────────┘
+              │
+      ┌───────┴────────┐
+      ▼                ▼
+ ┌──────────┐    ┌──────────────┐
+ │  SPARSE  │    │    DENSE     │
+ │ exact-ish│    │ meaning-based│
+ │ word match│   │ vector search│
+ │ (Postgres│    │ (pgvector    │
+ │  FTS)    │    │  cosine)     │
+ └──────────┘    └──────────────┘
+      │                │
+      └───────┬────────┘
+              ▼
+   ┌─────────────────────┐
+   │  Reciprocal Rank    │  merge the two ranked lists
+   │  Fusion (RRF)       │  by POSITION, not by score
+   └─────────────────────┘
+              │
+              ▼
+   gentle freshness nudge (only when the question has no dates)
+              │
+              ▼
+   top articles → Sage's evidence section
+```
+
+**Why two styles?** They fail in opposite ways. Word matching (Postgres **full-text search**, which stems words — "running" matches "run") is perfect for exact entities: *"SWE-bench 87.6%"*, *"Llama 3.3 70B"*. Meaning search is perfect for concepts phrased differently than the source. Alone, each misses what the other catches.
+
+**Why fuse by rank?** The two searches produce scores on incomparable scales (a text-relevance number vs a cosine similarity). **Reciprocal Rank Fusion** sidesteps the problem: each list contributes `1/(60 + position)` per article, and the contributions add up. Like two judges ranking contestants — you don't need their scoring rubrics to agree, only their ordering. An article ranked highly by *both* judges wins.
+
+**Time awareness.** The date parser understands "last week", "August 2026", "between June and September", "since July" — and constrains *both* searches to that window. When a question has **no** dates, a small freshness preference nudges newer articles up — deliberately a *tie-break, not a filter*. (An earlier, aggressive version buried five-month-old articles below fresher neighbours and measurably hurt retrieval; on a six-month archive, "decay" must be a gentle opinion, not a guillotine.)
+
+### 4. Packing the suitcase: context assembly
+
+An LLM can only read what you put in its **context window** — the text accompanying your question, measured in tokens (roughly word-pieces). Sage's budget is ~40,000 characters. Six months of daily briefs across 7 themes would overflow it many times over, and even when text *fits*, models pay less attention to the middle of long inputs. So assembly is a **packing problem**, and the three tiers are the compression strategy:
+
+```
+ ┌───────────────────────────────────────────────────────┐
+ │                 THE CONTEXT SUITCASE                  │
+ ├───────────────────────────────────────────────────────┤
+ │  📰 ARTICLE EVIDENCE  (~30% of budget)                │
+ │     top-15 retrieved articles, each with its real URL │
+ │     (search biased toward the rollups' key milestones)│
+ ├───────────────────────────────────────────────────────┤
+ │  🗓️ MONTHLY ROLLUPS  (older completed months)         │
+ │     one macro block per theme-month: the arc +        │
+ │     dated milestones — ~30 daily briefs compressed    │
+ │     into ~1,200 characters                            │
+ ├───────────────────────────────────────────────────────┤
+ │  📖 RECENT DETAIL  (the last 2 run dates)             │
+ │     full 3-section daily briefs — newest news stays   │
+ │     high-resolution                                   │
+ ├───────────────────────────────────────────────────────┤
+ │  📝 CONDENSED OLDER DAYS (whatever budget remains)    │
+ │     2-sentence leads for days without a rollup        │
+ └───────────────────────────────────────────────────────┘
+   unused space in any layer flows back to the others
+```
+
+The rules that keep it honest:
+
+- The **current month always stays Tier-2** (its rollup can be up to two weeks stale — recent news deserves full resolution).
+- A month is represented **once**: either as a rollup or as daily blocks, never both.
+- Every month in scope gets at least one block when budget allows — coverage first, then relevance fills the rest.
+- Milestone links inside rollups are **copied verbatim** from the stored articles — the model is never allowed to invent a URL.
+
+**Does the compression lose the truth?** That's an empirical question, so it was measured. A two-arm evaluation asked 8 multi-month questions with the old assembly and the new one, and a judge LLM graded each answer against the exact context it was given:
+
+```
+                     old (daily briefs only)   new (tier-aware)
+ faithfulness score          0.925          →      0.975
+ characters per              33,640         →      6,848   (−80%)
+ covered month
+ months actually covered      ~2            →      6–7
+```
+
+Same-or-better truthfulness, one-fifth the cost per month of history, and the archive reach *extended* — the old assembly couldn't even see May–September within its row limit. That's the whole point of Tier 3: **zoom out to see further, not to see less.**
+
+### 5. Trust but verify: citations and the judge
+
+Sage's answer is only as good as its grounding, so two mechanisms keep it accountable:
+
+1. **Citations with real links.** Claims cite `[Theme · Run date]` or `[Theme · Month YYYY-MM]`, and article claims carry the original URL as a clickable hyperlink. The UI shows an evidence popover with the exact articles behind each reply.
+2. **A faithfulness judge.** After every grounded reply, a *second* LLM call reads the question, the answer, and the exact context Sage was given, and scores 0–1: is every claim supported? It names any unsupported claims, and the score is stored (`sage_evaluations`) and charted over time. Judge failures are recorded as *excluded*, never as zeros — an outage must not masquerade as hallucination.
+
+```
+   Sage's answer ──┐
+                   ├──→  judge LLM  ──→  score + named claims  ──→  dashboard
+   exact context ──┘         (0–1)
+```
+
+And before any change to retrieval or assembly ships, it must pass an **evaluation gate**: run the old and new versions side-by-side on a fixed question set, and prove no regression. The numbers in step 4 came from exactly such a gate.
+
+### 6. Where everything lives
+
+One table to orient you in the database:
+
+| Table | Plain-English role |
+|---|---|
+| `trend_runs` | one row per daily pipeline run (the diary's dates) |
+| `articles` | Tier 1 — every collected article, deduplicated |
+| `article_embeddings` | Tier 1 — each article's 768-number meaning vector |
+| `theme_summaries` | Tier 2 — the daily briefs per theme |
+| `monthly_syntheses` | Tier 3 — the monthly macro rollups |
+| `theme_first_seen` | when each theme truly debuted in the archive |
+| `sage_evaluations` | the judge's scores for Sage's answers |
+| `llm_calls` | every LLM call: model, tokens, latency, cost class |
+| `app_settings` | small shared state (eval snapshots, tunable knobs) |
+
+Every LLM call is also traced with OpenTelemetry into Langfuse, so any answer can be followed back through the exact prompts, models, and retrieval steps that produced it.
+
+### The design principle in one sentence
+
+**Store at three zoom levels, search two ways, pack a budgeted suitcase, and grade every answer.**
+
+If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (pipeline, retrieval, assembly), [docs/SUPABASE.md](docs/SUPABASE.md) (schema), and [Future.md](Future.md) (the roadmap this tour was built from).
+
+---
+
 ## 2026-11-28 — Phase 5: fusion is mechanical, decay is an opinion
 
 **Problem**: Sage found articles by keyword overlap; the dense index existed but served only the eval gate. Phase 5 wires both legs together — and the interesting engineering turned out to be neither the vectors nor the fusion, but how strongly *freshness* should vote.
