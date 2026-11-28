@@ -10,7 +10,7 @@ Related depth: [ARCHITECTURE.md](ARCHITECTURE.md) (pipeline, retrieval,
 tier-aware assembly), [SUPABASE.md](SUPABASE.md) (schema),
 [QUALITY_EVALUATION.md](QUALITY_EVALUATION.md) (judges),
 [EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md) (vectors).
-Newcomer-friendly visual tour: `BLOG.md` → "How Sage's data works".
+Newcomer-friendly visual tour: `BLOG.md` → "How Sage remembers: from news feeds to cited answers".
 
 ---
 

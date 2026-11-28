@@ -7,7 +7,7 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 ## 2026-11-28 — Agentic Sage: how the deep-research pipeline thinks
 Labels: explainer, sage, gateway
 
-**Who this is for**: you've heard "agentic AI" and want to see what it actually means in a working system — not a chatbot that calls tools, but a small team of specialised LLM calls that plan, check each other's work, and leave an audit trail. This post walks through Sage's deep-research mode step by step. (Companion pieces: "How Sage's data works: a visual tour for newcomers" for the archive behind it, and the Phase 7 journal entry for the engineering war story — both below, filter by the `explainer` / `sage` labels.)
+**Who this is for**: you've heard "agentic AI" and want to see what it actually means in a working system — not a chatbot that calls tools, but a small team of specialised LLM calls that plan, check each other's work, and leave an audit trail. This post walks through Sage's deep-research mode step by step. (Companion pieces: "How Sage remembers: from news feeds to cited answers" for the archive behind it, and the Phase 7 journal entry for the engineering war story — both below, filter by the `explainer` / `sage` labels.)
 
 ### What "agentic" means here
 
@@ -164,12 +164,16 @@ Labels: sage, gateway, evals
 
 ---
 
-## 2026-11-28 — How Sage's data works: a visual tour for newcomers
+## 2026-11-28 — How Sage remembers: from news feeds to cited answers
 Labels: explainer, sage, retrieval, pipeline
 
 **Who this is for**: you're new to AI engineering or data engineering, and you want to understand *how an AI assistant can answer questions about months of news without having read it all*. No prior knowledge assumed — every term is explained where it first appears. This is the long, diagram-heavy companion to the brief in the README.
 
-Sage is the conversational analyst inside AI Pulse. Ask it *"How did agentic coding tools evolve between June and September 2026?"* and it answers with a chronological account, citations you can click, and its own assessment. The trick is that Sage never "remembers" the news itself. A **data pipeline** collects, organises, and compresses the news ahead of time, and a **retrieval system** picks out just the relevant pieces for each question. This post follows the data through that whole journey.
+Sage is the conversational analyst inside AI Pulse. Ask it *"How did agentic coding tools evolve between June and September 2026?"* and it answers with a chronological account, citations you can click, and its own assessment.
+
+The problem it solves: the engine behind Sage is an **LLM** (large language model — the kind of AI that writes text), and an LLM can only read a limited amount of text per question — its *context window*. The archive grows every day; stuffing all of it into every question is impossible, expensive, and counterproductive (models pay less attention to the middle of very long inputs). So Sage never "remembers" the news itself. Instead, a **data pipeline** collects, organises, and compresses the news ahead of time, and a **retrieval system** picks out just the relevant pieces for each question. This post follows the data through that whole journey.
+
+Two loops, one picture: the **top half runs once a day** without you (fetch → classify → summarise → store); the **bottom half runs per question**, in seconds (retrieve → pack → answer → grade).
 
 The one-picture overview:
 
@@ -179,7 +183,7 @@ The one-picture overview:
               ▼
    ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
    │     CLASSIFY     │ → │    SUMMARISE     │ → │  STORE & INDEX   │
-   │ sort into 7      │   │ one daily brief  │   │ 3 tiers of       │
+   │ sort into 8      │   │ one daily brief  │   │ 3 tiers of       │
    │ strategic themes │   │ per theme        │   │ memory + vectors │
    └──────────────────┘   └──────────────────┘   └──────────────────┘
                                                           │
@@ -200,7 +204,7 @@ Everything below zooms into one box of that picture.
 
 Once a day (or on demand), the pipeline visits 30+ sources — company engineering blogs, research newsletters, security write-ups — and collects new articles. Each article then goes through two machines:
 
-**The classifier** decides which of the 7 strategic themes an article belongs to (things like *Frontier Models & Benchmarks* or *AI Security & Trust*). It's a "waterfall" of four checks, cheapest first:
+**The classifier** decides which of the 8 strategic themes an article belongs to (things like *Frontier Models & Benchmarks*, *AI Security & Trust*, or *Robotics & Embodied AI*). It's a "waterfall" of four checks, cheapest first:
 
 1. **Keywords** — weighted word lists per theme. Fast, free, surprisingly effective.
 2. **TF-IDF** — a statistical measure of how characteristic each word is of a theme. Catches articles that use different vocabulary than the keyword lists.
@@ -212,7 +216,7 @@ Once a day (or on demand), the pipeline visits 30+ sources — company engineeri
 - **Nothing is silently dropped.** If a theme has more articles than one prompt can hold, the summariser splits them into batches, summarises each, then merges the batch briefs into one ("map-reduce" — a pattern borrowed from big-data processing: *map* over the pieces, *reduce* them into one result). Articles that still don't fit get an "aging boost" next run, so the backlog drains fairly instead of starving.
 - **Every run records its own coverage** — "22 of 37 articles reflected, 15 waiting" — so gaps are visible, not invisible.
 
-The results land in **Supabase** (a hosted Postgres database — think of it as the project's shared, cloud filing cabinet) and a local JSON cache.
+The results land in **Supabase** — a hosted **Postgres** database (Postgres is the open-source workhorse that stores data as tables of rows; Supabase runs it in the cloud for you). Think of it as the project's shared filing cabinet: any device, any session reads the same memory. A local JSON cache mirrors the latest runs for offline use.
 
 ### 2. Three tiers of memory: the map-zoom idea
 
@@ -229,8 +233,8 @@ Here is the core design. Storing every article forever is easy; *finding the rig
                         │   per run (day)         │   Tuesday?"
                         ├─────────────────────────┤
    TIER 1  🚶 street    │   articles +            │  "What exactly did
-   article evidence     │   article_embeddings    │   Simon Willison say
-                        │   every article, with   │   about X? Link me."
+   article evidence     │   article_embeddings    │   that Anthropic post
+                        │   every article, with   │   say about X? Link me."
                         │   its meaning-vector    │
                         └─────────────────────────┘
 ```
@@ -239,7 +243,11 @@ Here is the core design. Storing every article forever is easy; *finding the rig
 - **Tier 2 — the diary.** The daily theme briefs from step 1. Good for "what happened recently" questions.
 - **Tier 3 — the chapter summaries.** Once a month completes, a background job reads that month's daily briefs for each theme and asks an LLM to write one **macro synthesis**: the month's arc in ~400 words, plus a list of dated key milestones. Completed months are written once and never change; the current month refreshes every two weeks. This is what makes multi-month questions affordable — more on that in step 4.
 
-**What's an embedding?** Each Tier-1 article also gets an *embedding*: a list of 768 numbers produced by a small model (here, Cloudflare's BGE) that represents the article's **meaning as coordinates**. Articles about similar ideas land near each other in that 768-dimensional space, even if they share no words. "Reasoning token overhead" and "chain-of-thought latency costs" end up as neighbours. The vectors live in Postgres via the **pgvector** extension, with an **HNSW index** — a shortcut structure so a search hops through nearby candidates instead of comparing against every single row.
+**What's an embedding?** Each Tier-1 article also gets an *embedding*: a list of 768 numbers produced by a small model (here, Cloudflare's BGE) that represents the article's **meaning as coordinates**. Articles about similar ideas land near each other in that space, even if they share no words — "reasoning token overhead" and "chain-of-thought latency costs" end up as neighbours. Don't try to picture 768 dimensions: imagine a map with 768 axes instead of two. You can't draw it, but the maths of "nearby" works exactly the same, and that's all the search needs.
+
+The vectors live in Postgres via **pgvector** — an add-on that teaches the database to store these number-lists and search them — with an **HNSW index**: a shortcut structure so a search hops through nearby candidates instead of comparing against every single row. (Without it, every question would scan the whole archive.)
+
+**Why three tiers and not one?** Each tier trades detail for reach. A question about one Tuesday needs street view; a question about a quarter needs the country map — feeding it 90 days of street-level detail would overflow the model's reading budget and bury the arc in noise. The tiers let the assembler pick the right altitude per part of the question.
 
 ### 3. Finding the right data: two search styles, one ranked list
 
@@ -277,7 +285,7 @@ When you ask a question, Sage doesn't scan the archive linearly. It runs **hybri
    top articles → Sage's evidence section
 ```
 
-**Why two styles?** They fail in opposite ways. Word matching (Postgres **full-text search**, which stems words — "running" matches "run") is perfect for exact entities: *"SWE-bench 87.6%"*, *"Llama 3.3 70B"*. Meaning search is perfect for concepts phrased differently than the source. Alone, each misses what the other catches.
+**Why two styles?** They fail in opposite ways. Word matching (Postgres **full-text search**, which stems words — "running" matches "run") is perfect for exact entities: *"SWE-bench 87.6%"*, *"Llama 3.3 70B"*. Meaning search is perfect for concepts phrased differently than the source: it compares embeddings by **cosine similarity** — a 0-to-1 measure of how aligned two meaning-fingerprints point (1 = same direction, 0 = unrelated). Alone, each style misses what the other catches. And if either is unavailable — say the embedding service is down — the other still answers: degraded, never broken.
 
 **Why fuse by rank?** The two searches produce scores on incomparable scales (a text-relevance number vs a cosine similarity). **Reciprocal Rank Fusion** sidesteps the problem: each list contributes `1/(60 + position)` per article, and the contributions add up. Like two judges ranking contestants — you don't need their scoring rubrics to agree, only their ordering. An article ranked highly by *both* judges wins.
 
@@ -317,7 +325,7 @@ The rules that keep it honest:
 - Every month in scope gets at least one block when budget allows — coverage first, then relevance fills the rest.
 - Milestone links inside rollups are **copied verbatim** from the stored articles — the model is never allowed to invent a URL.
 
-**Does the compression lose the truth?** That's an empirical question, so it was measured. A two-arm evaluation asked 8 multi-month questions with the old assembly and the new one, and a judge LLM graded each answer against the exact context it was given:
+**Does the compression lose the truth?** That's an empirical question, so it was measured. A two-arm evaluation asked 8 multi-month questions with the old assembly and the new one, and a judge LLM graded each answer against the exact context it was given — a **faithfulness score** from 0 to 1 rating how fully every claim is supported (step 5 explains the judge):
 
 ```
                      old (daily briefs only)   new (tier-aware)
@@ -360,13 +368,15 @@ One table to orient you in the database:
 | `llm_calls` | every LLM call: model, tokens, latency, cost class |
 | `app_settings` | small shared state (eval snapshots, tunable knobs) |
 
-Every LLM call is also traced with OpenTelemetry into Langfuse, so any answer can be followed back through the exact prompts, models, and retrieval steps that produced it.
+Every LLM call is also recorded as a timed step (**span**) in a per-reply tree (**trace**) using OpenTelemetry — the standard instrumentation format — and shipped to **Langfuse**, a trace viewer. So any answer can be followed back through the exact prompts, models, and retrieval steps that produced it. (The companion post "Agentic Sage: how the deep-research pipeline thinks" shows what that trace looks like when Sage runs a whole committee of agents per question.)
 
 ### The design principle in one sentence
 
 **Store at three zoom levels, search two ways, pack a budgeted suitcase, and grade every answer.**
 
-If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (pipeline, retrieval, assembly), [docs/SUPABASE.md](docs/SUPABASE.md) (schema), and [Future.md](Future.md) (the roadmap this tour was built from).
+**To see it live**: open the **Sage** page (🔮 in the sidebar), ask a multi-month question like *"How did frontier model releases evolve between May and October?"*, and open the **📰 Article Evidence** accordion under the reply — those are the exact Tier-1 briefs, with their real links, that grounded the answer. The grounding caption tells you how many summaries, dates, and monthly rollups were packed. For the opt-in deep-research mode (a Scout plans sub-queries, a Fact-Checker reviews the draft before publication), read the companion post: **"Agentic Sage: how the deep-research pipeline thinks"** — filter the blog by the `explainer` label to find both.
+
+If you want the implementation depth behind each box: [docs/SAGE.md](docs/SAGE.md) (the focused Sage reference), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (pipeline, retrieval, assembly), [docs/SUPABASE.md](docs/SUPABASE.md) (schema), and [Future.md](Future.md) (the roadmap this tour was built from).
 
 ---
 

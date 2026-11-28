@@ -45,7 +45,7 @@ Sage answers questions about months of AI news without reading it all at questio
 
 The tier-aware assembly was eval-gated: faithfulness **0.925 → 0.975** while context cost per covered month dropped **80%** and archive reach extended from ~2 to 6–7 months.
 
-**New to AI/data engineering?** Read the diagram-heavy tour: [BLOG.md → "How Sage's data works: a visual tour for newcomers"](BLOG.md). Deeper references: [Architecture](docs/ARCHITECTURE.md) · [Supabase schema](docs/SUPABASE.md) · [Roadmap](Future.md).
+**New to AI/data engineering?** Read the diagram-heavy tour: [BLOG.md → "How Sage remembers: from news feeds to cited answers"](BLOG.md). Deeper references: [Architecture](docs/ARCHITECTURE.md) · [Supabase schema](docs/SUPABASE.md) · [Roadmap](Future.md).
 
 ## 🔮 Sage — the conversational research analyst
 
