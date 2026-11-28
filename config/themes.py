@@ -134,6 +134,36 @@ THEMES = {
             "AI documentation": 2, "lint": 1, "static analysis": 1
         },
         "color": "teal"
+    },
+    # Added 2026-11-28: ~128 archived robotics articles were scattered across
+    # all six other themes (e.g. "Gemini Robotics 2.5" -> Governance, "UN
+    # killer robots" -> AI-Assisted SWE) because no theme owned this vocabulary.
+    "Robotics & Embodied AI": {
+        "keywords": {
+            # Specialist physical-AI signals dominate; generic terms that
+            # overlap with agentic/frontier themes stay at weight 1-2.
+            "robotics": 3, "robot": 2, "robots": 2, "humanoid": 3,
+            "embodied": 3, "embodied AI": 3, "physical AI": 3,
+            "physical agents": 3, "robotic manipulation": 3,
+            "manipulation": 2, "dexterity": 3, "grasping": 3,
+            "pick-and-place": 3, "end effector": 3, "actuator": 2,
+            "robot learning": 3, "robot policy": 3, "diffusion policy": 3,
+            "imitation learning": 3, "teleoperation": 3,
+            "sim-to-real": 3, "robot simulation": 3, "MuJoCo": 3,
+            "Isaac Sim": 3, "world model": 3, "world models": 3,
+            "vision-language-action": 3, "VLA": 3, "RT-2": 3, "OpenVLA": 3,
+            "robot foundation model": 3, "Gemini Robotics": 3,
+            "robotaxi": 3, "self-driving": 3, "autonomous vehicle": 3,
+            "autonomous driving": 3, "autonomous navigation": 2,
+            "Waymo": 3, "Boston Dynamics": 3, "quadruped": 3,
+            "industrial robot": 3, "warehouse robot": 3, "cobots": 3,
+            "collaborative robot": 3, "surgical robot": 3, "exoskeleton": 3,
+            "drone": 2, "UAV": 2, "SLAM": 3, "motion planning": 3,
+            "killer robots": 3, "lethal autonomous weapons": 3,
+            "Physical Intelligence": 3, "Tesla Optimus": 3,
+            "reinforcement learning": 1, "simulation": 1
+        },
+        "color": "pink"
     }
 }
 
@@ -145,6 +175,7 @@ THEME_COLORS = {
     "Governance, Safety & Policy": "#d62728",          # Reds
     "AI Security & Trust": "#8c564b",                  # Crimsons
     "AI-Assisted Software Engineering": "#17becf",     # Teals
+    "Robotics & Embodied AI": "#e377c2",               # Pinks
 }
 
 # Theme order for display

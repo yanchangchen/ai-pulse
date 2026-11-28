@@ -378,7 +378,7 @@ def synthesize_due_monthly(
             month_set = set(months)
             due = [(m, t) for (m, t) in due if m in month_set]
 
-        cap = int(settings.get("monthly_synthesis_max_per_run", 7)) if limit is None else int(limit)
+        cap = int(settings.get("monthly_synthesis_max_per_run", 8)) if limit is None else int(limit)
         if cap > 0:
             due = due[:cap]
         if not due:

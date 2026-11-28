@@ -547,7 +547,7 @@ _MONTHLY_SYNTHESIS_DEFAULTS = {
     "monthly_synthesis_temperature": 0.3,
     "monthly_synthesis_max_input_chars": 120_000,  # ~40k tokens at 3 chars/token
     "monthly_synthesis_max_runs": 40,         # input bound: briefs per theme-month
-    "monthly_synthesis_max_per_run": 7,       # pipeline cost cap (one month's themes)
+    "monthly_synthesis_max_per_run": 8,       # pipeline cost cap (one month's themes)
 }
 
 

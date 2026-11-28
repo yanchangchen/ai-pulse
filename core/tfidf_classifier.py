@@ -20,7 +20,7 @@ def _tokenize(text: str) -> List[str]:
 
 
 class TfidfThemeClassifier:
-    """Pre-computes TF-IDF vector representations for the 7 themes in THEMES
+    """Pre-computes TF-IDF vector representations for the themes in THEMES
     and classifies arbitrary articles via Cosine Similarity.
     """
 

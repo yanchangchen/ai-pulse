@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project: AI Pulse
 
-AI News Intelligence Dashboard — a Streamlit application that aggregates, classifies, and summarises AI industry developments from engineering blogs and newsletters into 7 strategic themes. LLM work runs through a **multi-model gateway** (Qwen Cloud + Google Gemini) with routing, fallback, and provenance; a persistent memory system (local JSON + Markdown Wiki + Supabase cloud sync) feeds prior-run context back into every summary.
+AI News Intelligence Dashboard — a Streamlit application that aggregates, classifies, and summarises AI industry developments from engineering blogs and newsletters into 8 strategic themes (the 8th, Robotics & Embodied AI, was added 2026-11-28). LLM work runs through a **multi-model gateway** (Qwen Cloud + Google Gemini) with routing, fallback, and provenance; a persistent memory system (local JSON + Markdown Wiki + Supabase cloud sync) feeds prior-run context back into every summary.
 
 ## Running the Application
 

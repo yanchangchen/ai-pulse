@@ -3,14 +3,15 @@ Unit tests for core/tfidf_classifier.py and 4-pass waterfall classification gate
 """
 
 import pytest
+from config.themes import THEMES
 from core.tfidf_classifier import TfidfThemeClassifier, tfidf_classify
 from core.classifier import classify_articles, get_latest_gate_stats
 
 
 def test_tfidf_classifier_initialization():
     classifier = TfidfThemeClassifier()
-    assert len(classifier.themes) == 7
-    assert len(classifier.theme_tfidf_norms) == 7
+    assert len(classifier.themes) == len(THEMES)
+    assert len(classifier.theme_tfidf_norms) == len(THEMES)
     assert len(classifier.vocabulary) > 0
 
 
@@ -22,7 +23,7 @@ def test_tfidf_classify_software_engineering():
     assert best_theme == "AI-Assisted Software Engineering"
     assert score > 0.05
     assert isinstance(score_dict, dict)
-    assert len(score_dict) == 7
+    assert len(score_dict) == len(THEMES)
 
 
 def test_tfidf_classify_security():

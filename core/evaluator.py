@@ -9,7 +9,7 @@ LLM Judges (concurrent via ThreadPoolExecutor + Semaphore(3)):
    and compares against the theme originally assigned. Output: `classifier_score`
    and `per_theme_classifier`.
 
-2. **FaithfulnessJudge** — fact-checks summary claims across all 7 themes against
+2. **FaithfulnessJudge** — fact-checks summary claims across all configured themes against
    theme-filtered source articles (excludes empty/fallback sections from mean).
    Output: `faithfulness_score`.
 
@@ -640,21 +640,18 @@ def _heuristic_short_circuit(a: str, b: str) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 
-CATEGORISER_PROMPT = """You are an AI news classifier.  Given a title and summary,
-classify the article into EXACTLY one of these seven themes:
+# Theme list built dynamically from THEMES — a hardcoded list silently
+# excluded new themes (Robotics & Embodied AI) from the categoriser judge.
+_JUDGE_THEME_LIST = "\n".join(f"- {name}" for name in THEMES)
+CATEGORISER_PROMPT = f"""You are an AI news classifier.  Given a title and summary,
+classify the article into EXACTLY one of these {len(THEMES)} themes:
 
-- Agentic Systems & DevTools
-- Frontier Models & Benchmarks
-- Hardware, Compute & LLMOps
-- Enterprise Strategy & ROI
-- Governance, Safety & Policy
-- AI Security & Trust
-- AI-Assisted Software Engineering
+{_JUDGE_THEME_LIST}
 
 Return ONLY the exact theme name on a single line, nothing else.
 
-Title: {title}
-Summary: {summary}
+Title: {{title}}
+Summary: {{summary}}
 """
 
 

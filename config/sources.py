@@ -211,6 +211,52 @@ SOURCES = [
         "url": "https://www.lennysnewsletter.com/feed",
         "type": "rss",
         "category": "newsletter"
+    },
+    # Added 2026-11-28 — feeds verified live (HTTP 200 + XML items) before
+    # adding. Security pack feeds the thinnest theme (AI Security & Trust);
+    # robotics pack feeds the new Robotics & Embodied AI theme; Microsoft
+    # Research fills the missing hyperscaler research voice.
+    {
+        "name": "Trail of Bits Blog",
+        "url": "https://blog.trailofbits.com/feed/",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "Embrace The Red",
+        "url": "https://embracethered.com/blog/index.xml",
+        "type": "rss",
+        "category": "blog"
+    },
+    {
+        "name": "TechCrunch AI",
+        "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+        "type": "rss",
+        "category": "news"
+    },
+    {
+        "name": "The New Stack",
+        "url": "https://thenewstack.io/feed/",
+        "type": "rss",
+        "category": "news"
+    },
+    {
+        "name": "Epoch AI",
+        "url": "https://epochai.substack.com/feed",
+        "type": "rss",
+        "category": "newsletter"
+    },
+    {
+        "name": "IEEE Spectrum Robotics",
+        "url": "https://spectrum.ieee.org/feeds/topic/robotics.rss",
+        "type": "rss",
+        "category": "news"
+    },
+    {
+        "name": "Microsoft Research",
+        "url": "https://www.microsoft.com/en-us/research/feed/",
+        "type": "rss",
+        "category": "blog"
     }
 ]
 

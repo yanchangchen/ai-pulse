@@ -181,3 +181,29 @@ class TestParseWatchlistCategory:
         assert parse_watchlist_category("[] reason") == ""
         assert parse_watchlist_category("[x] ") == "x"
 
+
+# ---------------------------------------------------------------------------
+# Theme registry coverage (8th theme added 2026-11-28)
+# ---------------------------------------------------------------------------
+
+def test_robotics_theme_keyword_gate():
+    from core.classifier import keyword_classify
+
+    assert keyword_classify(
+        "Gemini Robotics 2.5 accelerates real-world general dexterity",
+        "humanoid robot manipulation policy trained sim-to-real",
+    ) == "Robotics & Embodied AI"
+
+
+def test_llm_prompts_offer_every_theme():
+    """Gate-3 prompts must be built from THEMES, not a hardcoded list —
+    a static list silently excluded the 8th theme when it was added."""
+    from config.themes import THEMES
+    from core.evaluator import CATEGORISER_PROMPT
+
+    for name in THEMES:
+        assert name in CATEGORISER_PROMPT
+    # The single-article gateway prompt is built inside the coroutine;
+    # assert the judge template and the theme registry stay in sync.
+    assert str(len(THEMES)) in CATEGORISER_PROMPT
+

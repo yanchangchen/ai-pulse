@@ -135,7 +135,7 @@ streamlit run app.py
 | 9 | Eval Sets | Browsable registry of git-tracked eval question sets (`eval_sets/*.json`) with latest run scores |
 | 10 | Dev Blog | Searchable rendering of the `BLOG.md` engineering journal |
 
-## 🎯 The 7 Strategic Themes
+## 🎯 The 8 Strategic Themes
 
 1. **Agentic Systems & DevTools** — agentic workflows, RAG, MCP, LangChain/LangGraph
 2. **Frontier Models & Benchmarks** — model releases, MoE, KV cache, GPQA/SWE-bench
@@ -144,6 +144,7 @@ streamlit run app.py
 5. **Governance, Safety & Policy** — EU AI Act, export controls, sovereign AI, NIST
 6. **AI Security & Trust** — prompt injection, jailbreaks, guardrails, agent hijack
 7. **AI-Assisted Software Engineering** — Cursor, Claude Code, Copilot, AI code review
+8. **Robotics & Embodied AI** — humanoids, VLA/world models, robotaxi, sim-to-real, manipulation *(added 2026-11-28; ~105 archived articles reclassified into it)*
 
 ## 🧪 Tests
 

@@ -96,15 +96,12 @@ def keyword_classify(title: str, summary: str) -> Optional[str]:
 
 async def classify_with_gateway(title: str, summary: str) -> Optional[str]:
     """Use the Model Gateway to classify a single article with fallback & provenance."""
+    # Build the theme list dynamically — a hardcoded list silently excluded
+    # the 8th theme (Robotics & Embodied AI) from Gate 3 when it was added.
+    theme_list = "\n".join(f"- {name}" for name in THEMES)
     prompt = (
-        "You are an AI news classifier. Classify this AI news item into exactly one of these seven themes:\n"
-        "- Agentic Systems & DevTools\n"
-        "- Frontier Models & Benchmarks\n"
-        "- Hardware, Compute & LLMOps\n"
-        "- Enterprise Strategy & ROI\n"
-        "- Governance, Safety & Policy\n"
-        "- AI Security & Trust\n"
-        "- AI-Assisted Software Engineering\n\n"
+        f"You are an AI news classifier. Classify this AI news item into exactly one of these {len(THEMES)} themes:\n"
+        f"{theme_list}\n\n"
         "CRITICAL INSTRUCTION: You must choose the single closest and most relevant category from the list above. "
         "Under no circumstances should you return anything other than the exact theme name (e.g. do not say 'ambiguous', 'other', or 'none').\n\n"
         "Return only the theme name, nothing else.\n\n"
@@ -182,7 +179,7 @@ def find_closest_theme(title: str, summary: str) -> str:
 WATCHLIST_TERM_APPLY_WEIGHT = 2
 
 # Static map from watchlist category (as proposed by the watchlist
-# suggestion prompt, normalised to lowercase) to one of the 7 themes.
+# suggestion prompt, normalised to lowercase) to one of the configured themes.
 # Terms whose category misses the map fall through to find_closest_theme().
 WATCHLIST_CATEGORY_THEME_MAP: Dict[str, str] = {
     "agent frameworks": "Agentic Systems & DevTools",
@@ -220,7 +217,7 @@ def parse_watchlist_category(reason: str) -> str:
 
 
 def map_watchlist_term_to_theme(category: str, term: str) -> str:
-    """Map an approved watchlist term to one of the 7 themes.
+    """Map an approved watchlist term to one of the configured themes.
 
     Uses the static category map first; unknown or invented categories
     fall back to find_closest_theme() over the category+term text.  With
@@ -355,15 +352,12 @@ def classify_articles(articles: List[Dict], skip_llm: Optional[bool] = None) -> 
             batch_items = [f"ID {idx}: {a.get('title', '')}" for idx, a in enumerate(batch)]
             items_text = "\n".join(batch_items)
 
+            # Dynamic theme list — a hardcoded list silently excluded new
+            # themes (Robotics & Embodied AI) from the batch LLM gate.
+            theme_list = "\n".join(f"- {name}" for name in THEMES)
             system_prompt = (
-                "You are an AI news classifier. You must categorize articles into exactly one of these seven themes:\n"
-                "- Agentic Systems & DevTools\n"
-                "- Frontier Models & Benchmarks\n"
-                "- Hardware, Compute & LLMOps\n"
-                "- Enterprise Strategy & ROI\n"
-                "- Governance, Safety & Policy\n"
-                "- AI Security & Trust\n"
-                "- AI-Assisted Software Engineering\n\n"
+                f"You are an AI news classifier. You must categorize articles into exactly one of these {len(THEMES)} themes:\n"
+                f"{theme_list}\n\n"
                 "CRITICAL INSTRUCTIONS:\n"
                 "1. You must categorize every single article provided. Do not skip or omit any article.\n"
                 "2. Choose the single closest theme name.\n"

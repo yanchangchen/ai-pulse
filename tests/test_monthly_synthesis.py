@@ -29,7 +29,7 @@ _SETTINGS = {
     "monthly_synthesis_temperature": 0.3,
     "monthly_synthesis_max_input_chars": 120_000,
     "monthly_synthesis_max_runs": 40,
-    "monthly_synthesis_max_per_run": 7,
+    "monthly_synthesis_max_per_run": 8,
 }
 
 

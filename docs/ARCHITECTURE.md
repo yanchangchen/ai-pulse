@@ -402,7 +402,8 @@ mid-month (regenerates once after rollover). Input is bounded
 first+last brief) and feeds only the narrative sections plus verbatim
 further-reading URLs (the only citable links). Calls use `TaskType.SYNTHESISE`
 with `allow_deterministic_fallback=False`; failures write no row and retry next
-run. The pipeline caps calls per run (`monthly_synthesis_max_per_run`, 7);
+run. The pipeline caps calls per run (`monthly_synthesis_max_per_run`, 8 —
+one month's themes);
 offline/pre-migration the job skips silently. Knobs:
 `get_monthly_synthesis_settings()`. The History page's Memory Timeline tab
 shows the rollups read-only.
