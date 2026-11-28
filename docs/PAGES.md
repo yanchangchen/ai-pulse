@@ -21,7 +21,12 @@ expander links to Deep Dive and Sage.
 
 ## `pages/1_Overview.py`
 
-Theme summary cards with provenance chips and key takeaways.
+Theme cards for the **latest intelligence run** (run-scoped framing: each brief
+synthesises articles selected THIS run — newly fetched + backlog drained).
+Run-level 🆕/✅/⏳ strip (`compute_run_processing_stats`); per-theme coverage
+always stated as "N of M reflected · K waiting" **including the zero state**
+(`theme_coverage_counts`); the 14-day lookback is a source-scope caption, not
+the display unit. Provenance chips + significance/watchlist expanders.
 
 ## `pages/2_Deep_Dive.py`
 
@@ -63,7 +68,19 @@ Sage & Memory Wiki work.
 
 ## `pages/6_Trend_Analytics.py`
 
-Historical thematic momentum & theme drilldown timeline.
+Baseline, emerging trends & longitudinal arcs (redesigned 2026-11-28; pure
+computations in `core/trend_stats.py`, tested in `tests/test_trend_stats.py`):
+
+- **Theme momentum (normalised)** — theme *share* of run articles + 3-run
+  moving average over a 30-run horizon (raw counts in an expander);
+  normalising removes source-volume noise.
+- **🚀 Baseline vs Emerging topics** — specialist keywords (weight ≥3) via
+  `get_keyword_velocity`: last-3-run average vs prior-10-run baseline →
+  emerging (≥1.5×), baseline (stable), fading (<½ baseline).
+- **🗓️ Monthly Macro Arcs** — Tier-3 `monthly_syntheses` per theme: macro
+  prose + dated milestones with verbatim links.
+- **Theme drilldown** — trajectory sparkline + chronological summaries; run
+  lookups batched from the runs frame (was N+1 `get_run_by_id`).
 
 ## `pages/7_Quality_Evaluation.py`
 

@@ -86,6 +86,41 @@ def compute_run_processing_stats(summaries: Dict[str, Dict]) -> Dict[str, int]:
     }
 
 
+def theme_coverage_counts(summary: Dict, fallback_total: int = 0) -> Dict[str, int]:
+    """Per-theme coverage triple for UI captions: included / total / waiting.
+
+    Works on live summary dicts and Supabase-restored rows (counts inside
+    ``generation_log``, possibly a JSON string). ``total`` falls back to
+    ``article_count`` then ``fallback_total``. Always returns ints; the
+    caller renders "N of M reflected · K waiting" INCLUDING the zero state
+    (full coverage is stated, not implied — the Phase 4.1 rule the Overview
+    page had missed).
+    """
+    if not isinstance(summary, dict):
+        return {"included": 0, "total": int(fallback_total or 0), "waiting": 0}
+    gen_log = summary.get("_generation_log") or summary.get("generation_log") or {}
+    if isinstance(gen_log, str):
+        try:
+            gen_log = json.loads(gen_log)
+        except Exception:
+            gen_log = {}
+    if not isinstance(gen_log, dict):
+        gen_log = {}
+    inc = summary.get("included_count")
+    if inc is None:
+        inc = gen_log.get("included_count")
+    tot = summary.get("total_articles") or gen_log.get("total_articles") \
+        or summary.get("article_count") or fallback_total
+    wait = summary.get("waiting_hashes")
+    if wait is None:
+        wait = gen_log.get("waiting_hashes") or []
+    return {
+        "included": int(inc or 0),
+        "total": int(tot or 0),
+        "waiting": len(wait or []),
+    }
+
+
 def _latest_local_run_timestamp_and_fingerprint() -> tuple:
     """Return (timestamp, fingerprint) of the latest local run, or (None, None)."""
     try:
