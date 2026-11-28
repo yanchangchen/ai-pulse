@@ -4,6 +4,86 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-28 — Sage end to end: data, agents, and the grades that keep them honest
+Labels: explainer, sage, evals, retrieval
+
+**Who this is for**: you've seen the pieces — "How Sage remembers: from news feeds to cited answers" (the data tour), "Agentic Sage: how the deep-research pipeline thinks" (the agentic deep dive), and the phase journals — and want the whole map in one place. All below; filter by the `explainer` label. This is the capstone: how the three pillars fit together, and why the third one is the keystone.
+
+### The whole loop in one picture
+
+```
+  30+ news sources
+        │ daily pipeline: fetch → classify (8 themes) → summarise
+        ▼
+  ┌─────────────────────────────┐
+  │  THREE-TIER MEMORY          │  Tier 3: monthly macro arcs
+  │  (the data pillar)          │  Tier 2: daily theme briefs
+  │                             │  Tier 1: articles + meaning-vectors
+  └──────────────┬──────────────┘
+                 │ per question: hybrid search (words + meaning),
+                 │ date-aware, packed into a budgeted "suitcase"
+                 ▼
+  ┌─────────────────────────────┐
+  │  THE ANSWER ENGINE          │  fast: one grounded call
+  │  (the agentic pillar)       │  deep: Scout → retrieval → Analyst
+  │                             │        → Fact-Checker → ≤1 revision
+  └──────────────┬──────────────┘
+                 │ every reply, both modes
+                 ▼
+  ┌─────────────────────────────┐
+  │  THE GRADING SYSTEM         │  chat-time judge: score + named claims
+  │  (the evaluation pillar)    │  controlled gates: before shipping
+  │                             │  improvement loop: exemplars, guard,
+  │                             │  your 👍/👎 corrections
+  └──────┬───────────────┬──────┘
+         │               │
+         ▼               ▼
+  feeds back into    guards changes to
+  the ANSWER ENGINE  the DATA assembly
+  (exemplars, guard) (--gate8 regression rule)
+```
+
+Read that last line twice: it's the difference between a chatbot and a system. The grades don't just produce a dashboard — they change the agent, and they veto regressions in the data pipeline.
+
+### Pillar 1 — Data: store at three zoom levels
+
+The archive stores the same intelligence at three altitudes: every article with its original link and a 768-number *meaning fingerprint* (Tier 1), a daily brief per theme (Tier 2), and a monthly macro synthesis per theme (Tier 3). A question gets the right altitude per part: recent days in full detail, older months as compressed arcs, specific claims drilled down to cited articles. Retrieval runs two complementary searches — exact words and meaning — fused by rank, constrained by any dates in your question. Everything is packed into a fixed reading budget, because an LLM can only read so much per question and pays less attention to the middle of long inputs.
+
+*Deep dive: "How Sage remembers: from news feeds to cited answers".*
+
+### Pillar 2 — Agents: narrow roles, checks and balances
+
+The fast path is one well-grounded call. Deep mode (opt-in) decomposes the work: a **Scout** plans sub-queries, retrieval runs per sub-query, an **Analyst** drafts in Sage's voice, and a **Fact-Checker** — a fresh call with no stake in the draft — validates every statement against the exact context. Flagged statements are dropped, not rephrased; the revision is bounded to one pass. Every stage degrades honestly if it fails, and the whole reply leaves one nested trace: what was asked, what was found, what was drafted, what was flagged.
+
+*Deep dive: "Agentic Sage: how the deep-research pipeline thinks".*
+
+### Pillar 3 — Evaluation: the keystone
+
+Three layers of grading, each with a different job:
+
+1. **The chat-time judge** scores *every* reply (0–1: how fully the context supports each claim) and names the unsupported ones. This is the rolling baseline — the system's vital sign.
+2. **Controlled gates** run *before shipping*: a fixed question set through the old and new version on the same day, each answer judged against its own context. Retrieval changes (Phase 5), tier-aware assembly (6.2), the deep pipeline (7), and now *any* prompt or assembly change (8.4's standing `--gate8` rule) all passed — or were fixed until they did.
+3. **The improvement loop** feeds the signal back: high-scoring replies become few-shot exemplars, flagged claims and your 👎 corrections become negative exemplars, and an opt-in guard auto-tightens grounding when the rolling baseline dips (auto-reverting on recovery).
+
+Why "keystone"? Because the other two pillars are only as good as their measurement — and the project's most instructive bug proved it. The live judge had been truncating context to 8,000 characters while contexts ran ~35,000, chronological, evidence last. For weeks it scored recent citations "unsupported" because *it never saw them*. The controlled gates didn't catch it (they patched around it); connecting the live signal to an automatic actor finally made the discrepancy matter. **Before you close a loop, audit the signal it feeds on.**
+
+### What the gates actually caught
+
+A short honour roll, because "we have evals" is cheap and "the evals changed the design" is the point:
+
+- **Freshness decay** (Phase 5): an aggressive recency preference buried five-month-old articles; the gate showed the regression, and decay became a tie-break, not a filter.
+- **Evidence replacement** (Phase 7): the deep pipeline swapped validated evidence for sub-query hits and faithfulness *dropped* 0.950 → 0.863; the fix — augment, never replace — is now a regression test.
+- **Soft revision** (Phase 7): "cite or drop" let the model rephrase flagged claims into fresh unsupported ones; the rule became "drop entirely".
+- **The judge itself** (Phase 8): the truncation artifact above.
+
+### Where it stands
+
+The phased roadmap (0–8) is complete: foundations and tracing, article grounding, dense embeddings, full-coverage processing, hybrid retrieval, hierarchical memory, multi-agent synthesis, and the closed improvement loop — each gated, each documented in `docs/SAGE.md` (the focused reference) and `docs/ROADMAP_HISTORY.md` (the war stories). What remains is operational: a scheduled ingestion pipeline so the app becomes read-mostly, and the ongoing watch on the rolling baseline as fair judgments accumulate.
+
+*The one-sentence version: Sage remembers at three zoom levels, answers with a committee that checks its own work, and is graded by a system that feeds the grades back — and every part of that sentence was earned by a gate that said "not yet" at least once.*
+
+---
+
 ## 2026-11-28 — Phase 8: the loop closes — Sage learns from its own grades
 Labels: sage, evals
 
