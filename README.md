@@ -54,7 +54,7 @@ Sage has its own page (**Sage** 🔮 in the sidebar; Memory Wiki 🧠 keeps the 
 - **Fast (default)** — one gateway call grounded in the tier-aware context: recent days in full detail, older months as macro rollups, top articles as clickable evidence. ~10–20s.
 - **🔬 Deep research (opt-in toggle)** — the Phase 7 multi-agent pipeline: a **Scout** plans 2–3 sub-queries, retrieval runs per sub-query, an **Analyst** drafts, and a **Fact-Checker** validates every statement against the context (one bounded cite-or-drop revision). Every stage is traced as nested spans in one Langfuse trace and grouped in `llm_calls` by a shared correlation id. ~30–45s.
 
-Every reply — either mode — is graded by a chat-time faithfulness judge, and conversations persist with save/export. **The focused developer reference for all Sage & Memory Wiki work is [docs/SAGE.md](docs/SAGE.md)** (architecture, pipeline stages, knobs, eval gates, and an extension guide); start there before changing anything Sage-related.
+Every reply — either mode — is graded by a chat-time faithfulness judge, and conversations persist with save/export. **The loop closes (Phase 8):** high-scoring replies become few-shot exemplars, judge-flagged claims and your 👎 corrections become negative exemplars, an opt-in grounding guard auto-tightens Sage when rolling faithfulness dips (and auto-reverts on recovery), and a standing regression gate (`--gate8`) guards every prompt/assembly change. **The focused developer reference for all Sage & Memory Wiki work is [docs/SAGE.md](docs/SAGE.md)** (architecture, pipeline stages, improvement loop, knobs, eval gates, extension guide); start there before changing anything Sage-related.
 
 ## 📦 Setup
 

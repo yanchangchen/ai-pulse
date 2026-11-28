@@ -1234,3 +1234,46 @@ def test_sage_settings_merge_key_filtered():
     assert settings["sage_tier3_enabled"] is False
     assert settings["sage_tier3_budget_share"] == 0.6
     assert "unrelated_key" not in settings
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: improvement-loop prompt additions (guard mandate + exemplars)
+# ---------------------------------------------------------------------------
+
+def test_strict_grounding_mandate_and_temperature_cap():
+    from config.settings import _SAGE_DEFAULTS
+    gateway = _mock_gateway(_gateway_result(payload="An answer."))
+    settings = {**_SAGE_DEFAULTS, "sage_strict_grounding": True}
+    with patch("core.sage_agent.get_gateway", return_value=gateway), \
+         patch("config.settings.get_sage_settings", return_value=settings), \
+         patch("core.sage_exemplars.build_exemplar_block", return_value=""):
+        chat_with_sage([{"role": "user", "content": "q"}], "ctx")
+    request = gateway.execute.call_args.args[0]
+    assert "STRICT GROUNDING MANDATE" in request.input
+    assert request.temperature == 0.2
+
+
+def test_exemplar_block_injected_between_persona_and_context():
+    from config.settings import _SAGE_DEFAULTS
+    gateway = _mock_gateway(_gateway_result(payload="An answer."))
+    with patch("core.sage_agent.get_gateway", return_value=gateway), \
+         patch("config.settings.get_sage_settings", return_value=dict(_SAGE_DEFAULTS)), \
+         patch("core.sage_exemplars.build_exemplar_block", return_value="--- EXEMPLARS ---\nGOOD EXAMPLE\n--- END EXEMPLARS ---"):
+        chat_with_sage([{"role": "user", "content": "q"}], "WIKI_CTX_MARKER")
+    prompt = gateway.execute.call_args.args[0].input
+    assert "GOOD EXAMPLE" in prompt
+    assert prompt.index("GOOD EXAMPLE") < prompt.index("WIKI_CTX_MARKER")
+    assert "STRICT GROUNDING MANDATE" not in prompt
+    assert gateway.execute.call_args.args[0].temperature == 0.4
+
+
+def test_exemplars_kill_switch():
+    from config.settings import _SAGE_DEFAULTS
+    gateway = _mock_gateway(_gateway_result(payload="An answer."))
+    settings = {**_SAGE_DEFAULTS, "sage_exemplars_enabled": False}
+    with patch("core.sage_agent.get_gateway", return_value=gateway), \
+         patch("config.settings.get_sage_settings", return_value=settings), \
+         patch("core.sage_exemplars.build_exemplar_block", return_value="SHOULD NOT APPEAR") as blk:
+        chat_with_sage([{"role": "user", "content": "q"}], "ctx")
+    blk.assert_not_called()
+    assert "SHOULD NOT APPEAR" not in gateway.execute.call_args.args[0].input

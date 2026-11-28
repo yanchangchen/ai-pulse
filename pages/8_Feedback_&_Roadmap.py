@@ -219,6 +219,38 @@ def main() -> None:
                             st.warning("Feedback item deleted.")
                             st.rerun()
 
+    # ------------------------------------------------------------------
+    # Phase 8.3: Sage reply ratings — the human signal feeding Sage's
+    # improvement corpus (down-ratings with corrections become negative
+    # exemplars in the Sage prompt).
+    # ------------------------------------------------------------------
+    st.divider()
+    st.subheader("🔮 Sage reply ratings")
+    st.caption(
+        "Thumbs ratings left on Sage answers (Sage page). Corrections on 👎 "
+        "replies are injected into Sage's prompt as negative exemplars — the "
+        "improvement loop learns from you as well as the judge."
+    )
+    _ratings = supabase.get_sage_reply_feedback(limit=30) if supabase.is_available() else []
+    if not _ratings:
+        st.info("No Sage reply ratings yet — rate an answer on the Sage page.")
+    else:
+        _ups = sum(1 for r in _ratings if r.get("rating") == "up")
+        _downs = len(_ratings) - _ups
+        _rc1, _rc2 = st.columns(2)
+        _rc1.metric("👍 Helpful", _ups)
+        _rc2.metric("👎 Needs work", _downs)
+        with st.expander(f"Recent ratings ({len(_ratings)})", expanded=False):
+            for r in _ratings:
+                _icon = "👍" if r.get("rating") == "up" else "👎"
+                _mode = f" · {r['answer_mode']}" if r.get("answer_mode") else ""
+                st.markdown(
+                    f"{_icon} **{(r.get('question') or '')[:100]}**"
+                    f" — {str(r.get('created_at', ''))[:10]}{_mode}"
+                )
+                if r.get("correction"):
+                    st.caption(f"✏️ Correction: {r['correction'][:300]}")
+
 
 if __name__ == "__main__":
     main()

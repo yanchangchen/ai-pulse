@@ -1189,6 +1189,14 @@ def record_sage_faithfulness(
             if answer_mode:
                 row["answer_mode"] = answer_mode
             manager.insert_sage_evaluation(row)
+            # Phase 8.2: close the loop — the guard re-checks the rolling
+            # baseline after every new judgment (fire-and-forget, never
+            # breaks the chat; disabled by default).
+            try:
+                from core.sage_guard import check_and_act
+                check_and_act(manager)
+            except Exception as guard_exc:  # noqa: BLE001
+                logger.debug(f"Sage grounding guard skipped: {guard_exc}")
         except Exception as e:  # noqa: BLE001 — never surface in the chat
             logger.warning(f"Sage faithfulness recording failed: {e}")
 

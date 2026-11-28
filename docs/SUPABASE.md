@@ -35,6 +35,7 @@ Run in the SQL Editor, roughly in order:
 13. `supabase_migration_hybrid_retrieval.sql` — `match_article_embeddings` v2 (article metadata join + date/theme bounds applied after a 4x over-fetched ANN scan) and `theme_first_seen` (Phase 5.4, backfilled from the archive).
 14. `supabase_migration_monthly_syntheses.sql` — `monthly_syntheses` (Phase 6.1 Tier-3 memory): one LLM macro synthesis per theme per month, `UNIQUE(year_month, theme_name)`. No inline backfill — rollups need LLM calls, so backfill via `python backfill_monthly_syntheses.py`.
 15. `supabase_migration_sage_evaluations_mode.sql` — `sage_evaluations.answer_mode` (`fast` | `deep`, NULL = legacy): separates the Phase 7 deep-research replies from fast-path replies in the rolling faithfulness baseline. The insert path retries without the column pre-migration, so judging never breaks while pending.
+16. `supabase_migration_sage_reply_feedback.sql` — `sage_reply_feedback` (Phase 8.3): 👍/👎 ratings + optional corrections on Sage replies; down-ratings with corrections feed the exemplar corpus. Supabase-primary with local JSON fallback (`data/sage_reply_feedback.json`); public read/insert/update RLS.
 
 ## `llm_calls`
 

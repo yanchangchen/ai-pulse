@@ -57,6 +57,71 @@ def _render_sage_article_evidence(articles):
         st.markdown("\n\n".join(items))
 
 
+def _render_reply_rating(msg, idx):
+    """Phase 8.3: 👍/👎 + optional correction on an assistant reply.
+
+    Ratings persist to sage_reply_feedback (Supabase + local fallback) and
+    ride on the message dict so they survive conversation reloads.  Down
+    ratings with corrections feed the exemplar corpus as negative examples.
+    """
+    from core.supabase_client import get_supabase_manager
+    from core.sage_conversations import save_conversation
+
+    manager = get_supabase_manager()
+    rating = msg.get("feedback_rating")
+
+    if not rating:
+        c_up, c_down, _ = st.columns([1, 1, 6])
+        clicked = None
+        if c_up.button("👍", key=f"sage_rate_up_{idx}", help="Good, grounded answer"):
+            clicked = "up"
+        if c_down.button("👎", key=f"sage_rate_down_{idx}", help="Something was wrong — you can add a correction"):
+            clicked = "down"
+        if clicked:
+            # The question this reply answers = nearest preceding user msg.
+            question = ""
+            for m in reversed(st.session_state.sage_messages[:idx]):
+                if m.get("role") == "user":
+                    question = m.get("content", "")
+                    break
+            row = manager.save_sage_reply_feedback(
+                question=question or "(unknown question)",
+                rating=clicked,
+                conversation_id=st.session_state.get("sage_current_conv_id"),
+                answer_excerpt=msg.get("content", "")[:300],
+                answer_mode=msg.get("answer_mode", ""),
+            )
+            if row:
+                msg["feedback_rating"] = clicked
+                msg["feedback_id"] = row.get("id")
+                if st.session_state.get("sage_current_conv_id"):
+                    save_conversation(
+                        messages=st.session_state.sage_messages,
+                        conv_id=st.session_state.sage_current_conv_id,
+                        title=st.session_state.get("sage_conv_title") or None,
+                        theme_filter=st.session_state.get("sage_selected_theme"),
+                        period_label=st.session_state.get("sage_period_preset"),
+                    )
+                st.toast("Thanks — your rating feeds Sage's improvement loop.", icon="🙏")
+                st.rerun()
+        return
+
+    st.caption("👍 rated helpful" if rating == "up" else "👎 rated — correction welcome below")
+    if rating == "down" and msg.get("feedback_id"):
+        with st.expander("✏️ Add a correction (teaches Sage what was wrong)", expanded=False):
+            text = st.text_area(
+                "What was wrong or missing?",
+                value=msg.get("feedback_correction", ""),
+                key=f"sage_corr_{idx}",
+                height=80,
+            )
+            if st.button("Save correction", key=f"sage_corr_save_{idx}"):
+                if manager.update_sage_reply_feedback_correction(msg["feedback_id"], text):
+                    msg["feedback_correction"] = text
+                    st.toast("Correction saved — it becomes a negative exemplar.", icon="✏️")
+                    st.rerun()
+
+
 def _render_pipeline_detail(pipe):
     """Phase 7: the deep-research stage breakdown under a reply."""
     sq = pipe.get("sub_queries") or []
@@ -353,12 +418,13 @@ def _render_sage(supabase):
         )
 
     # Render conversation history
-    for msg in st.session_state.sage_messages:
+    for _idx, msg in enumerate(st.session_state.sage_messages):
         avatar = "🔮" if msg["role"] == "assistant" else "👤"
         with st.chat_message(msg["role"], avatar=avatar):
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
                 _render_sage_article_evidence(msg.get("articles"))
+                _render_reply_rating(msg, _idx)
 
     # Chat input
     user_input = st.chat_input("Ask Sage anything about AI trends...")
@@ -474,6 +540,7 @@ def _render_sage(supabase):
         assistant_msg = {"role": "assistant", "content": sage_response}
         if reply_articles:
             assistant_msg["articles"] = reply_articles
+        assistant_msg["answer_mode"] = "deep" if deep_mode else "fast"
         st.session_state.sage_messages.append(assistant_msg)
 
         # Auto-update saved conversation thread if one is active

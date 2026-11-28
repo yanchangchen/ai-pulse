@@ -479,6 +479,57 @@ see the BLOG.md entry for that week. 4.3–4.6 below landed 2026-11-27.)*
 
 ---
 
+## Phase 8 — Sage improvement loop (CLOSED 2026-11-28)
+
+- [x] **8.1–8.4 The loop closes (2026-11-28, gate8 passed).**
+  - **8.1 Exemplar memory** (`core/sage_exemplars.py`): bounded few-shot
+    block between persona and context in BOTH modes — 2 newest ≥0.95
+    replies (Q + condensed A), judge-flagged claims (≤2/row, 2 rows),
+    ≤2 reader corrections. Budget `sage_exemplar_max_chars` 2500, kill
+    switch `sage_exemplars_enabled`. Design note: exemplars teach answer
+    *shape*, not grounding — no per-reply context copy stored
+    (`sage_evaluations` has no context column; the live context is
+    already in the prompt).
+  - **8.2 Grounding guard** (`core/sage_guard.py`): the auto_remediation
+    structure (enable flag, app_settings write-through state, action
+    audit) PLUS the two things the summariser tuner lacks — a rolling
+    window (shared `rolling_sage_faithfulness`, last 20) and automatic
+    reversibility (trigger <0.8 with ≥10 judgments → strict mandate +
+    temp cap 0.2; recover ≥0.85 → auto-revert; hysteresis prevents
+    oscillation). Host: fire-and-forget after every judge insert in
+    `record_sage_faithfulness`. Page-7 🛡️ toggle + status card; off by
+    default (house pattern).
+  - **8.3 Human feedback**: `sage_reply_feedback` table
+    (`supabase_migration_sage_reply_feedback.sql`, public read/insert/
+    update RLS), 👍/👎 + correction box on every reply (ratings ride the
+    message dict through conversation persistence), Supabase-primary with
+    local JSON fallback. Down+correction → "READER CORRECTION" negative
+    exemplars. Page 8 shows counts + recent ratings.
+  - **8.4 Regression gate**: `python -m core.sage_eval --gate8` — current
+    macro-set mean must not regress (eps 0.02) the live rolling baseline
+    (≥10 judgments or the gate refuses) NOR the previous gate8 snapshot;
+    verdict → `sage_eval_latest` arm "gate8". Shipping rule documented in
+    docs/SAGE.md §5.4/§9.
+  - **The loop's first catch was its own instrument:** the live baseline
+    sat at 0.307 while controlled gates scored 0.9+. Cause: the chat-time
+    judge truncated context to `EVAL_SAGE_CONTEXT_CHARS`=8000 — contexts
+    are ~35k chars chronological-ascending with evidence LAST, so the
+    judge never saw what recent citations referenced (the same artifact
+    the 6.2 harness patches around). Raised to 60000; live judging now
+    matches the harness. Old rows wash out of the rolling window as fair
+    judgments accumulate. Lesson: before closing a loop, audit the
+    signal it feeds on.
+  - **Gate (PASSED 2026-11-28):** gate8 current mean **0.925** (8/8) vs
+    live baseline 0.307 (n=14, recovering) — PASS; no previous gate8.
+  - Tests: `tests/test_sage_guard.py` (11: rolling window/mode filter,
+    enablement, trigger/min-n/hysteresis/revert, audit write-through,
+    history cap, never-raises), `tests/test_sage_exemplars.py` (9),
+    `tests/test_sage_eval.py` (+4 gate8 matrix), `test_sage_agent.py` (+3
+    mandate/temp-cap/exemplar injection/kill switch), `test_evaluator.py`
+    (+2 guard hook), `test_supabase_client.py` (+4 feedback CRUD).
+
+---
+
 ## Decision: tracing backend — Langfuse Cloud (Hobby) *(2026-10)*
 
 > **Decision (2026-10): Langfuse Cloud (Hobby).** Alternatives recorded below for future reference; since instrumentation is OpenTelemetry-based, switching backends later means changing the exporter, not the code.

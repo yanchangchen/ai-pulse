@@ -224,7 +224,13 @@ EVAL_FAITHFULNESS_SUMMARY_CHARS: int = 2000
 EVAL_FAITHFULNESS_ARTICLE_BUDGET: int = 6000
 # Sage faithfulness judge: how much of the wiki/article context string the
 # judge prompt carries (Phase 2 gate — chat-time judging).
-EVAL_SAGE_CONTEXT_CHARS: int = 8000
+# Raised 8000 -> 60000 in Phase 8: live Sage contexts are ~35k chars,
+# chronological ascending with article evidence LAST, so an 8k prefix showed
+# the judge only the oldest narrative and systematically scored recent
+# citations as unsupported (the live baseline sat at ~0.31 while the
+# controlled gates — which patch this to 60k — scored 0.9+).  The guard and
+# gate8 need a trustworthy signal; judging cost stays cheap (flash-lite).
+EVAL_SAGE_CONTEXT_CHARS: int = 60000
 EVAL_OVERLAP_TEXT_CHARS: int = 1500
 
 # Heuristic Jaccard overlap thresholds for the uniqueness judge.
@@ -580,6 +586,11 @@ _SAGE_DEFAULTS = {
     "sage_deep_research_enabled": True,
     "sage_deep_max_subqueries": 3,         # Scout output cap / retrieval fan-out
     "sage_deep_max_revisions": 1,          # bounded fact-check revision loop
+    # Phase 8 improvement loop.
+    "sage_guard_enabled": False,           # grounding guard (page-7 toggle, house pattern)
+    "sage_strict_grounding": False,        # guard-managed: strict cite-or-drop + temp cap
+    "sage_exemplars_enabled": True,        # few-shot block from graded replies
+    "sage_exemplar_max_chars": 2500,       # exemplar block budget
 }
 
 

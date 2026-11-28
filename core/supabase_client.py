@@ -1782,6 +1782,105 @@ class SupabaseManager:
             logger.warning(f"Failed to fetch sage evaluations: {e}")
             return None
 
+    # ------------------------------------------------------------------
+    # Sage reply feedback (Phase 8.3 — human signal for the improvement loop)
+    # ------------------------------------------------------------------
+
+    def save_sage_reply_feedback(
+        self, question: str, rating: str, conversation_id: Optional[str] = None,
+        answer_excerpt: str = "", correction: str = "", answer_mode: str = "",
+    ) -> Optional[Dict]:
+        """Store one 👍/👎 rating (with optional correction) on a Sage reply.
+
+        Supabase primary; local JSON fallback (data/sage_reply_feedback.json)
+        when unavailable/pre-migration — the save_feedback pattern. Returns
+        the row (with id) or None. Never raises.
+        """
+        if rating not in ("up", "down") or not question:
+            return None
+        row = {
+            "conversation_id": conversation_id,
+            "question": question,
+            "answer_excerpt": (answer_excerpt or "")[:300],
+            "rating": rating,
+            "correction": (correction or "")[:2000] or None,
+            "answer_mode": answer_mode or None,
+        }
+        if self.available:
+            try:
+                resp = self.client.table("sage_reply_feedback").insert(row).execute()
+                if resp.data:
+                    return resp.data[0]
+            except Exception as e:
+                logger.warning(f"sage_reply_feedback insert failed (run supabase_migration_sage_reply_feedback.sql if not yet): {e}")
+        # Local fallback
+        try:
+            local = self._load_local_reply_feedback()
+            row = {**row, "id": str(uuid.uuid4()),
+                   "created_at": datetime.now(timezone.utc).isoformat()}
+            local.append(row)
+            self._save_local_reply_feedback(local)
+            return row
+        except Exception as e:
+            logger.warning(f"Local sage reply feedback save failed: {e}")
+            return None
+
+    def get_sage_reply_feedback(self, limit: int = 50) -> List[Dict]:
+        """Recent reply ratings, newest first (Supabase preferred, local
+        fallback). Empty list on failure — never raises."""
+        if self.available:
+            try:
+                resp = self.client.table("sage_reply_feedback")\
+                    .select("*").order("created_at", desc=True).limit(limit).execute()
+                if resp.data:
+                    return resp.data
+            except Exception as e:
+                logger.debug(f"sage_reply_feedback fetch failed: {e}")
+        try:
+            local = self._load_local_reply_feedback()
+            return sorted(local, key=lambda r: str(r.get("created_at", "")), reverse=True)[:limit]
+        except Exception:
+            return []
+
+    def update_sage_reply_feedback_correction(self, feedback_id: str, correction: str) -> bool:
+        """Attach/replace the free-text correction on a rating row."""
+        if not feedback_id:
+            return False
+        if self.available:
+            try:
+                self.client.table("sage_reply_feedback")\
+                    .update({"correction": (correction or "")[:2000]})\
+                    .eq("id", feedback_id).execute()
+                return True
+            except Exception as e:
+                logger.warning(f"sage_reply_feedback correction update failed: {e}")
+        try:
+            local = self._load_local_reply_feedback()
+            for r in local:
+                if r.get("id") == feedback_id:
+                    r["correction"] = (correction or "")[:2000]
+            self._save_local_reply_feedback(local)
+            return True
+        except Exception:
+            return False
+
+    def _load_local_reply_feedback(self) -> List[Dict]:
+        from pathlib import Path as _P
+        path = _P(__file__).resolve().parent.parent / "data" / "sage_reply_feedback.json"
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def _save_local_reply_feedback(self, rows: List[Dict]) -> None:
+        from pathlib import Path as _P
+        path = _P(__file__).resolve().parent.parent / "data" / "sage_reply_feedback.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+
     def get_recent_llm_calls(
         self, task_types: Optional[List[str]] = None, limit: int = 500,
     ) -> Optional[List[Dict]]:

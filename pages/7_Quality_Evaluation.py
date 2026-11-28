@@ -487,6 +487,44 @@ if _auto_on != _auto_rem_enabled():
     _auto_rem_set(_auto_on)
     st.toast("Auto-remediation " + ("enabled" if _auto_on else "disabled"), icon="🤖")
 
+# Phase 8.2: Sage grounding guard — the agent-side counterpart, checked
+# after every chat-time judgment (no evaluation run needed).
+from core.sage_guard import is_enabled as _sage_guard_enabled, set_enabled as _sage_guard_set
+
+_sage_guard_on = st.toggle(
+    "🛡️ Sage grounding guard (auto-tighten when faithfulness dips)",
+    value=_sage_guard_enabled(),
+    help=(
+        "Closes Sage's improvement loop. When the rolling mean of the last 20 judged "
+        "replies drops below 80% (min 10 judgments): engages a strict cite-or-drop "
+        "mandate and caps Sage's temperature at 0.2 in BOTH answer modes. Auto-reverts "
+        "when the rolling mean recovers to 85% (hysteresis prevents oscillation). "
+        "Every action is audited in app_settings (sage_grounding_state)."
+    ),
+    key="cfg_sage_guard",
+)
+if _sage_guard_on != _sage_guard_enabled():
+    _sage_guard_set(_sage_guard_on)
+    st.toast("Sage grounding guard " + ("armed" if _sage_guard_on else "disabled"), icon="🛡️")
+
+try:
+    from core.sage_guard import _load_state as _guard_state
+    _gs = _guard_state()
+    if _gs.get("strict"):
+        st.warning(
+            f"🛡️ Guard ACTIVE: strict grounding engaged at rolling mean "
+            f"{_gs.get('trigger_mean', 0):.0%} ({_gs.get('applied_at', '')[:16]}). "
+            f"Auto-reverts at ≥85%."
+        )
+    elif _gs.get("history"):
+        _last = _gs["history"][-1]
+        st.caption(
+            f"🛡️ Guard last action: {_last.get('action')} at rolling "
+            f"{_last.get('rolling_mean', 0):.0%} ({_last.get('at', '')[:16]})"
+        )
+except Exception:
+    pass
+
 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 # ---------------------------------------------------------------------------
 # Run / pause / resume controls.  The worker thread lives in

@@ -330,3 +330,53 @@ def test_gate7_fails_on_faithfulness_regression():
     verdict, _ = _run_gate7(fast, deep)
     assert verdict["gate_passed"] is False
     assert verdict["faithfulness_ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 8.4: regression gate vs the accumulated live baseline
+# ---------------------------------------------------------------------------
+
+def _run_gate8(current, baseline=(0.9, 20), prev=None):
+    from core.sage_eval import run_phase8_gate
+    manager = _available_manager()
+    manager.get_app_setting.return_value = (
+        {"arm": "gate8", "mean_score": prev} if prev is not None else {}
+    )
+    with patch("core.supabase_client.get_supabase_manager", return_value=manager), \
+         patch("core.sage_guard.rolling_sage_faithfulness", return_value=baseline), \
+         patch("core.sage_eval.run_sage_eval", return_value=current):
+        verdict = run_phase8_gate()
+    return verdict, manager
+
+
+def test_gate8_needs_a_baseline():
+    current = _arm_summary("tier3", score=0.9)
+    verdict, _ = _run_gate8(current, baseline=(0.9, 5))
+    assert verdict["ran"] is False
+    assert verdict["reason"] == "baseline_too_small"
+
+
+def test_gate8_passes_and_snapshots():
+    current = _arm_summary("tier3", score=0.9)
+    verdict, manager = _run_gate8(current, baseline=(0.88, 25))
+    assert verdict["gate_passed"] is True
+    key, value = manager.upsert_app_setting.call_args.args
+    assert key == "sage_eval_latest"
+    assert value["arm"] == "gate8"
+    assert value["baseline_live_mean"] == 0.88
+    assert value["gate_passed"] is True
+
+
+def test_gate8_fails_on_regression_vs_live_baseline():
+    current = _arm_summary("tier3", score=0.80)
+    verdict, _ = _run_gate8(current, baseline=(0.9, 25))
+    assert verdict["gate_passed"] is False
+    assert verdict["baseline_ok"] is False
+
+
+def test_gate8_fails_on_regression_vs_previous_gate():
+    current = _arm_summary("tier3", score=0.90)
+    verdict, _ = _run_gate8(current, baseline=(0.85, 25), prev=0.95)
+    assert verdict["gate_passed"] is False
+    assert verdict["prev_ok"] is False
+    assert verdict["baseline_ok"] is True

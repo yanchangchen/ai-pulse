@@ -69,7 +69,10 @@ Historical thematic momentum & theme drilldown timeline.
 
 Evaluation engine scoring 7 metrics (3 LLM-as-judge routed through the gateway `EVALUATE`
 task + 4 deterministic judges, `ThreadPoolExecutor` in `core/evaluator.py`) with live
-progress panel, in-app remediation, and opt-in auto-remediation.
+progress panel, in-app remediation, and opt-in auto-remediation. Phase 8 adds the
+**🛡️ Sage grounding guard toggle** (auto-tighten/revert on the rolling faithfulness
+baseline, status card) and the **🔬 deep-research pipeline activity** section; the
+Sage Faithfulness section gained an answer-mode filter (fast/deep/untagged).
 
 **🔮 Sage Faithfulness section (Phase 2 gate):** independent of the evaluation runs —
 renders the chat-time judge's `sage_evaluations` rows (rolling mean over the last 20
@@ -82,7 +85,9 @@ selector, keyword suggestions): [docs/QUALITY_EVALUATION.md](QUALITY_EVALUATION.
 ## `pages/8_Feedback_&_Roadmap.py`
 
 Feature requests / bug reports / UX ideas persisted to the `user_feedback` table, plus SDD
-writing prompts.
+writing prompts. Phase 8.3 adds a **🔮 Sage reply ratings** section: 👍/👎 counts and
+recent ratings with corrections from `sage_reply_feedback` (the human signal feeding
+Sage's exemplar corpus).
 
 ## `pages/9_Eval_Sets.py`
 
@@ -139,5 +144,8 @@ any Sage change. Summary:
   note), pipeline summary (deep mode); 📰 Article Evidence popover (deep mode
   uses the pipeline's merged evidence list).
 - Chat-time faithfulness judge fires in both modes — deep mode judges against
-  the pipeline's rebuilt context (`result["context"]`).
+  the pipeline's rebuilt context (`result["context"]`); rows carry `answer_mode`.
+- **👍/👎 + correction** on every reply (Phase 8.3): ratings persist to
+  `sage_reply_feedback` and ride on the message dict; down-ratings with
+  corrections become negative exemplars in Sage's prompt (Phase 8.1).
 - Requires Supabase; local mode shows a connect notice. Session keys `sage_*`.

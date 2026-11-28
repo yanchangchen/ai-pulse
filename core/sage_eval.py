@@ -429,16 +429,101 @@ def run_phase7_gate(path: Optional[Path] = None) -> Dict:
     }
 
 
+# Phase 8.4: the standing regression gate.  ANY change to Sage context
+# assembly or prompts must pass this before shipping: the current code
+# runs the macro set and must not regress (a) the accumulated LIVE rolling
+# baseline from sage_evaluations (the chat-time judge's population) nor
+# (b) the previous gate8 snapshot.  Documented rule: docs/SAGE.md.
+GATE8_MIN_BASELINE_N = 10
+
+
+def run_phase8_gate(path: Optional[Path] = None) -> Dict:
+    """Regression gate against the accumulated sage_evaluations baseline.
+
+    Returns {"ran": False, "reason": ...} when the live baseline is too
+    small (< GATE8_MIN_BASELINE_N judgments) — the gate needs a baseline
+    to defend; accumulate replies first.
+    """
+    from core.supabase_client import get_supabase_manager
+    from core.sage_guard import rolling_sage_faithfulness
+
+    manager = get_supabase_manager()
+    if not manager or not manager.is_available():
+        return {"ran": False, "reason": "supabase_unavailable"}
+    baseline_mean, baseline_n = rolling_sage_faithfulness(manager)
+    if baseline_n < GATE8_MIN_BASELINE_N:
+        return {"ran": False, "reason": "baseline_too_small",
+                "baseline_n": baseline_n, "need": GATE8_MIN_BASELINE_N}
+
+    prev = manager.get_app_setting("sage_eval_latest") or {}
+    prev_mean = prev.get("mean_score") if prev.get("arm") == "gate8" else None
+
+    current = run_sage_eval(path, quiet=True, arm="tier3")
+    if not current.get("ran"):
+        return {"ran": False, "reason": current.get("reason"), "current": current}
+
+    baseline_ok = current["mean_score"] >= baseline_mean - FAITHFULNESS_EPS
+    prev_ok = prev_mean is None or current["mean_score"] >= float(prev_mean) - FAITHFULNESS_EPS
+    n_ok = current["n_scored"] >= MIN_SCORED_PER_ARM
+    gate_passed = baseline_ok and prev_ok and n_ok
+
+    try:
+        manager.upsert_app_setting("sage_eval_latest", {
+            "set_id": SAGE_SET_ID,
+            "ran_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "arm": "gate8",
+            "mean_score": current["mean_score"],
+            "n_scored": current["n_scored"],
+            "n_questions": current["n_questions"],
+            "mean_chars_per_month": current["mean_chars_per_month"],
+            "month_coverage": current["month_coverage"],
+            "latency_mean_ms": current["latency_mean_ms"],
+            "baseline_live_mean": baseline_mean,
+            "baseline_live_n": baseline_n,
+            "previous_gate8_mean": prev_mean,
+            "gate_passed": gate_passed,
+            "baseline_ok": baseline_ok,
+            "prev_ok": prev_ok,
+            "per_question": current["per_question"],
+        })
+    except Exception as e:
+        logger.debug("Failed to snapshot Phase 8 gate: %s", e)
+
+    print(f"\nPhase 8 regression gate - current assembly vs accumulated baseline")
+    print(f"Live rolling baseline: {baseline_mean:.3f} (n={baseline_n})")
+    if prev_mean is not None:
+        print(f"Previous gate8 mean:   {float(prev_mean):.3f}")
+    print(f"Current macro-set mean: {current['mean_score']:.3f} "
+          f"({current['n_scored']}/{current['n_questions']} scored)")
+    print(f"vs live baseline (eps {FAITHFULNESS_EPS}): {'PASS' if baseline_ok else 'REGRESSION'}")
+    print(f"vs previous gate8: {'PASS' if prev_ok else 'REGRESSION'}")
+    print(f"GATE: {'PASSED' if gate_passed else 'NOT PASSED'}")
+
+    return {
+        "ran": True,
+        "gate_passed": gate_passed,
+        "baseline_ok": baseline_ok,
+        "prev_ok": prev_ok,
+        "n_ok": n_ok,
+        "baseline_mean": baseline_mean,
+        "baseline_n": baseline_n,
+        "current": current,
+    }
+
+
 if __name__ == "__main__":
     import argparse
     from core.logger import setup_logger
     setup_logger("sage_eval")
-    parser = argparse.ArgumentParser(description="Sage macro-faithfulness eval / Phase 6.2 + 7 gates")
+    parser = argparse.ArgumentParser(description="Sage macro-faithfulness eval / Phase 6.2 + 7 + 8 gates")
     parser.add_argument("--arm", choices=["legacy", "tier3", "deep"], default="tier3")
     parser.add_argument("--gate", action="store_true", help="run the Phase 6.2 side-by-side gate")
     parser.add_argument("--gate7", action="store_true", help="run the Phase 7 fast-vs-deep gate")
+    parser.add_argument("--gate8", action="store_true", help="run the Phase 8 regression gate vs the live baseline")
     args = parser.parse_args()
-    if args.gate7:
+    if args.gate8:
+        run_phase8_gate()
+    elif args.gate7:
         run_phase7_gate()
     elif args.gate:
         run_phase6_2_gate()

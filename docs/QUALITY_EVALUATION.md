@@ -62,6 +62,16 @@ per-mode rolling means, so the pre-checked deep population can be compared again
 one (Phase 8's regression gate will use this split). The insert retries without the column
 pre-migration (`supabase_migration_sage_evaluations_mode.sql`).
 
+**Sage grounding guard (Phase 8.2):** a 🛡️ toggle next to the auto-remediation
+toggle arms `core/sage_guard.py` — after every chat-time judgment it re-checks the
+rolling baseline (last 20, shared `rolling_sage_faithfulness`): below 80% (≥10
+judgments) it engages `sage_strict_grounding` (cite-or-drop mandate + temperature
+cap 0.2 in both Sage modes); at ≥85% it auto-reverts (hysteresis). Actions audit to
+`app_settings.sage_grounding_state`; a status card shows the active/last action.
+Disabled by default. **Judge signal fix:** `EVAL_SAGE_CONTEXT_CHARS` raised
+8000 → 60000 — the 8k prefix systematically scored recent citations unsupported
+(contexts are chronological-ascending, evidence last), depressing the live baseline.
+
 **Deep-research pipeline activity:** a page section reads the durable `llm_calls` log
 (`get_recent_llm_calls`, the three `sage_*` agent task types) and shows deep-reply count,
 revision rate (Analyst ran twice per correlation id), mean pipeline latency, and stage

@@ -1472,6 +1472,39 @@ class TestSageFaithfulnessJudge:
         row = manager.insert_sage_evaluation.call_args.args[0]
         assert "answer_mode" not in row
 
+    def test_record_runs_grounding_guard_after_insert(self):
+        from core.evaluator import record_sage_faithfulness
+        manager = MagicMock()
+        manager.is_available.return_value = True
+        judge_llm = MagicMock()
+        judge_llm.generate.return_value = '{"score": 0.9, "unsupported_claims": []}'
+
+        with patch("core.evaluator._gateway_has_providers", return_value=True):
+            with patch("core.supabase_client.get_supabase_manager", return_value=manager):
+                with patch("core.evaluator.GatewayJudgeLLM", return_value=judge_llm):
+                    with patch("core.sage_guard.check_and_act", return_value={}) as guard:
+                        thread = record_sage_faithfulness("q", "a", "ctx")
+                        thread.join(timeout=5)
+
+        manager.insert_sage_evaluation.assert_called_once()
+        guard.assert_called_once_with(manager)
+
+    def test_guard_failure_never_breaks_judging(self):
+        from core.evaluator import record_sage_faithfulness
+        manager = MagicMock()
+        manager.is_available.return_value = True
+        judge_llm = MagicMock()
+        judge_llm.generate.return_value = '{"score": 0.9, "unsupported_claims": []}'
+
+        with patch("core.evaluator._gateway_has_providers", return_value=True):
+            with patch("core.supabase_client.get_supabase_manager", return_value=manager):
+                with patch("core.evaluator.GatewayJudgeLLM", return_value=judge_llm):
+                    with patch("core.sage_guard.check_and_act", side_effect=RuntimeError("boom")):
+                        thread = record_sage_faithfulness("q", "a", "ctx")
+                        thread.join(timeout=5)
+
+        manager.insert_sage_evaluation.assert_called_once()
+
     def test_record_skips_row_on_judge_failure(self):
         from core.evaluator import record_sage_faithfulness
         manager = MagicMock()

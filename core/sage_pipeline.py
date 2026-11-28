@@ -278,12 +278,29 @@ def chat_with_sage_deep(
                 articles = rendered
 
         # ---- Stage 3: Analyst draft ----
+        # Phase 8: same improvement-loop prompt additions as the fast path
+        # (exemplars + guard mandate), so both modes learn identically.
+        persona = SAGE_SYSTEM_PROMPT
+        if settings.get("sage_strict_grounding"):
+            persona += (
+                "\n- STRICT GROUNDING MANDATE (auto-engaged: recent faithfulness dipped): "
+                "every claim must be explicitly supported by the context below — cite it "
+                "or drop it. Do NOT extrapolate, generalize, or add framing the sources "
+                "do not state."
+            )
+        from core.sage_exemplars import build_exemplar_block
+        exemplars = build_exemplar_block() if settings.get("sage_exemplars_enabled", True) else ""
+        exemplar_block = (exemplars + "\n\n") if exemplars else ""
         analyst_prompt = (
-            f"{SAGE_SYSTEM_PROMPT}\n\n{context_str}\n\n---\n\n"
+            f"{persona}\n\n{exemplar_block}{context_str}\n\n---\n\n"
             f"{_conversation_block(messages)}"
         )
+        _draft_temp = 0.4
+        if settings.get("sage_strict_grounding"):
+            from core.sage_guard import TARGET_TEMP
+            _draft_temp = min(_draft_temp, TARGET_TEMP)
         result, latency = asyncio.run(_exec_agent(
-            TaskType.SAGE_ANALYST, analyst_prompt, 0.4, 3000, correlation_id, "analyst_draft",
+            TaskType.SAGE_ANALYST, analyst_prompt, _draft_temp, 3000, correlation_id, "analyst_draft",
         ))
         if result is None:
             return {"response": _ENGINE_UNAVAILABLE_MSG, "provenance": None,

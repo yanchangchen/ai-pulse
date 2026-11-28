@@ -4,6 +4,29 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-28 — Phase 8: the loop closes — Sage learns from its own grades
+Labels: sage, evals
+
+**Problem**: seven phases of measurement — traces, judges, gates — and every signal was *descriptive*. Nothing fed back into the agent that produces the answers. The summariser had an evaluate→remediate→re-measure loop; Sage had a report card.
+
+**What happened**:
+
+1. **Exemplar memory.** The newest high-scoring replies (judge ≥95%) become positive few-shot examples — question + condensed answer, showing the *shape* of a well-grounded response. Judge-flagged unsupported claims become negative examples ("AVOID…"). Both inject into the prompt in fast and deep modes, inside a 2,500-char budget so they can never crowd out grounding context.
+
+2. **A grounding guard that knows when to stand down.** When the rolling mean of the last 20 judged replies drops below 80%, Sage auto-engages a strict cite-or-drop mandate and a lower temperature. The part the summariser's tuner never had: **automatic revert** at 85% — hysteresis, so judge noise can't oscillate the mode. Every action is audited to `app_settings`; armed via a toggle, off by default.
+
+3. **Your thumbs join the corpus.** 👍/👎 on every reply, with an optional "what was wrong?" box on 👎. Corrections become "READER CORRECTION" negative exemplars — the loop learns from people as well as the judge.
+
+4. **A standing regression gate.** `--gate8` runs the macro question set against the *accumulated live baseline* and the previous gate snapshot. The rule is now documented: any prompt or assembly change passes it before shipping. No silent regressions.
+
+5. **The loop's first catch was its own instrument.** The live baseline sat at **0.31** while controlled gates scored 0.9+. The chat-time judge was truncating context to 8,000 chars — but contexts are ~35k, chronological, with the article evidence *last*. The judge literally never saw what recent citations referenced, and scored them all unsupported. Raised to 60k (matching the eval harness). Before closing a loop, audit the signal it feeds on — a guard trained on a broken metric would have been tightening Sage against an artifact.
+
+*Lesson: an improvement loop is only as honest as its measurement. The truncation bug had existed since Phase 2, invisible because the controlled gates patched around it — it took connecting the live signal to an automatic actor to make the discrepancy matter.*
+
+**Result**: Phase 8 closed; gate8 passed (current assembly 0.925, 8/8 scored). The phased roadmap (0–8) is complete. The rolling baseline now accumulates fair judgments; the guard, exemplars, and gate all feed on the same shared definition of it.
+
+---
+
 ## 2026-11-28 — Agentic Sage: how the deep-research pipeline thinks
 Labels: explainer, sage, gateway
 

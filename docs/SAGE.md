@@ -170,7 +170,73 @@ Design rules:
 
 ---
 
-## 5. Conversations
+## 5. The improvement loop (Phase 8)
+
+Phases 0–7 *measured* Sage; Phase 8 feeds the signal back into the agent.
+Four mechanisms, all auditable:
+
+### 5.1 Exemplar memory (`core/sage_exemplars.py`)
+
+`build_exemplar_block()` builds a bounded few-shot preamble from the
+improvement corpus and injects it between persona and context in **both**
+answer modes:
+
+- **Positive** — newest replies scored ≥0.95 by the judge: question +
+  condensed answer (the *shape* of a well-grounded answer, not its facts).
+- **Negative** — judge-flagged unsupported claims from recent replies, plus
+  human corrections (5.3): concrete failure patterns to avoid.
+
+Budget `sage_exemplar_max_chars` (2500); kill switch `sage_exemplars_enabled`.
+Empty corpus → empty block → prompt unchanged. No per-reply context copy is
+stored (the live context is already in the prompt; exemplars teach shape).
+
+### 5.2 Grounding guard (`core/sage_guard.py`)
+
+The agent-side counterpart of the summariser's auto-remediation, **with the
+reversibility the summariser tuner lacks**:
+
+- Checked fire-and-forget after every successful judge insert.
+- **Trigger**: rolling mean (last 20 judgments, shared definition
+  `rolling_sage_faithfulness`) < 0.8 with ≥10 judgments → sets
+  `sage_strict_grounding`: both paths append a STRICT GROUNDING MANDATE
+  (cite-or-drop, no extrapolation/framing) and cap temperature at 0.2.
+- **Revert**: rolling mean ≥ 0.85 (hysteresis — judge noise can't oscillate
+  the mode) → flag cleared automatically.
+- **Audit**: every action appended to `app_settings.sage_grounding_state`
+  (+ local mirror), history capped at 20; status card on page 7.
+- Disabled by default; armed via the 🛡️ toggle on Quality Evaluation.
+
+### 5.3 Human feedback (`sage_reply_feedback` table)
+
+👍/👎 on every Sage reply; 👎 opens an optional correction box. Ratings
+persist (Supabase + local JSON fallback) and ride on the message dict.
+Down-ratings **with corrections** become "READER CORRECTION" negative
+exemplars — the loop learns from people as well as the judge. Recent
+ratings surface on the Feedback & Roadmap page.
+
+### 5.4 Regression gate (`python -m core.sage_eval --gate8`)
+
+**The shipping rule: any change to Sage context assembly or prompts must
+pass gate8 before shipping.** It runs the macro question set with the
+current code and requires no regression (eps 0.02) against BOTH:
+
+1. the accumulated **live rolling baseline** (`sage_evaluations`, ≥10
+   judgments — the gate refuses to run without a baseline to defend), and
+2. the previous gate8 snapshot.
+
+Verdict snapshots to `sage_eval_latest` (arm `gate8`). Eval rows never enter
+the rolling baseline.
+
+**Signal-quality fix (Phase 8):** the live judge's context truncation
+(`EVAL_SAGE_CONTEXT_CHARS`) was raised 8000 → 60000. Contexts are ~35k chars
+chronological-ascending with evidence last; the 8k prefix showed the judge
+only the oldest narrative and systematically scored recent citations as
+unsupported (live baseline ~0.31 vs controlled-gate 0.9+). The guard and
+gate8 are only meaningful with a trustworthy judge.
+
+---
+
+## 6. Conversations
 
 `core/sage_conversations.py`: Supabase-primary (`sage_conversations` table,
 `sync_metadata` fallback pre-migration), local JSON mirror
@@ -188,7 +254,7 @@ theme_filter, period_label)`, `delete_conversation`,
 
 ---
 
-## 6. Knobs (`get_sage_settings()`, config/settings.py)
+## 7. Knobs (`get_sage_settings()`, config/settings.py)
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -202,12 +268,16 @@ theme_filter, period_label)`, `delete_conversation`,
 | `sage_deep_research_enabled` | True | deep-mode kill switch (UI toggle chooses per session) |
 | `sage_deep_max_subqueries` | 3 | Scout output cap / retrieval fan-out |
 | `sage_deep_max_revisions` | 1 | bounded fact-check revision loop |
+| `sage_guard_enabled` | False | grounding guard armed (page-7 toggle) |
+| `sage_strict_grounding` | False | guard-managed: strict mandate + temp cap 0.2 |
+| `sage_exemplars_enabled` | True | few-shot block from graded replies |
+| `sage_exemplar_max_chars` | 2500 | exemplar block budget |
 
 All merge key-filtered from `config/custom_settings.json` (Supabase-backed).
 
 ---
 
-## 7. Evaluation & gates
+## 8. Evaluation & gates
 
 - **Chat-time judge**: every grounded reply (both modes) is judged
   fire-and-forget → `sage_evaluations` (score + named unsupported claims),
@@ -221,13 +291,15 @@ All merge key-filtered from `config/custom_settings.json` (Supabase-backed).
     no-regression + chars/covered-month −30% + coverage ≥0.75).
   - `python -m core.sage_eval --gate7` — Phase 7 gate (deep faithfulness
     ≥ fast − 0.02, coverage ≥0.75, deep mean latency ≤60s, ≥6 scored/arm).
+  - `python -m core.sage_eval --gate8` — **standing regression gate**: run
+    before shipping ANY assembly/prompt change (see §5.4).
   - Verdicts snapshot to `app_settings.sage_eval_latest`, rendered on the
     Eval Sets page. Eval rows never enter the rolling `sage_evaluations`
     baseline.
 
 ---
 
-## 8. Extension guide (where to change what)
+## 9. Extension guide (where to change what)
 
 | Change | Touch | Tests to run |
 |---|---|---|
@@ -240,10 +312,12 @@ All merge key-filtered from `config/custom_settings.json` (Supabase-backed).
 | Archive browser / rollups UI | `pages/5_History.py` | compile + manual smoke |
 | Conversation persistence | `core/sage_conversations.py` | `tests/test_sage_conversations.py` |
 | Eval arms / gates | `core/sage_eval.py` | `tests/test_sage_eval.py` |
+| Improvement loop (exemplars / guard / ratings) | `core/sage_exemplars.py`, `core/sage_guard.py`, `sage_reply_feedback` methods | `tests/test_sage_exemplars.py`, `tests/test_sage_guard.py` |
 
 Rules of the road: no deterministic fallback for any Sage task; links only
 verbatim from stored data; per-stage degradation never fatal (except the
 Analyst, which surfaces a notice); keep the `response`/`provenance` return
 contract; new session keys stay `sage_*`; new pages must be registered in
-`_NAV_GROUPS` (a test enforces coverage). After any assembly/prompt change,
-run the relevant gate before shipping (Phase 8 will make this automatic).
+`_NAV_GROUPS` (a test enforces coverage). **After any assembly/prompt change,
+run `python -m core.sage_eval --gate8` before shipping** — the standing
+regression gate against the live baseline (§5.4).

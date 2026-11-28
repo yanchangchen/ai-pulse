@@ -1124,8 +1124,23 @@ def chat_with_sage(
         wiki_context["context"] if isinstance(wiki_context, dict) else wiki_context
     )
 
+    # Phase 8: improvement-loop prompt additions (exemplars + guard).
+    from config.settings import get_sage_settings
+    from core.sage_exemplars import build_exemplar_block
+    _sage_settings = get_sage_settings()
+    persona = SAGE_SYSTEM_PROMPT
+    if _sage_settings.get("sage_strict_grounding"):
+        persona += (
+            "\n- STRICT GROUNDING MANDATE (auto-engaged: recent faithfulness dipped): "
+            "every claim must be explicitly supported by the context below — cite it "
+            "or drop it. Do NOT extrapolate, generalize, or add framing the sources "
+            "do not state."
+        )
+    exemplars = build_exemplar_block() if _sage_settings.get("sage_exemplars_enabled", True) else ""
+    exemplar_block = (exemplars + "\n\n") if exemplars else ""
+
     # Build the full system prompt with wiki context injected
-    system = f"{SAGE_SYSTEM_PROMPT}\n\n{context_str}"
+    system = f"{persona}\n\n{exemplar_block}{context_str}"
 
     # Build conversational prompt from message history
     prompt_parts: List[str] = []
@@ -1140,10 +1155,17 @@ def chat_with_sage(
     # EVALUATE-style verbatim prompting.
     full_prompt = f"{system}\n\n---\n\n{prompt}"
 
+    # Guard strict mode caps temperature (lower randomness while the
+    # rolling faithfulness baseline is dipped).
+    _temp = 0.4
+    if _sage_settings.get("sage_strict_grounding"):
+        from core.sage_guard import TARGET_TEMP
+        _temp = min(_temp, TARGET_TEMP)
+
     request = AITaskRequest(
         task=TaskType.SAGE_CHAT,
         input=full_prompt,
-        temperature=0.4,
+        temperature=_temp,
         max_tokens=3000,
         allow_deterministic_fallback=False,
         metadata={"caller": "sage_agent"},

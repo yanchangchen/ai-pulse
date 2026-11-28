@@ -494,3 +494,64 @@ def test_get_recent_llm_calls_unavailable_returns_none():
     manager = SupabaseManager()
     manager.available = False
     assert manager.get_recent_llm_calls() is None
+
+
+# ---------------------------------------------------------------------------
+# Sage reply feedback (Phase 8.3)
+# ---------------------------------------------------------------------------
+
+def test_save_sage_reply_feedback_validates_rating():
+    manager = SupabaseManager()
+    manager.available = True
+    manager.client = MagicMock()
+    assert manager.save_sage_reply_feedback("q", "meh") is None
+    assert manager.save_sage_reply_feedback("", "up") is None
+    manager.client.table.assert_not_called()
+
+
+def test_save_sage_reply_feedback_supabase_path():
+    manager = SupabaseManager()
+    manager.available = True
+    q = MagicMock()
+    q.insert.return_value = q
+    q.execute.return_value = MagicMock(data=[{"id": "fb-1", "rating": "down"}])
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    row = manager.save_sage_reply_feedback(
+        "When did X ship?", "down", conversation_id="c1",
+        answer_excerpt="A" * 500, correction="date was wrong", answer_mode="deep",
+    )
+
+    assert row["id"] == "fb-1"
+    payload = q.insert.call_args.args[0]
+    assert payload["rating"] == "down"
+    assert payload["correction"] == "date was wrong"
+    assert payload["answer_mode"] == "deep"
+    assert len(payload["answer_excerpt"]) == 300
+
+
+def test_save_sage_reply_feedback_local_fallback():
+    manager = SupabaseManager()
+    manager.available = False
+    saved = []
+    with patch.object(manager, "_load_local_reply_feedback", return_value=[]), \
+         patch.object(manager, "_save_local_reply_feedback", side_effect=lambda rows: saved.extend(rows)):
+        row = manager.save_sage_reply_feedback("q", "up")
+    assert row["rating"] == "up" and row["id"]
+    assert len(saved) == 1
+
+
+def test_update_sage_reply_feedback_correction():
+    manager = SupabaseManager()
+    manager.available = True
+    q = MagicMock()
+    q.update.return_value = q
+    q.eq.return_value = q
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    assert manager.update_sage_reply_feedback_correction("fb-1", "fixed text") is True
+    q.update.assert_called_with({"correction": "fixed text"})
+    q.eq.assert_called_with("id", "fb-1")
+    assert manager.update_sage_reply_feedback_correction("", "x") is False
