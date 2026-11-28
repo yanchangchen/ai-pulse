@@ -1,8 +1,9 @@
 """
 AI Pulse - Quality Evaluation Page
-On-demand and weekly view of 7 quality metrics (Categoriser, Faithfulness, Uniqueness,
+On-demand view of 7 quality metrics (Categoriser, Faithfulness, Uniqueness,
 Grounding, Structural Compliance, Coverage, and Temporal Coherence) produced by
-LLM judge agents and sub-millisecond deterministic checkers in core/evaluator.py.
+LLM judge agents and sub-millisecond deterministic checkers in core/evaluator.py,
+plus the rolling chat-time Sage faithfulness baseline and the pipeline tuner.
 """
 
 from __future__ import annotations
@@ -41,11 +42,11 @@ def _format_theme_suggestion_for_file(theme: str, items: list) -> str:
 
     Example output::
 
-        # THEMES["AI Applications & Architecture"] additions
-        THEMES["AI Applications & Architecture"]["keywords"].update({
+        # THEMES["AI Security & Trust"] additions
+        THEMES["AI Security & Trust"]["keywords"].update({
             "prompt injection": 3,
-            "agentic mesh": 2,
-            "vector index": 1,
+            "agent hijack": 2,
+            "model theft": 1,
         })
     """
     lines = [f'# THEMES["{theme}"] additions',
@@ -870,10 +871,10 @@ except Exception as _e:
 
 if not _sage_evals:
     st.info(
-        "No Sage judgments yet.  Each grounded Sage reply (History → Ask Sage tab) "
-        "is judged in the background against the exact context it was given — ask "
-        "Sage a few questions to start the Phase 2 baseline.  Requires "
-        "`supabase_migration_sage_evaluations.sql`."
+        "No Sage judgments yet.  Each grounded Sage reply (on the **Sage** page, "
+        "fast or 🔬 deep-research mode) is judged in the background against the "
+        "exact context it was given — ask Sage a few questions to start the "
+        "baseline.  Requires `supabase_migration_sage_evaluations.sql`."
     )
 else:
     import pandas as _pd
@@ -902,7 +903,13 @@ else:
     st.caption(
         f"{len(_sage_df)} judgments total  •  "
         f"judge model: {_sage_df['judge_model'].dropna().iloc[-1] if _sage_df['judge_model'].notna().any() else 'auto'}  •  "
-        "each reply scored against the wiki/article context it actually received"
+        "each reply scored against the wiki/article context it actually received "
+        "(fast and 🔬 deep-research replies share this rolling baseline)"
+    )
+    st.caption(
+        "Controlled before/after gates (tier-aware assembly, deep-research pipeline) "
+        "run separately on a fixed macro question set — verdicts and per-question "
+        "scores live on the **Eval Sets** page."
     )
 
     # The actionable payload: what Sage said that its context did not back.
