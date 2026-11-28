@@ -1141,6 +1141,7 @@ def record_sage_faithfulness(
     context: str,
     conversation_id: Optional[str] = None,
     answer_model: Optional[str] = None,
+    answer_mode: Optional[str] = None,
 ) -> Optional[threading.Thread]:
     """Judge a Sage reply in the background and persist the row.
 
@@ -1175,7 +1176,7 @@ def record_sage_faithfulness(
                 # Judge outages / unparseable verdicts skip the row — never
                 # persisted as zeros (see the migration's header comment).
                 return
-            manager.insert_sage_evaluation({
+            row = {
                 "conversation_id": conversation_id,
                 "question": question,
                 "answer_text": answer,
@@ -1184,7 +1185,10 @@ def record_sage_faithfulness(
                 "judge_provider": "gateway",
                 "judge_model": getattr(judge, "model_key", None) or "auto",
                 "answer_model": answer_model,
-            })
+            }
+            if answer_mode:
+                row["answer_mode"] = answer_mode
+            manager.insert_sage_evaluation(row)
         except Exception as e:  # noqa: BLE001 — never surface in the chat
             logger.warning(f"Sage faithfulness recording failed: {e}")
 

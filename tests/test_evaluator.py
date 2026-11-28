@@ -1445,6 +1445,7 @@ class TestSageFaithfulnessJudge:
                         context="=== WIKI CONTEXT ===\nClaude shipped.",
                         conversation_id="conv-1",
                         answer_model="qwen3.8-flash",
+                        answer_mode="deep",
                     )
                     thread.join(timeout=5)
 
@@ -1453,6 +1454,23 @@ class TestSageFaithfulnessJudge:
         assert row["score"] == 1.0
         assert row["conversation_id"] == "conv-1"
         assert row["answer_model"] == "qwen3.8-flash"
+        assert row["answer_mode"] == "deep"
+
+    def test_record_omits_answer_mode_when_not_given(self):
+        from core.evaluator import record_sage_faithfulness
+        manager = MagicMock()
+        manager.is_available.return_value = True
+        judge_llm = MagicMock()
+        judge_llm.generate.return_value = '{"score": 0.9, "unsupported_claims": []}'
+
+        with patch("core.evaluator._gateway_has_providers", return_value=True):
+            with patch("core.supabase_client.get_supabase_manager", return_value=manager):
+                with patch("core.evaluator.GatewayJudgeLLM", return_value=judge_llm):
+                    thread = record_sage_faithfulness("q", "a", "ctx")
+                    thread.join(timeout=5)
+
+        row = manager.insert_sage_evaluation.call_args.args[0]
+        assert "answer_mode" not in row
 
     def test_record_skips_row_on_judge_failure(self):
         from core.evaluator import record_sage_faithfulness

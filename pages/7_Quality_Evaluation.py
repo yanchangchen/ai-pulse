@@ -882,23 +882,41 @@ else:
     _sage_df = _pd.DataFrame(_sage_evals)
     _sage_df["created_at"] = _pd.to_datetime(_sage_df["created_at"], errors="coerce")
     _sage_df = _sage_df.sort_values("created_at")
+    # Phase 7 mode tag (fast / deep); pre-migration rows are "untagged".
+    if "answer_mode" not in _sage_df.columns:
+        _sage_df["answer_mode"] = None
+    _sage_df["answer_mode"] = _sage_df["answer_mode"].fillna("untagged").replace("", "untagged")
+
+    _mode_counts = _sage_df["answer_mode"].value_counts().to_dict()
+    _mode_options = ["All modes"] + [m for m in ("fast", "deep", "untagged") if m in _mode_counts]
+    _mode_sel = st.selectbox(
+        "Filter by answer mode", _mode_options,
+        key="sage_eval_mode_filter", label_visibility="collapsed",
+    )
+    _view = _sage_df if _mode_sel == "All modes" else _sage_df[_sage_df["answer_mode"] == _mode_sel]
+    if len(_mode_counts) > 1:
+        _means = " · ".join(
+            f"**{m}**: {g.tail(20)['score'].astype(float).mean():.0%} (last {min(20, len(g))})"
+            for m, g in _sage_df.groupby("answer_mode")
+        )
+        st.caption(f"Rolling means by mode — {_means}")
 
     _ROLLING = 20
-    _recent = _sage_df.tail(_ROLLING)
+    _recent = _view.tail(_ROLLING)
     _mean = float(_recent["score"].astype(float).mean()) if len(_recent) else 0.0
     _ok = _mean >= 0.8
 
     _m1, _m2 = st.columns([2, 3])
     with _m1:
         st.metric(
-            f"Mean (last {len(_recent)} replies)",
+            f"Mean (last {len(_recent)} replies{'' if _mode_sel == 'All modes' else ', ' + _mode_sel})",
             f"{_mean:.0%}",
             delta="target ≥ 80%",
             delta_color="normal" if _ok else "inverse",
         )
         st.progress(max(0.0, min(1.0, _mean)))
     with _m2:
-        st.line_chart(_sage_df.set_index("created_at")["score"].astype(float))
+        st.line_chart(_view.set_index("created_at")["score"].astype(float))
 
     st.caption(
         f"{len(_sage_df)} judgments total  •  "
@@ -916,6 +934,7 @@ else:
     _with_claims = [
         e for e in _sage_evals
         if isinstance(e.get("unsupported_claims"), list) and e["unsupported_claims"]
+        and (_mode_sel == "All modes" or (e.get("answer_mode") or "untagged") == _mode_sel)
     ]
     if _with_claims:
         with st.expander(f"⚠️ Recent unsupported claims ({len(_with_claims)} replies)", expanded=False):
@@ -925,6 +944,59 @@ else:
                 for claim in e["unsupported_claims"][:5]:
                     st.markdown(f"- 🚩 {claim}")
                 st.divider()
+
+# ---------------------------------------------------------------------------
+# Deep-research pipeline activity (Phase 7) — reads llm_calls, degrades silent
+# ---------------------------------------------------------------------------
+st.divider()
+st.subheader("🔬 Deep-research pipeline activity")
+st.caption(
+    "Stage-level activity from the durable llm_calls log (Scout / Analyst / "
+    "Fact-Checker). Per-reply flag details live in the Sage page's 🔬 Pipeline "
+    "detail expander and in Langfuse traces."
+)
+_pipe_calls = []
+try:
+    if _sage_mgr and _sage_mgr.is_available():
+        _pipe_calls = _sage_mgr.get_recent_llm_calls(
+            task_types=["sage_scout", "sage_analyst", "sage_factcheck"], limit=1000,
+        ) or []
+except Exception:
+    _pipe_calls = []
+
+if not _pipe_calls:
+    st.info(
+        "No deep-research calls recorded yet — flip the 🔬 Deep research toggle "
+        "on the Sage page and ask a multi-month question."
+    )
+else:
+    _pc = pd.DataFrame(_pipe_calls)
+    # One correlation_id = one pipeline run; a run is "deep" when it has a
+    # Scout call, and "revised" when the Analyst ran twice (draft + revision).
+    _runs = [g for _, g in _pc.groupby("correlation_id") if (g["task_type"] == "sage_scout").any()]
+    _n_runs = len(_runs)
+    _n_revised = sum(1 for g in _runs if int((g["task_type"] == "sage_analyst").sum()) >= 2)
+    _run_secs = [float(g["latency_ms"].astype(float).sum()) / 1000.0 for g in _runs]
+    _fail_rate = float((~_pc["success"].astype(bool)).mean())
+
+    _p1, _p2, _p3, _p4 = st.columns(4)
+    _p1.metric("Deep replies (recent log)", _n_runs)
+    _p2.metric(
+        "Revision rate",
+        f"{(_n_revised / _n_runs):.0%}" if _n_runs else "—",
+        help="Share of deep replies where the Fact-Checker flagged claims and the Analyst revised",
+    )
+    _p3.metric(
+        "Mean pipeline latency",
+        f"{(sum(_run_secs) / len(_run_secs)):.1f}s" if _run_secs else "—",
+    )
+    _p4.metric("Stage failure rate", f"{_fail_rate:.1%}")
+    _stage_counts = _pc["task_type"].value_counts().to_dict()
+    st.caption(
+        f"Stage calls in window: scout {_stage_counts.get('sage_scout', 0)} · "
+        f"analyst {_stage_counts.get('sage_analyst', 0)} · "
+        f"factcheck {_stage_counts.get('sage_factcheck', 0)}"
+    )
 
 # ---------------------------------------------------------------------------
 # Time-series

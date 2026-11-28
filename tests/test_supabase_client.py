@@ -435,3 +435,62 @@ def test_get_theme_briefs_for_month_no_runs_returns_empty():
     client, _, _ = _month_query_mocks([], [])
     manager.client = client
     assert manager.get_theme_briefs_for_month("2026-06") == []
+
+
+# ---------------------------------------------------------------------------
+# Sage evaluation mode tag + pipeline activity reads
+# ---------------------------------------------------------------------------
+
+def test_insert_sage_evaluation_retries_without_answer_mode_on_drift():
+    manager = SupabaseManager()
+    manager.available = True
+    q = MagicMock()
+    q.insert.return_value = q
+    q.execute.side_effect = [RuntimeError("column answer_mode does not exist"), MagicMock()]
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    ok = manager.insert_sage_evaluation({"question": "q", "score": 0.9, "answer_mode": "deep"})
+
+    assert ok is True
+    assert q.insert.call_count == 2
+    retry_row = q.insert.call_args_list[1].args[0]
+    assert "answer_mode" not in retry_row
+    assert retry_row["question"] == "q"
+
+
+def test_insert_sage_evaluation_no_retry_without_mode_column():
+    manager = SupabaseManager()
+    manager.available = True
+    q = MagicMock()
+    q.insert.return_value = q
+    q.execute.side_effect = RuntimeError("db down")
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    assert manager.insert_sage_evaluation({"question": "q", "score": 0.9}) is False
+    assert q.insert.call_count == 1
+
+
+def test_get_recent_llm_calls_filter_and_shape():
+    manager = SupabaseManager()
+    manager.available = True
+    rows = [{"task_type": "sage_scout", "success": True, "correlation_id": "abc"}]
+    q = _query_chain(rows)
+    q.in_.return_value = q
+    manager.client = MagicMock()
+    manager.client.table.return_value = q
+
+    result = manager.get_recent_llm_calls(task_types=["sage_scout", "sage_analyst"], limit=200)
+
+    assert result == rows
+    manager.client.table.assert_called_with("llm_calls")
+    q.in_.assert_called_with("task_type", ["sage_scout", "sage_analyst"])
+    q.order.assert_called_with("created_at", desc=True)
+    q.limit.assert_called_with(200)
+
+
+def test_get_recent_llm_calls_unavailable_returns_none():
+    manager = SupabaseManager()
+    manager.available = False
+    assert manager.get_recent_llm_calls() is None

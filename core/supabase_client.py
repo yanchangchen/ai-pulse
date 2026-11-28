@@ -1746,8 +1746,18 @@ class SupabaseManager:
         if not self.available:
             return False
         try:
-            self.client.table("sage_evaluations").insert(row).execute()
-            return True
+            try:
+                self.client.table("sage_evaluations").insert(row).execute()
+                return True
+            except Exception:
+                # Schema drift: pre-migration databases lack answer_mode
+                # (supabase_migration_sage_evaluations_mode.sql). Retry
+                # without it so judging never breaks while pending.
+                if "answer_mode" in row:
+                    retry = {k: v for k, v in row.items() if k != "answer_mode"}
+                    self.client.table("sage_evaluations").insert(retry).execute()
+                    return True
+                raise
         except Exception as e:
             logger.warning(f"Failed to insert sage evaluation: {e}")
             return False
@@ -1770,6 +1780,27 @@ class SupabaseManager:
             return res.data if res.data else []
         except Exception as e:
             logger.warning(f"Failed to fetch sage evaluations: {e}")
+            return None
+
+    def get_recent_llm_calls(
+        self, task_types: Optional[List[str]] = None, limit: int = 500,
+    ) -> Optional[List[Dict]]:
+        """Recent llm_calls rows (newest first) for pipeline activity stats.
+
+        Optional task_type filter (e.g. the Phase 7 sage agent tasks).
+        Returns None on failure/unavailable/pre-migration (never raises).
+        """
+        if not self.available:
+            return None
+        try:
+            query = self.client.table("llm_calls")\
+                .select("task_type, success, latency_ms, tokens_in, tokens_out, correlation_id, created_at")
+            if task_types:
+                query = query.in_("task_type", task_types)
+            res = query.order("created_at", desc=True).limit(limit).execute()
+            return res.data if isinstance(res.data, list) else None
+        except Exception as e:
+            logger.warning(f"Failed to fetch recent llm_calls: {e}")
             return None
 
     def save_sage_conversation(

@@ -42,8 +42,8 @@ points as gaps instead of the persisted 1.0 placeholder.
 ## Sage Faithfulness (chat-time judge, Phase 2 gate)
 
 Unlike the judges above, the Sage faithfulness judge is **not part of the evaluation run** — it
-fires per reply. `record_sage_faithfulness()` (`core/evaluator.py`) is called from the Sage chat
-tab right after each successful reply (engine failures and quota notices are skipped): the
+fires per reply. `record_sage_faithfulness()` (`core/evaluator.py`) is called from the Sage page
+right after each successful reply (engine failures and quota notices are skipped): the
 context string and the answer coexist only at that moment, so the judge runs right there,
 fire-and-forget on a daemon thread (the `llm_calls` pattern — never blocks or fails the chat it
 observes, availability-gated so offline runs stay quiet). One cheap `TaskType.EVALUATE` call
@@ -54,6 +54,19 @@ the rolling mean, per-reply score history, and recent unsupported claims from th
 the Phase 2 baseline: per the recorded sequencing decision there is no pre-2.1 baseline, so
 Phase 3 retrieval changes get measured against the post-2.3 batch that accumulates here.
 Requires `supabase_migration_sage_evaluations.sql`.
+
+**Mode tagging (Phase 7):** rows carry `answer_mode` (`fast` | `deep`; NULL = legacy
+"untagged"), passed by the Sage page per reply. Deep-mode replies are judged against the
+pipeline's *rebuilt* context, not the fast-path one. The page offers a mode filter plus
+per-mode rolling means, so the pre-checked deep population can be compared against the fast
+one (Phase 8's regression gate will use this split). The insert retries without the column
+pre-migration (`supabase_migration_sage_evaluations_mode.sql`).
+
+**Deep-research pipeline activity:** a page section reads the durable `llm_calls` log
+(`get_recent_llm_calls`, the three `sage_*` agent task types) and shows deep-reply count,
+revision rate (Analyst ran twice per correlation id), mean pipeline latency, and stage
+failure rate. Per-reply flag details stay in the Sage page's Pipeline-detail expander and
+Langfuse. Controlled before/after gates (6.2/7) render on the Eval Sets page, not here.
 
 ## In-App Remediation
 

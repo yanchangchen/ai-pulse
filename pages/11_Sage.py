@@ -468,6 +468,7 @@ def _render_sage(supabase):
                     context=judge_context,
                     conversation_id=st.session_state.sage_current_conv_id,
                     answer_model=prov.get("model"),
+                    answer_mode="deep" if deep_mode else "fast",
                 )
 
         assistant_msg = {"role": "assistant", "content": sage_response}
