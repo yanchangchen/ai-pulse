@@ -11,7 +11,7 @@ Labels: explainer, sage, gateway
 
 ### What "agentic" means here
 
-A normal LLM feature is one call: prompt in, text out. An **agentic** system decomposes the work into stages, gives each stage a narrow job, lets stages use tools (like search), and — crucially — has one stage *check another's output* before it reaches you. Sage's deep mode is exactly that, with three roles:
+A normal LLM feature is one call: prompt in, text out. Plenty of "agentic" demos are just that one call with a search tool bolted on. The defining difference here is **checks and balances**: the work is decomposed into stages, each stage has a narrow job, and one stage *reviews another's output before it reaches you* — with a record of every step left behind. Sage's deep mode is exactly that, with three roles (plus search as a tool):
 
 ```
    ┌─────────────────────────────────────────────────────────────┐
@@ -22,7 +22,8 @@ A normal LLM feature is one call: prompt in, text out. An **agentic** system dec
    ┌──────────────────────────────────────────────────────────────┐
    │  🔭 SCOUT — the planner                                      │
    │  Reads the question + archive scope, writes 2-3 focused      │
-   │  search queries (JSON). Doesn't answer anything.             │
+   │  search queries as JSON (a plain-text data format models     │
+   │  can emit reliably). Doesn't answer anything.                │
    │     "EU AI Act enforcement May-Oct 2026"                     │
    │     "US state AI legislation summer 2026"                    │
    │     "export controls chips 2026 timeline"                    │
@@ -30,8 +31,10 @@ A normal LLM feature is one call: prompt in, text out. An **agentic** system dec
                               ▼
    ┌──────────────────────────────────────────────────────────────┐
    │  🔍 RETRIEVAL — the tool (not an LLM)                        │
-   │  Hybrid search (words + meaning) per sub-query; results      │
-   │  AUGMENT the already-validated evidence — never replace it.  │
+   │  Per sub-query: search by exact words AND by meaning         │
+   │  (each article has a numeric "meaning fingerprint" — an      │
+   │  embedding — so similar ideas match even with different      │
+   │  words). Hits AUGMENT the existing evidence, never replace.  │
    └──────────────────────────┬───────────────────────────────────┘
                               ▼
    ┌──────────────────────────────────────────────────────────────┐
@@ -61,21 +64,41 @@ A normal LLM feature is one call: prompt in, text out. An **agentic** system dec
 
 Notice what each role is *not* allowed to do: the Scout never answers, the Fact-Checker never rewrites, the Analyst never searches. Narrow jobs are what make the pipeline debuggable — when something goes wrong, you know which stage to blame.
 
+**Why these separations?** Three reasons that aren't obvious:
+
+- **A writer makes a poor reviewer of its own work.** Asking the same call to "write an answer and check it" lets the model rationalise its own phrasing. The Fact-Checker is a *fresh* call that receives only two things — the context and the draft — with no stake in the draft and no memory of having written it. Separation is what makes the check meaningful.
+- **One search query averages your question's facets.** "Governance shifts since May" blends legislation, export controls, and international policy into one compromise query, and retrieval returns a compromise set. The Scout splits the facets so *each* gets its own best hits — three narrow searches beat one broad one.
+- **The revision is bounded to one pass on purpose.** Every extra pass costs latency and tokens, and an unbounded "check → rewrite → check" loop can oscillate forever. One pass suffices because the rule is *deletion*, not negotiation: a flagged statement is dropped unless the context explicitly supports it, so there is nothing left to argue about.
+
 ### A worked example
 
 Question: *"What major AI governance shifts occurred since May 2026?"*
 
 1. **Scout** emits three sub-queries covering legislation, export controls, and international policy — facets one keyword search would blur together.
-2. **Retrieval** runs each through the hybrid engine (exact-word search + meaning-vector search, fused by rank). The hits *append* to the evidence the fast path already validated.
-3. **Analyst** drafts a chronological account citing `[Governance, Safety & Policy · Month 2026-05]` rollups and dated articles.
+2. **Retrieval** runs each sub-query through the hybrid engine (exact-word search + meaning search, combined by rank position so the two scoring scales never need to agree). The hits *append* to the articles a plain single-search answer would already have found — those stay first; the scout's finds are added alongside, never substituted.
+3. **Analyst** drafts a chronological account citing dated articles and *monthly rollups* — pre-computed ~400-word summaries of a theme's whole month, distilled from its daily briefs (the archive's "chapter summaries"; the data tour below explains how they're made). A citation looks like `[Governance, Safety & Policy · Month 2026-05]`.
 4. **Fact-Checker** flags one sentence: *"the U.S. government's volatile use of export controls as diplomatic leverage"* — the sources mention export controls, but "volatile diplomatic leverage" is the writer's framing, not the archive's words.
 5. **Revision** drops that sentence entirely (it cannot be cited), keeps everything else, and publishes.
 
 You see the whole story in the UI: the 🔬 caption ("3 sub-queries · fact-check 1 claim flagged · revised · 41s"), and a Pipeline-detail expander with the sub-queries, per-stage latencies, and the flagged claim itself.
 
+### What if a stage fails?
+
+A pipeline with five stages has five ways to break, so each stage has a designed fallback — the rule is **degrade honestly, never block silently**:
+
+| If this fails… | …this happens instead |
+|---|---|
+| Scout (planner) | the original question becomes the single search query — you get a fast-mode-shaped answer, still checked |
+| One retrieval | the evidence already gathered stands; the answer proceeds without that sub-query's finds |
+| Fact-Checker | the draft publishes, and the reply is *marked* "checker unavailable" — an outage must never masquerade as a clean check |
+| Revision | the draft publishes unchanged (flagged claims are shown in the pipeline detail, so you can see what was contested) |
+| Analyst (writer) | an honest notice ("engines quota-limited / failed") — never a fabricated answer |
+
+The principle: a committee that can't convene should still give you a truthful solo answer, and tell you which members were absent.
+
 ### Every reply leaves one audit trail
 
-Agentic systems are hard to debug *unless you instrument them first* — that was the roadmap's explicit gate before this phase was allowed to exist. Each deep reply produces **one trace** in Langfuse:
+Agentic systems are hard to debug *unless you instrument them first* — that was the roadmap's explicit gate before this phase was allowed to exist. The vocabulary, briefly: a **span** is a timed record of one step (what ran, how long, which model, how many tokens); a **trace** is the tree of spans for one whole operation; **Langfuse** is the trace viewer they're shipped to. Each deep reply produces one trace:
 
 ```
  sage.pipeline                        ← the whole reply, one trace id
@@ -89,16 +112,18 @@ Agentic systems are hard to debug *unless you instrument them first* — that wa
  └─ gateway.sage_analyst              ← the revision (only if flagged)
 ```
 
-Every call also lands in the durable `llm_calls` table sharing one correlation id — so cost, latency, and model choice per stage are queryable in SQL, not just visible in a UI. If a reply looks wrong, you can open its trace and see exactly what the Scout asked, what retrieval returned, what the draft said, and what the checker flagged.
+Every call also lands in the durable `llm_calls` database table sharing one **correlation id** — a shared tag stamped on all calls belonging to the same reply, so cost, latency, and model choice per stage are queryable in SQL, not just visible in a UI. If a reply looks wrong, you can open its trace and see exactly what the Scout asked, what retrieval returned, what the draft said, and what the checker flagged.
 
 ### Why the checker matters: the gate caught the pipeline lying
+
+First, the measuring stick. A **faithfulness score** is assigned by a judge LLM that reads the question, the answer, and the *exact context the answer was given*, and rates 0–1 how fully every claim is supported (naming the unsupported ones). An **eval gate** is the shipping rule: a fixed set of questions runs through both the old and new version *on the same day*, each answer is judged against its own context, and the new version must not regress. Same-day matters — the archive grows and judge moods vary, so only a side-by-side comparison is honest.
 
 The first evaluation run scored deep mode **0.863** against the fast path's 0.950 — *worse*. Two causes, both instructive:
 
 - The pipeline originally **replaced** the fast path's evidence with sub-query hits. New articles tempted the Analyst into embellished narratives (one answer scored 0.50). Fix: validated evidence stays first; scout finds only append. **Augment grounding, never replace it.**
 - The revision instruction said "cite or drop". The model happily *rephrased* flagged claims into fresh unsupported assertions. Fix: the instruction now says **drop entirely unless explicitly supported**, and the checker treats exaggeration/generalisation as unsupported. **A revision rule must say "drop", not "fix".**
 
-After the fixes, the controlled gate passed: deep **0.950** vs fast 0.900 on the same 8 macro questions, same day — better truthfulness, 90% month coverage, ~44s mean latency. The lesson generalises: *every stage that transforms grounding is a new hallucination surface, and an eval gate is where those surfaces get audited.*
+After the fixes, the controlled gate passed: deep **0.950** vs fast 0.900 on the same 8 macro questions, same day — better truthfulness, ~44s mean latency, and **90% month coverage** (the fraction of months the questions ask about that the assembled context actually reaches — the guard against a pipeline that scores well by answering "I have no data"). The lesson generalises: *every stage that transforms grounding is a new hallucination surface, and an eval gate is where those surfaces get audited.*
 
 ### When to use which mode
 
@@ -108,9 +133,11 @@ After the fixes, the controlled gate passed: deep **0.950** vs fast 0.900 on the
 | Latency | ~10–20s | ~30–50s |
 | LLM calls | 1 | 3–5 |
 | Best for | "what happened last week?", quick facts | multi-month arcs, comparisons, anything you'll act on |
-| Grounding | tier-aware context + hybrid evidence | same, plus sub-query evidence and a pre-publication check |
+| Grounding | recent days in full, older months as rollups, top articles as evidence | all of that, plus sub-query evidence and a pre-publication check |
 
-Both modes are graded by the same post-publication faithfulness judge, and both cite only real links from the archive. Deep mode is a toggle on the Sage page — off by default, because most questions don't need a committee.
+Both modes are graded by the same post-publication faithfulness judge, and both cite only real links from the archive — the checker never invents a URL, it can only flag what the writer said.
+
+**To try it**: open the **Sage** page (🔮 in the sidebar), flip the **🔬 Deep research** toggle, and ask a multi-month question — "How did agentic coding tools evolve between June and September?" is a good first committee case. Watch the spinner narrate the stages, then open the "🔬 Pipeline detail" expander under the reply to see the sub-queries, the stage timings, and anything the fact-checker flagged. It's off by default, because most questions don't need a committee.
 
 *The agentic bet in one sentence: decompose the work, narrow each role, check before publishing, and trace everything — then let an eval gate tell you whether the committee actually beats the solo act.*
 
