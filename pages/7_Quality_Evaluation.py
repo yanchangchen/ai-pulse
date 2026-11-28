@@ -324,11 +324,25 @@ def _render_evaluation_result(report, events: list) -> None:
                         kw_payload[it["term"]] = weight
                 st.markdown(rows_text)
 
-                if st.button(f"⚡ Apply all {len(items)} suggested keywords to {theme}", key=f"btn_apply_kw_{theme}"):
+                # Per-term selection: apply or dismiss any subset (default
+                # all — preserves the old bulk behaviour).
+                _terms = list(dict.fromkeys(it["term"] for it in items if it.get("term")))
+                _sel = st.multiselect(
+                    "Terms to act on:", _terms, default=_terms,
+                    key=f"sel_kw_{theme}",
+                )
+                _bc1, _bc2 = st.columns(2)
+                if _bc1.button(f"⚡ Apply selected ({len(_sel)}) to {theme}", key=f"btn_apply_kw_{theme}", disabled=not _sel):
                     from config.themes import add_keywords_to_theme
-                    add_keywords_to_theme(theme, kw_payload)
-                    st.toast(f"Applied {len(items)} keywords to {theme}!", icon="⚡")
-                    st.success(f"Successfully added {len(items)} keywords to **{theme}** and persisted to custom keywords!")
+                    _payload = {t: kw_payload[t] for t in _sel if t in kw_payload}
+                    add_keywords_to_theme(theme, _payload)
+                    st.toast(f"Applied {len(_payload)} keywords to {theme}!", icon="⚡")
+                    st.success(f"Successfully added {len(_payload)} keywords to **{theme}** and persisted to custom keywords!")
+                    st.rerun()
+                if _bc2.button(f"✖ Dismiss selected ({len(_sel)})", key=f"btn_dismiss_kw_{theme}", disabled=not _sel):
+                    from core.quality_schema import update_keyword_suggestion_status_by_terms
+                    update_keyword_suggestion_status_by_terms(supabase, _sel, "dismissed", kind="theme_keyword")
+                    st.toast(f"Dismissed {len(_sel)} suggestions for {theme}.", icon="✖️")
                     st.rerun()
 
                 st.code(
@@ -346,9 +360,18 @@ def _render_evaluation_result(report, events: list) -> None:
                     reason = (it.get("reason") or "").replace("|", "\\|").replace("\n", " ")
                     rows_text += f"| {term} | {target} | {reason} |\n"
                 st.markdown(rows_text)
-                if st.button(f"⚡ Apply all {len(watch)} watchlist terms", key="btn_apply_watch"):
+                _wterms = list(dict.fromkeys(it["term"] for it in watch if it.get("term")))
+                _wsel = st.multiselect(
+                    "Terms to act on:", _wterms, default=_wterms,
+                    key="sel_watch_fresh",
+                )
+                _wc1, _wc2 = st.columns(2)
+                if _wc1.button(f"⚡ Apply selected ({len(_wsel)})", key="btn_apply_watch", disabled=not _wsel):
                     from core.quality_schema import update_keyword_suggestion_status_by_terms
-                    applied, applied_terms = _apply_watchlist_terms(watch)
+                    _sel_set = set(_wsel)
+                    applied, applied_terms = _apply_watchlist_terms(
+                        [it for it in watch if it.get("term") in _sel_set]
+                    )
                     if applied:
                         # Mark the rows this evaluation just inserted (matched
                         # by term — the fresh panel has no row ids).
@@ -358,6 +381,13 @@ def _render_evaluation_result(report, events: list) -> None:
                         st.toast(f"Applied {applied} watchlist terms to theme keywords!", icon="⚡")
                     else:
                         st.toast("No new watchlist terms to apply (all already keywords).", icon="ℹ️")
+                    st.rerun()
+                if _wc2.button(f"✖ Dismiss selected ({len(_wsel)})", key="btn_dismiss_watch", disabled=not _wsel):
+                    from core.quality_schema import update_keyword_suggestion_status_by_terms
+                    update_keyword_suggestion_status_by_terms(
+                        supabase, _wsel, "dismissed", kind="watchlist_term"
+                    )
+                    st.toast(f"Dismissed {len(_wsel)} watchlist suggestions.", icon="✖️")
                     st.rerun()
         else:
             st.info("No new watchlist terms were suggested.")
@@ -660,18 +690,26 @@ if _pending_suggestions:
                 if _r.get("term"):
                     _kw_payload[_r["term"]] = _weight
             st.markdown(_rows_text)
+            # Per-term selection (default all = the old bulk behaviour).
+            _pterms = list(dict.fromkeys(r["term"] for r in _rows if r.get("term")))
+            _psel = st.multiselect(
+                "Terms to act on:", _pterms, default=_pterms,
+                key=f"sel_pend_{_theme}",
+            )
+            _psel_set = set(_psel)
+            _sel_ids = [r["id"] for r in _rows if r.get("id") and r.get("term") in _psel_set]
             _bc1, _bc2 = st.columns(2)
-            if _bc1.button(f"⚡ Apply all {len(_rows)} to {_theme}", key=f"btn_pend_apply_{_theme}"):
+            if _bc1.button(f"⚡ Apply selected ({len(_psel)}) to {_theme}", key=f"btn_pend_apply_{_theme}", disabled=not _psel):
                 from config.themes import add_keywords_to_theme
-                add_keywords_to_theme(_theme, _kw_payload)
-                update_keyword_suggestion_status(supabase, _ids, "applied")
+                add_keywords_to_theme(_theme, {t: w for t, w in _kw_payload.items() if t in _psel_set})
+                update_keyword_suggestion_status(supabase, _sel_ids, "applied")
                 _cached_pending_suggestions.clear()
-                st.toast(f"Applied {len(_kw_payload)} keywords to {_theme}!", icon="⚡")
+                st.toast(f"Applied {len(_psel)} keywords to {_theme}!", icon="⚡")
                 st.rerun()
-            if _bc2.button(f"✖ Dismiss all {len(_rows)}", key=f"btn_pend_dismiss_{_theme}"):
-                update_keyword_suggestion_status(supabase, _ids, "dismissed")
+            if _bc2.button(f"✖ Dismiss selected ({len(_psel)})", key=f"btn_pend_dismiss_{_theme}", disabled=not _psel):
+                update_keyword_suggestion_status(supabase, _sel_ids, "dismissed")
                 _cached_pending_suggestions.clear()
-                st.toast(f"Dismissed {len(_rows)} suggestions for {_theme}.", icon="✖️")
+                st.toast(f"Dismissed {len(_psel)} suggestions for {_theme}.", icon="✖️")
                 st.rerun()
 
     if _watch_rows:
@@ -684,20 +722,29 @@ if _pending_suggestions:
                 _reason = (_r.get("reason") or "").replace("|", "\\|").replace("\n", " ")
                 _rows_text += f"| {_term} | {_target} | {_reason} |\n"
             st.markdown(_rows_text)
+            _wpterms = list(dict.fromkeys(r["term"] for r in _watch_rows if r.get("term")))
+            _wpsel = st.multiselect(
+                "Terms to act on:", _wpterms, default=_wpterms,
+                key="sel_pend_watch",
+            )
+            _wpsel_set = set(_wpsel)
+            _wsel_ids = [r["id"] for r in _watch_rows if r.get("id") and r.get("term") in _wpsel_set]
             _bc1, _bc2 = st.columns(2)
-            if _bc1.button(f"⚡ Apply all {len(_watch_rows)} watchlist terms", key="btn_pend_apply_watch"):
-                _applied, _ = _apply_watchlist_terms(_watch_rows)
-                update_keyword_suggestion_status(supabase, _ids, "applied")
+            if _bc1.button(f"⚡ Apply selected ({len(_wpsel)})", key="btn_pend_apply_watch", disabled=not _wpsel):
+                _applied, _ = _apply_watchlist_terms(
+                    [r for r in _watch_rows if r.get("term") in _wpsel_set]
+                )
+                update_keyword_suggestion_status(supabase, _wsel_ids, "applied")
                 _cached_pending_suggestions.clear()
                 if _applied:
                     st.toast(f"Applied {_applied} watchlist terms to theme keywords!", icon="⚡")
                 else:
                     st.toast("No new watchlist terms to apply (all already keywords).", icon="ℹ️")
                 st.rerun()
-            if _bc2.button(f"✖ Dismiss all {len(_watch_rows)} watchlist terms", key="btn_pend_dismiss_watch"):
-                update_keyword_suggestion_status(supabase, _ids, "dismissed")
+            if _bc2.button(f"✖ Dismiss selected ({len(_wpsel)})", key="btn_pend_dismiss_watch", disabled=not _wpsel):
+                update_keyword_suggestion_status(supabase, _wsel_ids, "dismissed")
                 _cached_pending_suggestions.clear()
-                st.toast(f"Dismissed {len(_watch_rows)} watchlist suggestions.", icon="✖️")
+                st.toast(f"Dismissed {len(_wpsel)} watchlist suggestions.", icon="✖️")
                 st.rerun()
 
 

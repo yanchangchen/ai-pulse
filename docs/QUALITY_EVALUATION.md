@@ -139,6 +139,14 @@ auto-improvement) with Apply/Dismiss buttons (`update_keyword_suggestion_status(
 `core/quality_schema.py`) — the one-time result panel is session-only, this section is the
 durable surface.
 
+**Per-term selection**: every suggestions panel (fresh theme keywords, fresh
+watchlist, pending theme groups, pending watchlist) carries a "Terms to act
+on" multiselect defaulting to all terms, with "⚡ Apply selected" / "✖ Dismiss
+selected" buttons — individual terms can be rejected without dismissing the
+whole batch. Fresh-panel dismissal matches rows by term
+(`update_keyword_suggestion_status_by_terms`, which takes a `kind`);
+pending-panel actions use row ids.
+
 ### Tuner persistence
 
 The Faithfulness & Summariser Tuner and the auto-remediation state persist through
