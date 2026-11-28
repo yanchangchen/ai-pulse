@@ -10,7 +10,11 @@ Related depth: [ARCHITECTURE.md](ARCHITECTURE.md) (pipeline, retrieval,
 tier-aware assembly), [SUPABASE.md](SUPABASE.md) (schema),
 [QUALITY_EVALUATION.md](QUALITY_EVALUATION.md) (judges),
 [EMBEDDING_PROVIDERS.md](EMBEDDING_PROVIDERS.md) (vectors).
-Newcomer-friendly visual tour: `BLOG.md` → "How Sage remembers: from news feeds to cited answers".
+Newcomer-friendly trilogy in `BLOG.md` (filter by the `explainer` label,
+read in this order): 1) "How Sage remembers: from news feeds to cited
+answers" (data), 2) "Agentic Sage: how the deep-research pipeline thinks"
+(agents), 3) "Sage end to end: data, agents, and the grades that keep them
+honest" (capstone).
 
 ---
 
@@ -110,7 +114,8 @@ Three agents, one question, **one Langfuse trace**:
         │     {unsupported_claims: [{claim, reason}]}            │
         │            │                                           │
         │  5. ANALYST revision (bounded: 1)                      │
-        │     only if claims flagged: cite-or-drop rewrite       │
+        │     only if claims flagged: DROP unless explicitly     │
+        │     supported — never rephrase into new claims         │
         └────────────────────────────────────────────────────────┘
 ```
 
@@ -183,8 +188,10 @@ answer modes:
 
 - **Positive** — newest replies scored ≥0.95 by the judge: question +
   condensed answer (the *shape* of a well-grounded answer, not its facts).
-- **Negative** — judge-flagged unsupported claims from recent replies, plus
-  human corrections (5.3): concrete failure patterns to avoid.
+  Hard cap: 2 positives.
+- **Negative** — judge-flagged unsupported claims from recent replies
+  (≤2 rows × ≤2 claims), plus human corrections (5.3, ≤2): concrete failure
+  patterns to avoid.
 
 Budget `sage_exemplar_max_chars` (2500); kill switch `sage_exemplars_enabled`.
 Empty corpus → empty block → prompt unchanged. No per-reply context copy is
@@ -199,7 +206,8 @@ reversibility the summariser tuner lacks**:
 - **Trigger**: rolling mean (last 20 judgments, shared definition
   `rolling_sage_faithfulness`) < 0.8 with ≥10 judgments → sets
   `sage_strict_grounding`: both paths append a STRICT GROUNDING MANDATE
-  (cite-or-drop, no extrapolation/framing) and cap temperature at 0.2.
+  (cite-or-drop, no extrapolation/framing) and cap temperature at 0.2 on
+  the answer/draft calls (Scout and revision keep their own 0.3).
 - **Revert**: rolling mean ≥ 0.85 (hysteresis — judge noise can't oscillate
   the mode) → flag cleared automatically.
 - **Audit**: every action appended to `app_settings.sage_grounding_state`
@@ -220,8 +228,9 @@ ratings surface on the Feedback & Roadmap page.
 pass gate8 before shipping.** It runs the macro question set with the
 current code and requires no regression (eps 0.02) against BOTH:
 
-1. the accumulated **live rolling baseline** (`sage_evaluations`, ≥10
-   judgments — the gate refuses to run without a baseline to defend), and
+1. the **live rolling baseline** — the mean of the last 20 judgments in
+   `sage_evaluations` (≥10 required — the gate refuses to run without a
+   baseline to defend), and
 2. the previous gate8 snapshot.
 
 Verdict snapshots to `sage_eval_latest` (arm `gate8`). Eval rows never enter
@@ -288,7 +297,8 @@ All merge key-filtered from `config/custom_settings.json` (Supabase-backed).
   pipeline). Each answer is judged against its own arm's context (judge
   truncation raised symmetrically to 60k).
   - `python -m core.sage_eval --gate` — Phase 6.2 gate (faithfulness
-    no-regression + chars/covered-month −30% + coverage ≥0.75).
+    no-regression + chars/covered-month −30% + coverage ≥0.75 + ≥6 scored
+    per arm).
   - `python -m core.sage_eval --gate7` — Phase 7 gate (deep faithfulness
     ≥ fast − 0.02, coverage ≥0.75, deep mean latency ≤60s, ≥6 scored/arm).
   - `python -m core.sage_eval --gate8` — **standing regression gate**: run

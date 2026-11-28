@@ -2,7 +2,7 @@
 AI Pulse - Sage Page
 The dedicated conversational research analyst: chat with persistent
 conversations, research-scope control, and an opt-in deep-research
-pipeline (Scout -> Fact-Checker -> Analyst, Phase 7).
+pipeline (Scout -> Analyst -> Fact-Checker, Phase 7).
 
 Extracted from the Memory Wiki page (5_History) 2026-11-28 so Sage has a
 focused home; Memory Wiki keeps the Timeline / Compare Runs / monthly
@@ -378,7 +378,7 @@ def _render_sage(supabase):
     # Phase 7: opt-in deep-research pipeline (default off — the fast single
     # call stays the default for casual questions).  Persisted per session.
     deep_mode = st.toggle(
-        "🔬 Deep research (Scout → Fact-Checker → Analyst)",
+        "🔬 Deep research (Scout → Analyst → Fact-Checker)",
         value=False,
         key="sage_deep_mode",
         help="Multi-agent pipeline: the Scout plans sub-queries, retrieval runs "
@@ -438,7 +438,7 @@ def _render_sage(supabase):
         # Build context and get Sage's response
         with st.chat_message("assistant", avatar="🔮"):
             spinner_text = (
-                "Sage is researching (Scout → Fact-Checker → Analyst)..."
+                "Sage is researching (Scout → Analyst → Fact-Checker)..."
                 if deep_mode else "Sage is analyzing the archive..."
             )
             with st.spinner(spinner_text):

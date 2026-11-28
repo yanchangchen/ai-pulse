@@ -8,7 +8,8 @@ in ``llm_calls`` by one shared correlation_id:
       -> hybrid retrieval per sub-query (span: sage.retrieval), merged/deduped
     Analyst (sage_analyst)    persona + assembled context -> draft answer
     Fact-Checker (sage_factcheck)  draft vs context -> unsupported claims
-    Analyst revision          bounded (1): cite-or-drop the flagged claims
+    Analyst revision          bounded (1): DROP flagged claims unless
+                              explicitly supported (never rephrase)
 
 Degradation is per-stage, never pipeline-fatal: Scout failure falls back to
 the original question as the single sub-query; retrieval failures keep the
@@ -342,7 +343,7 @@ def chat_with_sage_deep(
                        "model": fc_result.provenance.model if fc_result else None,
                        "unsupported_claims": len(claims)})
 
-        # ---- Stage 5: bounded revision (cite-or-drop) ----
+        # ---- Stage 5: bounded revision (drop-on-flag) ----
         final = draft
         if claims and max_revisions > 0:
             claims_text = "\n".join(

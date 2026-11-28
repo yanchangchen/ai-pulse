@@ -92,7 +92,7 @@ TF-IDF synthetic documents. Edit `config/themes.py` to retrain the classifier.
 ├─────────────────────────────────────────────────────────────────┤
 │  Configuration Layer                                             │
 │  • config/settings.py   (Qwen endpoint, model, lookback, TTL)    │
-│  • config/themes.py     (7 weighted-keyword theme dicts)         │
+│  • config/themes.py     (8 weighted-keyword theme dicts)         │
 │  • config/sources.py    (RSS feeds + web-scrape registry)        │
 └─────────────────────────────────────────────────────────────────┘
 ```

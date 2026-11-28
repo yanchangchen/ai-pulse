@@ -20,7 +20,7 @@ Gate (all must hold):
     excluded rows, never zeros).
 
 The judge's context truncation is raised to JUDGE_CONTEXT_CHARS for BOTH
-arms (core.evaluator.EVAL_SAGE_CONTEXT_CHARS defaults to 8000 — live Sage
+arms (core.evaluator.EVAL_SAGE_CONTEXT_CHARS is 60000 since Phase 8 — live Sage
 contexts are ~30-40k chars, chronological ascending, so the default would
 show the judge only the oldest prefix and rig the comparison).
 

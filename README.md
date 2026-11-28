@@ -1,6 +1,6 @@
 # AI Pulse — Intelligence Dashboard
 
-An AI news intelligence dashboard that aggregates, classifies, and persists AI industry developments into a longitudinal memory system. Fetches from 30+ sources, classifies into 7 strategic themes, and produces context-aware summaries that track the **evolution** of trends across runs. Includes **Sage**, an embedded AI research analyst you can chat with to explore the archive.
+An AI news intelligence dashboard that aggregates, classifies, and persists AI industry developments into a longitudinal memory system. Fetches from 30+ sources, classifies into 8 strategic themes, and produces context-aware summaries that track the **evolution** of trends across runs. Includes **Sage**, an embedded AI research analyst you can chat with to explore the archive.
 
 ## 🚀 Quick Start
 
@@ -24,12 +24,12 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 - **Duplicate-run suppression** — a stable article-set fingerprint stops the same fetched set from being persisted twice within a configurable window.
 - **Processed-article ledger** — tracks which articles have actually been included in a summary prompt, so only new/unprocessed articles are summarised and the rest are carried forward to the next run.
 - **Quality evaluation** — 7 automated run metrics (3 LLM-as-judge + 4 deterministic) plus a chat-time Sage faithfulness judge, with in-app and automatic remediation. [Details →](docs/QUALITY_EVALUATION.md)
-- **Sage agent** — conversational AI research analyst on its own page, grounded in the Memory Wiki archive plus **hybrid article retrieval** (pgvector dense + Postgres FTS, RRF fusion, temporal bounds and freshness-aware re-ranking) and **tier-aware assembly** (monthly macro rollups for older periods). Opt-in **🔬 deep-research mode** runs a 3-agent pipeline (Scout → Fact-Checker → Analyst, one bounded revision), every stage traced as nested spans in one Langfuse trace. Clickable citations, per-reply evidence popovers, and a chat-time faithfulness judge in both modes. [Sage reference →](docs/SAGE.md)
+- **Sage agent** — conversational AI research analyst on its own page, grounded in the Memory Wiki archive plus **hybrid article retrieval** (pgvector dense + Postgres FTS, RRF fusion, temporal bounds and freshness-aware re-ranking) and **tier-aware assembly** (monthly macro rollups for older periods). Opt-in **🔬 deep-research mode** runs a 3-agent pipeline (Scout → Analyst → Fact-Checker, one bounded revision), every stage traced as nested spans in one Langfuse trace. Clickable citations, per-reply evidence popovers, and a chat-time faithfulness judge in both modes. [Sage reference →](docs/SAGE.md)
 - **Observability** — every gateway call mirrored to the durable `llm_calls` table; OpenTelemetry traces export to Langfuse Cloud with trace-id linkage.
 
 ## 🧠 How Sage's Data Works (brief)
 
-Sage answers questions about months of AI news without reading it all at question time. A daily pipeline **fetches → classifies (7 themes) → summarises** articles into a three-tier memory, and each question triggers **hybrid retrieval → budgeted context assembly → a cited answer** that a second LLM judges for faithfulness.
+Sage answers questions about months of AI news without reading it all at question time. A daily pipeline **fetches → classifies (8 themes) → summarises** articles into a three-tier memory, and each question triggers **hybrid retrieval → budgeted context assembly → a cited answer** that a second LLM judges for faithfulness.
 
 ```
  Tier 3 🗺️  monthly_syntheses     macro rollups: 1 per theme per month
@@ -143,7 +143,7 @@ streamlit run app.py
 | 8 | Feedback & Roadmap | Feature requests, bug reports, public roadmap |
 | 9 | Eval Sets | Browsable registry of git-tracked eval question sets (`eval_sets/*.json`) with latest run scores + gate verdicts |
 | 10 | Dev Blog | Searchable, label-filterable rendering of the `BLOG.md` engineering journal |
-| 11 | **Sage** 🔮 | The conversational research analyst: persistent conversations, research scope, **🔬 deep-research toggle** (Scout → Fact-Checker → Analyst), pipeline-detail expander |
+| 11 | **Sage** 🔮 | The conversational research analyst: persistent conversations, research scope, **🔬 deep-research toggle** (Scout → Analyst → Fact-Checker), pipeline-detail expander |
 
 ## 🎯 The 8 Strategic Themes
 

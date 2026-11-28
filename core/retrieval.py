@@ -267,8 +267,10 @@ def hybrid_search(
     # Time-decay re-rank only for unbounded queries: an explicit temporal
     # request ("what happened in June?") must not be freshness-biased.
     if not explicit:
-        floor = float(settings.get("retrieval_time_decay_floor", 0.5))
-        halflife = max(1.0, float(settings.get("retrieval_time_decay_halflife_days", 30.0)))
+        # Fallbacks match the gate-tuned _RETRIEVAL_DEFAULTS (0.9 / 180d):
+        # decay is a bounded tie-break, not a filter (Phase 5 gate lesson).
+        floor = float(settings.get("retrieval_time_decay_floor", 0.9))
+        halflife = max(1.0, float(settings.get("retrieval_time_decay_halflife_days", 180.0)))
         now = datetime.now(timezone.utc)
         for entry in fused:
             age = _age_days(entry, now)

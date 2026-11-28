@@ -2,12 +2,14 @@
 
 Lessons learned building a multi-model AI news intelligence dashboard — one that fetches, classifies, summarises, and persists AI industry developments across 30+ sources with longitudinal memory.
 
+**New here?** Read the explainer trilogy in order (filter by the `explainer` label): 1) *How Sage remembers* (the data), 2) *Agentic Sage* (the pipeline), 3) *Sage end to end* (the capstone map).
+
 ---
 
 ## 2026-11-28 — Sage end to end: data, agents, and the grades that keep them honest
 Labels: explainer, sage, evals, retrieval
 
-**Who this is for**: you've seen the pieces — "How Sage remembers: from news feeds to cited answers" (the data tour), "Agentic Sage: how the deep-research pipeline thinks" (the agentic deep dive), and the phase journals — and want the whole map in one place. All below; filter by the `explainer` label. This is the capstone: how the three pillars fit together, and why the third one is the keystone.
+**Who this is for** *(Part 3 of 3 — the capstone; the deep dives are "How Sage remembers" and "Agentic Sage")*: you've seen the pieces — "How Sage remembers: from news feeds to cited answers" (the data tour), "Agentic Sage: how the deep-research pipeline thinks" (the agentic deep dive), and the phase journals — and want the whole map in one place. All below; filter by the `explainer` label. This is the capstone: how the three pillars fit together, and why the third one is the keystone.
 
 ### The whole loop in one picture
 
@@ -62,7 +64,7 @@ The fast path is one well-grounded call. Deep mode (opt-in) decomposes the work:
 Three layers of grading, each with a different job:
 
 1. **The chat-time judge** scores *every* reply (0–1: how fully the context supports each claim) and names the unsupported ones. This is the rolling baseline — the system's vital sign.
-2. **Controlled gates** run *before shipping*: a fixed question set through the old and new version on the same day, each answer judged against its own context. Retrieval changes (Phase 5), tier-aware assembly (6.2), the deep pipeline (7), and now *any* prompt or assembly change (8.4's standing `--gate8` rule) all passed — or were fixed until they did.
+2. **Controlled gates** run *before shipping*. Two shapes: **side-by-side** (6.2, 7) — a fixed question set through the old and new version on the same day, each answer judged against its own context; and **snapshot-comparison** (8.4's standing `--gate8` rule) — the current code's macro-set score must not regress the rolling mean of the last 20 live judgments nor the previous gate snapshot. Retrieval changes (Phase 5), tier-aware assembly, the deep pipeline, and now *any* prompt or assembly change all passed — or were fixed until they did.
 3. **The improvement loop** feeds the signal back: high-scoring replies become few-shot exemplars, flagged claims and your 👎 corrections become negative exemplars, and an opt-in guard auto-tightens grounding when the rolling baseline dips (auto-reverting on recovery).
 
 Why "keystone"? Because the other two pillars are only as good as their measurement — and the project's most instructive bug proved it. The live judge had been truncating context to 8,000 characters while contexts ran ~35,000, chronological, evidence last. For weeks it scored recent citations "unsupported" because *it never saw them*. The controlled gates didn't catch it (they patched around it); connecting the live signal to an automatic actor finally made the discrepancy matter. **Before you close a loop, audit the signal it feeds on.**
@@ -71,16 +73,37 @@ Why "keystone"? Because the other two pillars are only as good as their measurem
 
 A short honour roll, because "we have evals" is cheap and "the evals changed the design" is the point:
 
-- **Freshness decay** (Phase 5): an aggressive recency preference buried five-month-old articles; the gate showed the regression, and decay became a tie-break, not a filter.
-- **Evidence replacement** (Phase 7): the deep pipeline swapped validated evidence for sub-query hits and faithfulness *dropped* 0.950 → 0.863; the fix — augment, never replace — is now a regression test.
-- **Soft revision** (Phase 7): "cite or drop" let the model rephrase flagged claims into fresh unsupported ones; the rule became "drop entirely".
+- **Freshness decay** (Phase 5): aggressive recency buried older articles → decay became a tie-break, not a filter.
+- **Evidence replacement** (Phase 7): swapping validated evidence for sub-query hits *dropped* faithfulness → augment, never replace.
+- **Soft revision** (Phase 7): "cite or drop" let flagged claims survive rephrased → drop entirely.
 - **The judge itself** (Phase 8): the truncation artifact above.
+
+(The numbers and war stories live in the phase journal entries below.)
 
 ### Where it stands
 
 The phased roadmap (0–8) is complete: foundations and tracing, article grounding, dense embeddings, full-coverage processing, hybrid retrieval, hierarchical memory, multi-agent synthesis, and the closed improvement loop — each gated, each documented in `docs/SAGE.md` (the focused reference) and `docs/ROADMAP_HISTORY.md` (the war stories). What remains is operational: a scheduled ingestion pipeline so the app becomes read-mostly, and the ongoing watch on the rolling baseline as fair judgments accumulate.
 
 *The one-sentence version: Sage remembers at three zoom levels, answers with a committee that checks its own work, and is graded by a system that feeds the grades back — and every part of that sentence was earned by a gate that said "not yet" at least once.*
+
+---
+
+## 2026-11-28 — Overview tells the run's story; Trend Analytics separates baseline from emerging
+Labels: ui, pipeline
+
+**Problem**: two display lies. The Overview framed everything as "Past Two Weeks" — but a brief synthesises the articles *selected this run* (newly fetched + backlog drained), not the whole window. And Trend Analytics charted raw article volume, which measures source activity, not topic momentum — with no way to tell a stable background topic from an accelerating one.
+
+**What happened**:
+
+1. **Overview, re-framed to the accurate unit**: "Latest intelligence run — {timestamp}", a 🆕 new / ✅ synthesised / ⏳ waiting strip, and per-theme coverage *always* stated ("N of M reflected · K waiting") — including the zero state. That last one was a real bug: the Overview had missed the Phase 4.1 "say the zero" fix everywhere else, silently rendering full coverage as "N articles tracked this period". The 14-day lookback is now a source-scope caption, not the display unit.
+
+2. **Trend Analytics, redesigned around runs — not days**: momentum is now theme *share* of run articles (normalising away source-volume noise) with a 3-run moving average over 30 runs. The new **Baseline vs Emerging** panel tracks specialist keywords (weight ≥3): *emerging* = last-3-run average ≥2/run and ≥1.5× the prior-10-run baseline; *baseline* = stable; *fading* = below half its baseline. Note the unit: **runs, not calendar days** — a run happens roughly daily, but the windows count executions, so a quiet week doesn't skew the signal. The 14-day `DAYS_LOOKBACK` only governs what the fetcher pulls.
+
+3. **Monthly Macro Arcs** surfaced the Tier-3 syntheses where the longitudinal story belongs, and the drilldown's N+1 run lookups were batched.
+
+*Lesson: a dashboard's unit of display is a claim about causality. "Past 14 days" claimed the window was synthesised; "article volume" claimed counts were trends. Both were false, and both were fixed by naming the true unit — the run, and the rate-vs-baseline.*
+
+**Result**: pure computations in `core/trend_stats.py` (12 tests); full suite green. The July entry that dropped the Emerging Trends page is hereby superseded — it's back, in a form that earns the name.
 
 ---
 
@@ -110,7 +133,7 @@ Labels: sage, evals
 ## 2026-11-28 — Agentic Sage: how the deep-research pipeline thinks
 Labels: explainer, sage, gateway
 
-**Who this is for**: you've heard "agentic AI" and want to see what it actually means in a working system — not a chatbot that calls tools, but a small team of specialised LLM calls that plan, check each other's work, and leave an audit trail. This post walks through Sage's deep-research mode step by step. (Companion pieces: "How Sage remembers: from news feeds to cited answers" for the archive behind it, and the Phase 7 journal entry for the engineering war story — both below, filter by the `explainer` / `sage` labels.)
+**Who this is for** *(Part 2 of 3 — read "How Sage remembers" first, then the capstone "Sage end to end")*: you've heard "agentic AI" and want to see what it actually means in a working system — not a chatbot that calls tools, but a small team of specialised LLM calls that plan, check each other's work, and leave an audit trail. This post walks through Sage's deep-research mode step by step. (Companion pieces: "How Sage remembers: from news feeds to cited answers" for the archive behind it, and the Phase 7 journal entry for the engineering war story — both below, filter by the `explainer` / `sage` labels.)
 
 ### What "agentic" means here
 
@@ -183,7 +206,7 @@ Question: *"What major AI governance shifts occurred since May 2026?"*
 4. **Fact-Checker** flags one sentence: *"the U.S. government's volatile use of export controls as diplomatic leverage"* — the sources mention export controls, but "volatile diplomatic leverage" is the writer's framing, not the archive's words.
 5. **Revision** drops that sentence entirely (it cannot be cited), keeps everything else, and publishes.
 
-You see the whole story in the UI: the 🔬 caption ("3 sub-queries · fact-check 1 claim flagged · revised · 41s"), and a Pipeline-detail expander with the sub-queries, per-stage latencies, and the flagged claim itself.
+You see the whole story in the UI: the 🔬 caption ("Deep research: 3 sub-queries · fact-check 1 claim(s) flagged · revised · 41.0s pipeline"), and a Pipeline-detail expander with the sub-queries, per-stage latencies, and the flagged claim itself.
 
 ### What if a stage fails?
 
@@ -201,7 +224,7 @@ The principle: a committee that can't convene should still give you a truthful s
 
 ### Every reply leaves one audit trail
 
-Agentic systems are hard to debug *unless you instrument them first* — that was the roadmap's explicit gate before this phase was allowed to exist. The vocabulary, briefly: a **span** is a timed record of one step (what ran, how long, which model, how many tokens); a **trace** is the tree of spans for one whole operation; **Langfuse** is the trace viewer they're shipped to. Each deep reply produces one trace:
+Agentic systems are hard to debug *unless you instrument them first* — that was the roadmap's explicit gate before this phase was allowed to exist. The vocabulary, briefly: a **span** is a timed record of one step (what ran, how long, which model, how many *tokens* — the word-piece units LLMs read and bill in); a **trace** is the tree of spans for one whole operation; **Langfuse** is the trace viewer they're shipped to. Each deep reply produces one trace:
 
 ```
  sage.pipeline                        ← the whole reply, one trace id
@@ -209,6 +232,8 @@ Agentic systems are hard to debug *unless you instrument them first* — that wa
  ├─ sage.retrieval  "EU AI Act…"      ← one span per sub-query
  │   └─ gateway.embedding             ← the meaning-vector lookup
  ├─ sage.retrieval  "US state AI…"
+ │   └─ gateway.embedding
+ ├─ sage.retrieval  "export controls…"   (one per sub-query)
  │   └─ gateway.embedding
  ├─ gateway.sage_analyst              ← the draft
  ├─ gateway.sage_factcheck            ← the review
@@ -234,7 +259,7 @@ After the fixes, the controlled gate passed: deep **0.950** vs fast 0.900 on the
 |---|---|---|
 | Shape | one retrieval pass + one call | Scout → retrieval ×N → Analyst → Checker → ≤1 revision |
 | Latency | ~10–20s | ~30–50s |
-| LLM calls | 1 | 3–5 |
+| Answer-generation calls | 1 | 3–4 (Scout, Analyst, Fact-Checker, optional revision) — plus the same post-answer judge in both modes |
 | Best for | "what happened last week?", quick facts | multi-month arcs, comparisons, anything you'll act on |
 | Grounding | recent days in full, older months as rollups, top articles as evidence | all of that, plus sub-query evidence and a pre-publication check |
 
@@ -270,7 +295,7 @@ Labels: sage, gateway, evals
 ## 2026-11-28 — How Sage remembers: from news feeds to cited answers
 Labels: explainer, sage, retrieval, pipeline
 
-**Who this is for**: you're new to AI engineering or data engineering, and you want to understand *how an AI assistant can answer questions about months of news without having read it all*. No prior knowledge assumed — every term is explained where it first appears. This is the long, diagram-heavy companion to the brief in the README.
+**Who this is for** *(Part 1 of 3 — then "Agentic Sage", then the capstone "Sage end to end")*: you're new to AI engineering or data engineering, and you want to understand *how an AI assistant can answer questions about months of news without having read it all*. No prior knowledge assumed — every term is explained where it first appears. This is the long, diagram-heavy companion to the brief in the README.
 
 Sage is the conversational analyst inside AI Pulse. Ask it *"How did agentic coding tools evolve between June and September 2026?"* and it answers with a chronological account, citations you can click, and its own assessment.
 
@@ -396,7 +421,7 @@ When you ask a question, Sage doesn't scan the archive linearly. It runs **hybri
 
 ### 4. Packing the suitcase: context assembly
 
-An LLM can only read what you put in its **context window** — the text accompanying your question, measured in tokens (roughly word-pieces). Sage's budget is ~40,000 characters. Six months of daily briefs across 7 themes would overflow it many times over, and even when text *fits*, models pay less attention to the middle of long inputs. So assembly is a **packing problem**, and the three tiers are the compression strategy:
+An LLM can only read what you put in its **context window** — the text accompanying your question, measured in tokens (roughly word-pieces). Sage's budget is ~40,000 characters. Six months of daily briefs across 8 themes would overflow it many times over, and even when text *fits*, models pay less attention to the middle of long inputs. So assembly is a **packing problem**, and the three tiers are the compression strategy:
 
 ```
  ┌───────────────────────────────────────────────────────┐
@@ -409,7 +434,7 @@ An LLM can only read what you put in its **context window** — the text accompa
  │  🗓️ MONTHLY ROLLUPS  (older completed months)         │
  │     one macro block per theme-month: the arc +        │
  │     dated milestones — ~30 daily briefs compressed    │
- │     into ~1,200 characters                            │
+ │     into a ~1,200-char prose block                    │
  ├───────────────────────────────────────────────────────┤
  │  📖 RECENT DETAIL  (the last 2 run dates)             │
  │     full 3-section daily briefs — newest news stays   │
@@ -420,6 +445,8 @@ An LLM can only read what you put in its **context window** — the text accompa
  └───────────────────────────────────────────────────────┘
    unused space in any layer flows back to the others
 ```
+
+(The ~1,200 is the *packing-time clip* on the rollup's macro prose — the stored synthesis runs ~400 words; the dated milestones are added on top of the clipped block.)
 
 The rules that keep it honest:
 
@@ -467,9 +494,13 @@ One table to orient you in the database:
 | `theme_summaries` | Tier 2 — the daily briefs per theme |
 | `monthly_syntheses` | Tier 3 — the monthly macro rollups |
 | `theme_first_seen` | when each theme truly debuted in the archive |
+| `sage_conversations` | your saved Sage threads (messages + evidence payloads) |
+| `sage_reply_feedback` | your 👍/👎 ratings and corrections on Sage replies |
 | `sage_evaluations` | the judge's scores for Sage's answers |
 | `llm_calls` | every LLM call: model, tokens, latency, cost class |
 | `app_settings` | small shared state (eval snapshots, tunable knobs) |
+
+Your own history persists too: saved threads and ratings are Supabase-first with a local JSON mirror, so they survive restarts and follow you across devices.
 
 Every LLM call is also recorded as a timed step (**span**) in a per-reply tree (**trace**) using OpenTelemetry — the standard instrumentation format — and shipped to **Langfuse**, a trace viewer. So any answer can be followed back through the exact prompts, models, and retrieval steps that produced it. (The companion post "Agentic Sage: how the deep-research pipeline thinks" shows what that trace looks like when Sage runs a whole committee of agents per question.)
 
