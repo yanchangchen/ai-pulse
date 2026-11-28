@@ -85,7 +85,8 @@ class ModelGateway:
                 "gemini-3.8-flash": {
                     "provider": "google",
                     "model": "gemini-3.8-flash",
-                    "tasks": ["categorise", "extract", "summarise", "synthesise", "evaluate", "sage_chat"],
+                    "tasks": ["categorise", "extract", "summarise", "synthesise", "evaluate", "sage_chat",
+                              "sage_scout", "sage_factcheck", "sage_analyst"],
                     "cost_class": "medium",
                     "priority": 2,
                     "thinking_level": "low",
@@ -93,7 +94,8 @@ class ModelGateway:
                 "gemini-3.6-flash": {
                     "provider": "google",
                     "model": "gemini-3.6-flash",
-                    "tasks": ["summarise", "synthesise", "project", "sage_chat"],
+                    "tasks": ["summarise", "synthesise", "project", "sage_chat",
+                              "sage_scout", "sage_factcheck", "sage_analyst"],
                     "cost_class": "medium",
                     "priority": 3,
                     "thinking_level": "medium",
@@ -101,7 +103,8 @@ class ModelGateway:
                 "qwen3.8-flash": {
                     "provider": "qwen",
                     "model": "qwen3.8-flash",
-                    "tasks": ["categorise", "extract", "summarise", "synthesise", "project", "evaluate", "sage_chat"],
+                    "tasks": ["categorise", "extract", "summarise", "synthesise", "project", "evaluate", "sage_chat",
+                              "sage_scout", "sage_factcheck", "sage_analyst"],
                     "cost_class": "low",
                     "priority": 1,
                     "context_window": 1_000_000,
@@ -189,6 +192,34 @@ class ModelGateway:
                 # an "analysis", so total failure surfaces as a friendly
                 # notice string instead.
                 "sage_chat": {
+                    "primary": "qwen3.8-flash",
+                    "fallback": [
+                        "gemini-3.6-flash",
+                        "gemini-3.8-flash",
+                    ],
+                    "deterministic_fallback": False,
+                },
+                # Phase 7 deep-research agents: same routing shape as
+                # sage_chat (Qwen primary, Gemini safety net, no
+                # deterministic stand-in).  Separate policies so each stage
+                # is independently tunable and auditable in llm_calls.
+                "sage_scout": {
+                    "primary": "qwen3.8-flash",
+                    "fallback": [
+                        "gemini-3.6-flash",
+                        "gemini-3.8-flash",
+                    ],
+                    "deterministic_fallback": False,
+                },
+                "sage_factcheck": {
+                    "primary": "qwen3.8-flash",
+                    "fallback": [
+                        "gemini-3.6-flash",
+                        "gemini-3.8-flash",
+                    ],
+                    "deterministic_fallback": False,
+                },
+                "sage_analyst": {
                     "primary": "qwen3.8-flash",
                     "fallback": [
                         "gemini-3.6-flash",

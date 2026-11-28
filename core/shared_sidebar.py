@@ -20,7 +20,8 @@ _NAV_GROUPS = [
         ("pages/4_Sources.py", "Sources", "📰", "sources"),
     ]),
     ("Sage & memory", [
-        ("pages/5_History.py", "Memory Wiki · Ask Sage", "🧠", "memory"),
+        ("pages/11_Sage.py", "Sage", "🔮", "sage"),
+        ("pages/5_History.py", "Memory Wiki", "🧠", "memory"),
     ]),
     ("Quality & evidence", [
         ("pages/7_Quality_Evaluation.py", "Quality Evaluation", "🔬", "quality"),

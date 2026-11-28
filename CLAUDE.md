@@ -59,7 +59,8 @@ These docs are NOT auto-loaded — read the relevant one before working in that 
 | Summariser (`core/summariser.py`, `core/non_llm_summariser.py`, `core/gemini_client.py`, `core/provenance.py`) | docs/ARCHITECTURE.md — "Dual-Engine Summarization Detail" |
 | Pipeline, `core/bg_refresher.py`, memory system, quota/LLMClient, caching | docs/ARCHITECTURE.md |
 | Evaluation (`core/evaluator.py`, `core/eval_controller.py`, `core/auto_remediation.py`, page 7) | docs/QUALITY_EVALUATION.md |
-| Any page/UI (`pages/*.py`, `app.py`, `core/shared_sidebar.py`, `core/design_system.py`, `core/sage_agent.py`, `core/visualiser.py`) | docs/PAGES.md |
+| **Sage & Memory Wiki** (`core/sage_agent.py`, `core/sage_pipeline.py`, `core/sage_conversations.py`, `core/sage_eval.py`, `pages/11_Sage.py`, Sage-facing parts of `pages/5_History.py`) | **docs/SAGE.md** — the focused reference (fast path, deep-research pipeline, tracing, knobs, gates, extension guide) |
+| Any page/UI (`pages/*.py`, `app.py`, `core/shared_sidebar.py`, `core/design_system.py`, `core/visualiser.py`) | docs/PAGES.md |
 | Config (`config/settings.py`, secrets, env vars, `custom_settings.json`, `custom_keywords.json`) | docs/CONFIGURATION.md |
 | Supabase (`core/supabase_client.py`, `supabase_*.sql`, schema, migrations, RLS, app_settings) | docs/SUPABASE.md |
 | Embedding providers (`core/embedding.py`, gateway `embedding` route, `article_embeddings`) | docs/EMBEDDING_PROVIDERS.md |

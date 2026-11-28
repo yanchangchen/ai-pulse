@@ -408,6 +408,13 @@ offline/pre-migration the job skips silently. Knobs:
 `get_monthly_synthesis_settings()`. The History page's Memory Timeline tab
 shows the rollups read-only.
 
+### Sage deep-research pipeline (Phase 7 — `core/sage_pipeline.py`)
+
+Opt-in multi-agent answering (Scout → per-sub-query retrieval → Analyst →
+Fact-Checker → bounded revision), every stage traced under one
+`sage.pipeline` parent span and grouped in `llm_calls` by a shared
+correlation id. **Full reference: [docs/SAGE.md](SAGE.md).**
+
 ### Tier-aware Sage assembly (Phase 6.2 — `core/sage_agent.py`)
 
 `build_wiki_context()` consumes Tier 3: older **completed** months with

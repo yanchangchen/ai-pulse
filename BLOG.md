@@ -4,6 +4,27 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-28 — Phase 7: Sage grows a pipeline — Scout, Fact-Checker, Analyst
+Labels: sage, gateway, evals
+
+**Problem**: Sage answered every question with one retrieval pass and one LLM call. Nothing planned the search, and nothing checked the answer *before* it was published — the faithfulness judge only graded it afterwards. Complex multi-month questions deserved better than a single shot.
+
+**What happened**:
+
+1. **Three agents, one question.** Deep-research mode (an opt-in 🔬 toggle on Sage's new dedicated page) runs a pipeline: a **Scout** turns the question into 2–3 focused sub-queries; hybrid retrieval runs per sub-query; an **Analyst** drafts the answer in Sage's voice; a **Fact-Checker** validates every statement against the exact context and returns the unsupported ones as JSON; if anything is flagged, the Analyst gets **one** bounded revision pass. Each stage degrades independently — a Scout outage falls back to the original question, a Fact-Checker outage publishes the draft (recorded, never hidden), and only an Analyst failure surfaces a notice.
+
+2. **One reply, one trace.** A new `pipeline_span` helper opens a `sage.pipeline` parent span; OTel context propagation nests every agent call, every retrieval, and every embedding under it automatically. All calls share one `correlation_id`, so the `llm_calls` rows for a reply group together and link to the Langfuse trace. The UI shows the whole breakdown — sub-queries, stage latencies, flagged claims — in a "🔬 Pipeline detail" expander. The 3-agent pipeline the roadmap promised in Phase 0 is now debuggable by construction.
+
+3. **Sage got its own home.** The Ask Sage tab moved out of Memory Wiki into `pages/11_Sage.py`; Memory Wiki keeps the timeline, run comparison, and monthly rollups. And all Sage knowledge now lives in one focused reference, `docs/SAGE.md` — pipeline stages, knobs, gates, and an extension guide — so future changes start from one place.
+
+4. **The gate caught the pipeline lying — twice.** First run: deep mode scored **0.863** vs the fast path's 0.950. Diagnosis: (a) the pipeline *replaced* the fast path's eval-validated evidence with sub-query hits, and the Analyst built embellished narratives around the new articles (one answer dropped to 0.50 with diplomatic framing the sources never stated); (b) the "cite-or-drop" revision let flagged claims survive *rephrased*. Fixes: evidence now **augments** — validated base articles first, scout finds append; the Fact-Checker treats exaggeration and generalization as unsupported; and revision **drops** flagged statements entirely unless explicitly supported. Second run: deep **0.950** vs fast 0.900, coverage 0.90, 44s mean latency — **gate passed**.
+
+*Lesson: an agent pipeline is not automatically better than a single call — every stage that transforms grounding (evidence selection, revision) is a new hallucination surface, and the eval gate is where those surfaces get audited. Augment validated grounding; never replace it. And a revision instruction must say "drop", not "fix" — models will happily rephrase a flagged claim into a fresh unsupported one.*
+
+**Result**: Phase 7 closed (7.1–7.3). Deep mode is opt-in (fast path unchanged, ~10–20s vs ~40s deep), every stage traced, verdict on the Eval Sets page. Next: Phase 8 — feeding the judge's signal back into the agent itself.
+
+---
+
 ## 2026-11-28 — How Sage's data works: a visual tour for newcomers
 Labels: explainer, sage, retrieval, pipeline
 

@@ -574,6 +574,12 @@ _SAGE_DEFAULTS = {
     "sage_tier3_budget_share": 0.6,        # Tier-3 share of the older-tier budget
     "sage_tier3_query_rollups": 3,         # top-N rollups feeding the biased query
     "sage_tier3_query_char_limit": 600,    # cap on the appended milestone tail
+    # Phase 7 deep-research pipeline (Scout -> Fact-Checker -> Analyst).
+    # The UI toggle (default off) chooses per-session; this kill switch
+    # disables deep mode entirely (falls back to the fast single call).
+    "sage_deep_research_enabled": True,
+    "sage_deep_max_subqueries": 3,         # Scout output cap / retrieval fan-out
+    "sage_deep_max_revisions": 1,          # bounded fact-check revision loop
 }
 
 

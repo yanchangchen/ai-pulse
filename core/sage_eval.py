@@ -130,6 +130,7 @@ def run_sage_eval(path: Optional[Path] = None, quiet: bool = False, arm: str = "
     """
     from core.evaluator import GatewayJudgeLLM, _gateway_has_providers, judge_sage_answer
     from core.sage_agent import build_wiki_context, chat_with_sage
+    from core.sage_pipeline import chat_with_sage_deep
     from core.supabase_client import get_supabase_manager
 
     questions = load_questions(path)
@@ -173,17 +174,30 @@ def run_sage_eval(path: Optional[Path] = None, quiet: bool = False, arm: str = "
                     ):
                         ctx = build_wiki_context(manager, question, history={})
                         result = chat_with_sage([{"role": "user", "content": question}], ctx)
+                elif arm == "deep":
+                    ctx = build_wiki_context(manager, question, history={})
+                    result = chat_with_sage_deep(
+                        [{"role": "user", "content": question}], ctx, supabase=manager,
+                    )
                 else:
                     ctx = build_wiki_context(manager, question, history={})
                     result = chat_with_sage([{"role": "user", "content": question}], ctx)
 
-                row["context_chars"] = len(ctx.get("context", ""))
+                # Deep mode rebuilds the evidence section from sub-queries —
+                # judge against the context the answer actually saw.
+                judge_context = result.get("context") or ctx.get("context", "")
+                row["context_chars"] = len(judge_context)
                 row["covered_months"] = _covered_months(ctx)
                 row["tier3_block_count"] = ctx.get("tier3_block_count", 0)
                 row["expected_month_hits"] = sum(
                     1 for m in expected if m in row["covered_months"]
                 )
                 row["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+                pipe = result.get("pipeline") or {}
+                if pipe.get("mode") == "deep":
+                    row["sub_queries"] = len(pipe.get("sub_queries") or [])
+                    row["revised"] = pipe.get("revised")
+                    row["factcheck_ok"] = pipe.get("factcheck_ok")
 
                 prov = result.get("provenance") or {}
                 answer = result.get("response", "")
@@ -191,7 +205,7 @@ def run_sage_eval(path: Optional[Path] = None, quiet: bool = False, arm: str = "
                     row["failure"] = "chat_failed"
                 else:
                     score, claims, failure = judge_sage_answer(
-                        judge, question, answer, ctx.get("context", "")
+                        judge, question, answer, judge_context
                     )
                     row["score"] = score
                     row["unsupported_claims"] = claims
@@ -326,15 +340,107 @@ def run_phase6_2_gate(path: Optional[Path] = None) -> Dict:
     }
 
 
+# Phase 7 gate: the deep-research pipeline must not regress the fast path's
+# faithfulness, must keep month coverage, and must stay inside a latency
+# budget (deep mode trades ~2-3x latency for sub-query retrieval + checking).
+DEEP_MEAN_LATENCY_BUDGET_MS = 60_000.0
+
+
+def run_phase7_gate(path: Optional[Path] = None) -> Dict:
+    """Side-by-side fast(tier3)-vs-deep gate on the macro question set.
+
+    Gate: deep mean faithfulness >= fast - FAITHFULNESS_EPS; deep month
+    coverage >= COVERAGE_MIN; deep mean latency <= DEEP_MEAN_LATENCY_BUDGET_MS;
+    both arms score >= MIN_SCORED_PER_ARM.  Snapshots to sage_eval_latest.
+    """
+    fast = run_sage_eval(path, quiet=True, arm="tier3")
+    deep = run_sage_eval(path, quiet=True, arm="deep")
+    if not fast.get("ran") or not deep.get("ran"):
+        return {"ran": False, "fast": fast, "deep": deep}
+
+    faithfulness_ok = deep["mean_score"] >= fast["mean_score"] - FAITHFULNESS_EPS
+    coverage_ok = deep["month_coverage"] >= COVERAGE_MIN
+    latency_ok = deep["latency_mean_ms"] <= DEEP_MEAN_LATENCY_BUDGET_MS
+    n_ok = (
+        fast["n_scored"] >= MIN_SCORED_PER_ARM
+        and deep["n_scored"] >= MIN_SCORED_PER_ARM
+    )
+    gate_passed = faithfulness_ok and coverage_ok and latency_ok and n_ok
+
+    f_by_id = {r["id"]: r for r in fast["per_question"]}
+    merged_rows: List[Dict] = [
+        {**r, "fast_score": f_by_id.get(r["id"], {}).get("score")}
+        for r in deep["per_question"]
+    ]
+
+    # Durable record first (cp1252 lesson).
+    try:
+        from core.supabase_client import get_supabase_manager
+        manager = get_supabase_manager()
+        if manager and manager.is_available():
+            manager.upsert_app_setting("sage_eval_latest", {
+                "set_id": SAGE_SET_ID,
+                "ran_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "arm": "deep",
+                "mean_score": deep["mean_score"],
+                "n_scored": deep["n_scored"],
+                "n_questions": deep["n_questions"],
+                "mean_chars_per_month": deep["mean_chars_per_month"],
+                "month_coverage": deep["month_coverage"],
+                "latency_mean_ms": deep["latency_mean_ms"],
+                "baseline_fast_score": fast["mean_score"],
+                "gate_passed": gate_passed,
+                "faithfulness_ok": faithfulness_ok,
+                "coverage_ok": coverage_ok,
+                "latency_ok": latency_ok,
+                "per_question": merged_rows,
+            })
+    except Exception as e:
+        logger.debug("Failed to snapshot Phase 7 gate: %s", e)
+
+    print(f"\nPhase 7 gate - {deep['n_questions']} macro questions, fast vs deep")
+    print(f"{'id':<5} {'fast':>7} {'deep':>7} {'delta':>6}  {'latency(deep)':>14}  question")
+    for r in merged_rows:
+        fs, ds = r.get("fast_score"), r.get("score")
+        delta = f"{ds - fs:+.2f}" if fs is not None and ds is not None else "  -"
+        fss = f"{fs:.2f}" if fs is not None else "skip"
+        dss = f"{ds:.2f}" if ds is not None else "skip"
+        lat = f"{r.get('latency_ms', 0) / 1000:.1f}s"
+        print(f"{r['id']:<5} {fss:>7} {dss:>7} {delta:>6}  {lat:>14}  {r['question'][:50]}")
+    print(f"\nMean faithfulness: fast {fast['mean_score']:.3f} -> deep {deep['mean_score']:.3f} "
+          f"({'PASS' if faithfulness_ok else 'REGRESSION'}, eps {FAITHFULNESS_EPS})")
+    print(f"Month coverage (deep): {deep['month_coverage']:.2f} "
+          f"(need >= {COVERAGE_MIN}: {'PASS' if coverage_ok else 'FAIL'})")
+    print(f"Deep mean latency: {deep['latency_mean_ms'] / 1000:.1f}s "
+          f"(budget {DEEP_MEAN_LATENCY_BUDGET_MS / 1000:.0f}s: {'PASS' if latency_ok else 'OVER'})")
+    print(f"Scored: fast {fast['n_scored']}, deep {deep['n_scored']} "
+          f"(need >= {MIN_SCORED_PER_ARM} each: {'PASS' if n_ok else 'FAIL'})")
+    print(f"GATE: {'PASSED' if gate_passed else 'NOT PASSED'}")
+
+    return {
+        "ran": True,
+        "gate_passed": gate_passed,
+        "faithfulness_ok": faithfulness_ok,
+        "coverage_ok": coverage_ok,
+        "latency_ok": latency_ok,
+        "n_ok": n_ok,
+        "fast": fast,
+        "deep": deep,
+    }
+
+
 if __name__ == "__main__":
     import argparse
     from core.logger import setup_logger
     setup_logger("sage_eval")
-    parser = argparse.ArgumentParser(description="Sage macro-faithfulness eval / Phase 6.2 gate")
-    parser.add_argument("--arm", choices=["legacy", "tier3"], default="tier3")
+    parser = argparse.ArgumentParser(description="Sage macro-faithfulness eval / Phase 6.2 + 7 gates")
+    parser.add_argument("--arm", choices=["legacy", "tier3", "deep"], default="tier3")
     parser.add_argument("--gate", action="store_true", help="run the Phase 6.2 side-by-side gate")
+    parser.add_argument("--gate7", action="store_true", help="run the Phase 7 fast-vs-deep gate")
     args = parser.parse_args()
-    if args.gate:
+    if args.gate7:
+        run_phase7_gate()
+    elif args.gate:
         run_phase6_2_gate()
     else:
         run_sage_eval(arm=args.arm)

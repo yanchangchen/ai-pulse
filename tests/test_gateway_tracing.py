@@ -231,3 +231,53 @@ class TestProvenanceTraceId:
     def test_default_none(self):
         d = Provenance(task="x", method="llm").to_dict()
         assert d["trace_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# pipeline_span: parent/nested spans (Phase 7)
+# ---------------------------------------------------------------------------
+
+class TestPipelineSpan:
+    def test_gateway_call_nests_under_pipeline_span(self, monkeypatch):
+        exporter = _enable_in_memory(monkeypatch)
+        gw = _gateway_with(FakeProvider(usage={"input_tokens": 1, "output_tokens": 2}))
+        with tracing.pipeline_span("sage.pipeline", {"sage.mode": "deep"}):
+            result = asyncio.run(gw.execute(AITaskRequest(task=TaskType.SAGE_CHAT, input="hi")))
+        assert result.is_success()
+        spans = exporter.get_finished_spans()
+        by_name = {s.name: s for s in spans}
+        assert "sage.pipeline" in by_name and "gateway.sage_chat" in by_name
+        parent, child = by_name["sage.pipeline"], by_name["gateway.sage_chat"]
+        # One trace, child parented to the pipeline span.
+        assert child.context.trace_id == parent.context.trace_id
+        assert child.parent.span_id == parent.context.span_id
+        assert parent.attributes.get("sage.mode") == "deep"
+        # The provenance trace_id matches the unified trace.
+        assert result.provenance.trace_id == f"{parent.context.trace_id:032x}"
+
+    def test_nested_pipeline_spans(self, monkeypatch):
+        exporter = _enable_in_memory(monkeypatch)
+        with tracing.pipeline_span("sage.pipeline"):
+            with tracing.pipeline_span("sage.retrieval", {"sage.sub_query": "q"}):
+                pass
+        by_name = {s.name: s for s in exporter.get_finished_spans()}
+        assert by_name["sage.retrieval"].parent.span_id == by_name["sage.pipeline"].context.span_id
+        assert by_name["sage.retrieval"].attributes.get("sage.sub_query") == "q"
+
+    def test_noop_when_disabled(self):
+        # conftest pins tracing off — the context manager must yield a
+        # no-op span and never raise.
+        with tracing.pipeline_span("sage.pipeline", {"x": 1}) as span:
+            span.set_attribute("x", 1)
+            assert span.get_span_context() is None
+
+    def test_broken_tracer_degrades_to_noop(self, monkeypatch):
+        _enable_in_memory(monkeypatch)
+
+        class _BrokenTracer:
+            def start_as_current_span(self, *a, **k):
+                raise RuntimeError("otel down")
+
+        monkeypatch.setattr(tracing, "_tracer", _BrokenTracer())
+        with tracing.pipeline_span("sage.pipeline") as span:
+            span.set_attribute("x", 1)  # must not raise

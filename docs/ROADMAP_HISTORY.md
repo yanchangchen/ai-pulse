@@ -414,6 +414,71 @@ see the BLOG.md entry for that week. 4.3–4.6 below landed 2026-11-27.)*
 
 ---
 
+## Phase 7 — Multi-agent synthesis (CLOSED 2026-11-28)
+
+- [x] **7.1–7.3 Sage deep-research pipeline (2026-11-28, eval-gated).**
+  - **Pipeline** (`core/sage_pipeline.py::chat_with_sage_deep`): Scout
+    (`SAGE_SCOUT`, 2–3 JSON sub-queries) → hybrid retrieval per sub-query
+    (`sage.retrieval` spans) → Analyst draft (`SAGE_ANALYST`) →
+    Fact-Checker (`SAGE_FACTCHECK`, statement-level JSON
+    `{unsupported_claims:[{claim,reason}]}`) → bounded revision (1,
+    drop-on-flag). Opt-in via the 🔬 toggle on the new Sage page (default
+    off); kill switch `sage_deep_research_enabled`. Return contract is the
+    fast path's superset: `response`/`provenance` + `articles` (merged
+    evidence), `context` (the rebuilt context the judge must see), and
+    `pipeline` metadata (sub_queries, claims, stages, ids).
+  - **Tracing made real (Pillar F):** new public
+    `tracing.pipeline_span(name, attributes)` parent-span helper; nesting
+    is automatic via OTel context (`start_as_current_span`), so one reply
+    = one Langfuse trace: `sage.pipeline` → `gateway.sage_scout`,
+    `sage.retrieval`×N (each with its `gateway.embedding` child),
+    `gateway.sage_analyst`, `gateway.sage_factcheck`, optional revision.
+    All agent requests share one `correlation_id` → `llm_calls` rows
+    group per reply; `trace_id` links to Langfuse. Orchestration stays
+    single-threaded (`asyncio.run` inside the ambient span) — thread
+    pools would orphan spans without explicit context copies.
+  - **New task types:** `sage_scout`/`sage_factcheck`/`sage_analyst` —
+    routing mirrors `sage_chat` (Qwen primary, Gemini fallbacks, NO
+    deterministic fallback), verbatim prompts, no schemas. The `system`
+    field remains dead — prompts fold into `input`.
+  - **Page reorganisation (user-requested):** Ask Sage extracted from
+    `pages/5_History.py` into **`pages/11_Sage.py`** (all `sage_*` session
+    keys moved verbatim; the tab's date/source params were dead code).
+    Memory Wiki keeps Timeline + Compare + Tier-3 expander. Nav "Sage &
+    memory" group now holds both. Pipeline-detail expander shows
+    sub-queries, stage table, flagged claims, correlation/trace ids.
+  - **Documentation (user-requested):** new **docs/SAGE.md** — the focused
+    reference for ALL Sage & Memory Wiki work (page map, fast path,
+    pipeline stages + degradation table, tracing, conversations, knobs,
+    gates, extension guide). CLAUDE.md routing row added; README gained a
+    "🔮 Sage" section; PAGES.md internals subsection moved to SAGE.md.
+  - **Gate run 1 FAILED — and caught two real design bugs:** deep 0.863
+    vs fast 0.950. (a) The pipeline REPLACED the fast path's
+    eval-validated milestone-biased evidence with sub-query hits; the
+    Analyst embellished narratives around the new articles (m03 0.50:
+    export-control framing beyond the sources). (b) The soft "cite-or-drop"
+    revision let flagged claims survive rephrased (m03 revised=true, still
+    0.50). Fixes: evidence **augments** (base articles first, scout finds
+    append within budget, dedupe by link); Fact-Checker treats
+    exaggeration/generalization as unsupported; revision DROPS flagged
+    statements entirely unless explicitly supported. Regression tests
+    pin both (`test_base_evidence_survives_scout_finds`).
+  - **Gate (PASSED 2026-11-28, run 2):** `python -m core.sage_eval --gate7`,
+    8 macro questions: deep **0.950** vs fast 0.900 (improved; eps 0.02),
+    coverage **0.90** (≥0.75), deep mean latency **44.1s** (≤60s budget),
+    8/8 scored both arms. Note: the fast arm scored 0.950 in run 1 and
+    0.900 in run 2 — judge noise across runs; the same-run controlled
+    comparison is the valid one (Phase 5 lesson applies to judges too).
+    Verdict snapshotted to `app_settings.sage_eval_latest` (arm "deep").
+  - Tests: `tests/test_sage_pipeline.py` (17: happy path + shared
+    correlation, per-stage degradation, bounded revision, kill switch,
+    evidence augmentation/dedupe), `tests/test_gateway_sage_tasks.py` (4),
+    `tests/test_gateway_tracing.py` (+4: pipeline_span nesting/no-op/
+    broken-tracer), `tests/test_sage_eval.py` (+4: deep arm judges the
+    rebuilt context, gate7 verdict matrix).
+
+---
+
 ## Decision: tracing backend — Langfuse Cloud (Hobby) *(2026-10)*
 
 > **Decision (2026-10): Langfuse Cloud (Hobby).** Alternatives recorded below for future reference; since instrumentation is OpenTelemetry-based, switching backends later means changing the exporter, not the code.

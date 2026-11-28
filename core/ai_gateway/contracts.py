@@ -27,6 +27,15 @@ class TaskType(Enum):
     # substitute for Sage's voice would be fabrication, so the policy
     # disables the deterministic fallback.
     SAGE_CHAT = "sage_chat"
+    # Phase 7 deep-research pipeline agents.  Like SAGE_CHAT, prompts are
+    # fully formed and pass through verbatim (no template, no schema), and
+    # a deterministic substitute for any of them would be fabrication, so
+    # their policies disable the deterministic fallback.  Distinct task
+    # types give each agent its own span name (gateway.sage_*) and its own
+    # task_type in llm_calls, so a pipeline run is auditable stage by stage.
+    SAGE_SCOUT = "sage_scout"          # sub-query generation
+    SAGE_FACTCHECK = "sage_factcheck"  # statement-level grounding check
+    SAGE_ANALYST = "sage_analyst"      # draft + revision synthesis
     # Dense vector embeddings (Phase 3, core/embedding.py).  The request
     # carries ``embed_inputs`` (a batch of texts) instead of a single
     # prompt; there is no prompt template, no output schema, and no

@@ -23,7 +23,7 @@ Design constraints (mirroring ``call_log.py``):
 """
 import logging
 from contextlib import contextmanager
-from typing import Optional
+from typing import Dict, Optional
 
 from .contracts import AITaskRequest, AITaskResult
 
@@ -203,6 +203,35 @@ def task_span(request: AITaskRequest):
     except Exception as e:
         # Observability must never fail the task it observes.
         logger.debug(f"tracing span dropped: {e}")
+        yield _NoOpSpan()
+
+
+@contextmanager
+def pipeline_span(name: str, attributes: Optional[Dict] = None):
+    """Open a PARENT span for a multi-call pipeline (Phase 7).
+
+    Any gateway.execute() (or further pipeline_span) called inside this
+    context nests automatically via OTel context propagation, so one
+    pipeline run = one Langfuse trace with every agent call, retrieval,
+    and embedding as a child.  Yields a no-op span when tracing is off —
+    observability must never fail the pipeline it observes.
+
+    Usage::
+
+        with pipeline_span("sage.pipeline", {"sage.question": q}) as span:
+            ...  # gateway calls here become children of this span
+    """
+    tracer = get_tracer()
+    if tracer is None:
+        yield _NoOpSpan()
+        return
+    try:
+        with tracer.start_as_current_span(name) as span:
+            for key, value in (attributes or {}).items():
+                span.set_attribute(key, value)
+            yield span
+    except Exception as e:
+        logger.debug(f"pipeline span dropped: {e}")
         yield _NoOpSpan()
 
 

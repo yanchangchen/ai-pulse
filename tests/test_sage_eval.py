@@ -260,3 +260,73 @@ def test_gate_degrades_when_arm_not_ran():
     tier3 = _arm_summary("tier3")
     verdict, _ = _run_gate(legacy, tier3)
     assert verdict["ran"] is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: deep arm + fast-vs-deep gate
+# ---------------------------------------------------------------------------
+
+def test_deep_arm_uses_pipeline_and_judges_rebuilt_context(tmp_path):
+    p = _two_question_set(tmp_path)
+    rebuilt = "REBUILT " + "x" * 900
+    deep_result = {
+        "response": "An answer.", "provenance": {"method": "llm"},
+        "context": rebuilt,
+        "pipeline": {"mode": "deep", "sub_queries": ["a", "b"],
+                     "revised": True, "factcheck_ok": True},
+    }
+    manager = _available_manager()
+    with patch("core.supabase_client.get_supabase_manager", return_value=manager), \
+         patch("core.evaluator._gateway_has_providers", return_value=True), \
+         patch("core.evaluator.GatewayJudgeLLM"), \
+         patch("core.sage_agent.build_wiki_context", return_value=_ctx()), \
+         patch("core.sage_pipeline.chat_with_sage_deep", return_value=deep_result) as deep, \
+         patch("core.evaluator.judge_sage_answer", return_value=(0.9, [], None)) as judge:
+        summary = run_sage_eval(p, quiet=True, arm="deep")
+    assert deep.call_count == 2
+    # The judge sees the pipeline's rebuilt context, not the fast-path one.
+    assert judge.call_args.args[3] == rebuilt
+    row = summary["per_question"][0]
+    assert row["context_chars"] == len(rebuilt)
+    assert row["sub_queries"] == 2
+    assert row["revised"] is True
+    assert row["factcheck_ok"] is True
+
+
+def _run_gate7(fast, deep):
+    manager = _available_manager()
+    with patch("core.sage_eval.run_sage_eval", side_effect=[fast, deep]), \
+         patch("core.supabase_client.get_supabase_manager", return_value=manager):
+        from core.sage_eval import run_phase7_gate
+        verdict = run_phase7_gate()
+    return verdict, manager
+
+
+def test_gate7_passes_on_no_regression_within_latency():
+    fast = _arm_summary("tier3", score=0.9)
+    deep = _arm_summary("deep", score=0.95)
+    verdict, manager = _run_gate7(fast, deep)
+    assert verdict["gate_passed"] is True
+    key, value = manager.upsert_app_setting.call_args.args
+    assert key == "sage_eval_latest"
+    assert value["arm"] == "deep"
+    assert value["baseline_fast_score"] == 0.9
+    assert value["per_question"][0]["fast_score"] == 0.9
+
+
+def test_gate7_fails_on_latency_over_budget():
+    from core.sage_eval import DEEP_MEAN_LATENCY_BUDGET_MS
+    fast = _arm_summary("tier3", score=0.9)
+    deep = _arm_summary("deep", score=0.95)
+    deep["latency_mean_ms"] = DEEP_MEAN_LATENCY_BUDGET_MS + 1000
+    verdict, _ = _run_gate7(fast, deep)
+    assert verdict["gate_passed"] is False
+    assert verdict["latency_ok"] is False
+
+
+def test_gate7_fails_on_faithfulness_regression():
+    fast = _arm_summary("tier3", score=0.95)
+    deep = _arm_summary("deep", score=0.80)
+    verdict, _ = _run_gate7(fast, deep)
+    assert verdict["gate_passed"] is False
+    assert verdict["faithfulness_ok"] is False
