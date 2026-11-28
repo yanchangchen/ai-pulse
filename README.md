@@ -24,7 +24,7 @@ The first load triggers a background ingestion. Subsequent loads restore from `h
 - **Duplicate-run suppression** — a stable article-set fingerprint stops the same fetched set from being persisted twice within a configurable window.
 - **Processed-article ledger** — tracks which articles have actually been included in a summary prompt, so only new/unprocessed articles are summarised and the rest are carried forward to the next run.
 - **Quality evaluation** — 7 automated run metrics (3 LLM-as-judge + 4 deterministic) plus a chat-time Sage faithfulness judge, with in-app and automatic remediation. [Details →](docs/QUALITY_EVALUATION.md)
-- **Sage agent** — conversational AI research analyst grounded in the Memory Wiki archive plus **hybrid article retrieval** (pgvector dense + Postgres FTS, RRF fusion, temporal bounds and freshness-aware re-ranking), with clickable citations, per-reply evidence popovers, and a chat-time faithfulness judge.
+- **Sage agent** — conversational AI research analyst on its own page, grounded in the Memory Wiki archive plus **hybrid article retrieval** (pgvector dense + Postgres FTS, RRF fusion, temporal bounds and freshness-aware re-ranking) and **tier-aware assembly** (monthly macro rollups for older periods). Opt-in **🔬 deep-research mode** runs a 3-agent pipeline (Scout → Fact-Checker → Analyst, one bounded revision), every stage traced as nested spans in one Langfuse trace. Clickable citations, per-reply evidence popovers, and a chat-time faithfulness judge in both modes. [Sage reference →](docs/SAGE.md)
 - **Observability** — every gateway call mirrored to the durable `llm_calls` table; OpenTelemetry traces export to Langfuse Cloud with trace-id linkage.
 
 ## 🧠 How Sage's Data Works (brief)
@@ -137,12 +137,13 @@ streamlit run app.py
 | 2 | Deep Dive | Per-theme articles, summaries, on-demand Gemini re-summarisation |
 | 3 | Keyword Analysis | Keyword velocity analytics, word clouds |
 | 4 | Sources | RSS feeds and web sources with article counts |
-| 5 | Memory Wiki | **🔮 Ask Sage** chat, 📖 Memory Timeline, ⚖️ Compare Runs |
+| 5 | Memory Wiki | 📖 Memory Timeline (run cards, coverage, 🗓️ monthly rollups), ⚖️ Compare Runs |
 | 6 | Trend Analytics | Cross-run thematic momentum and theme drilldown |
 | 7 | Quality Evaluation | 7 automated run metrics + chat-time Sage faithfulness, with in-app remediation |
 | 8 | Feedback & Roadmap | Feature requests, bug reports, public roadmap |
-| 9 | Eval Sets | Browsable registry of git-tracked eval question sets (`eval_sets/*.json`) with latest run scores |
-| 10 | Dev Blog | Searchable rendering of the `BLOG.md` engineering journal |
+| 9 | Eval Sets | Browsable registry of git-tracked eval question sets (`eval_sets/*.json`) with latest run scores + gate verdicts |
+| 10 | Dev Blog | Searchable, label-filterable rendering of the `BLOG.md` engineering journal |
+| 11 | **Sage** 🔮 | The conversational research analyst: persistent conversations, research scope, **🔬 deep-research toggle** (Scout → Fact-Checker → Analyst), pipeline-detail expander |
 
 ## 🎯 The 8 Strategic Themes
 
@@ -174,12 +175,13 @@ not pytest tests.
 | [CLAUDE.md](CLAUDE.md) | Always-loaded agent rules: testing directive, configuration gotchas, documentation routing table |
 | [Architecture](docs/ARCHITECTURE.md) | Classification modes, 4-pass waterfall, system diagrams, gateway internals, routing policies, summarizer pipeline, quota, memory, caching |
 | [Quality Evaluation](docs/QUALITY_EVALUATION.md) | Judge metrics table (7 run metrics + chat-time Sage faithfulness), page-7 execution model (checkpointing, judge model selector), in-app + auto remediation |
-| [Pages](docs/PAGES.md) | Per-page reference for all 10 pages, app.py, Sage agent internals |
+| [Sage](docs/SAGE.md) | **The focused Sage & Memory Wiki reference**: page map, fast path, deep-research pipeline stages + degradation, tracing, conversations, knobs, eval gates, extension guide |
+| [Pages](docs/PAGES.md) | Per-page reference for all 11 pages and app.py |
 | [Configuration](docs/CONFIGURATION.md) | Secrets/env resolution, settings constants, custom_settings/custom_keywords, gateway tunables |
 | [Supabase](docs/SUPABASE.md) | Schema, migrations, RLS, app_settings KV store, test isolation |
 | [Embedding Providers](docs/EMBEDDING_PROVIDERS.md) | Live Cloudflare Workers AI pipeline, provider options (Gemini code default, Jina, self-deployed Render), adapter/re-embed runbook, closed metrics-watch results |
 | [Future.md](Future.md) | Standing Sage RAG roadmap: hybrid retrieval, temporal awareness, hierarchical memory, multi-agent synthesis, improvement loop |
-| [Roadmap History](docs/ROADMAP_HISTORY.md) | Implementation notes for every completed phase (0–4.6) |
+| [Roadmap History](docs/ROADMAP_HISTORY.md) | Implementation notes for every completed phase (0–7) |
 | [BLOG.md](BLOG.md) | Engineering lessons learned, dated entries grouped by 2-week blocks |
 
 ## 📈 Performance & Monitoring

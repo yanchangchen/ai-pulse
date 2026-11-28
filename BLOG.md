@@ -4,6 +4,118 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 
 ---
 
+## 2026-11-28 — Agentic Sage: how the deep-research pipeline thinks
+Labels: explainer, sage, gateway
+
+**Who this is for**: you've heard "agentic AI" and want to see what it actually means in a working system — not a chatbot that calls tools, but a small team of specialised LLM calls that plan, check each other's work, and leave an audit trail. This post walks through Sage's deep-research mode step by step. (Companion pieces: "How Sage's data works: a visual tour for newcomers" for the archive behind it, and the Phase 7 journal entry for the engineering war story — both below, filter by the `explainer` / `sage` labels.)
+
+### What "agentic" means here
+
+A normal LLM feature is one call: prompt in, text out. An **agentic** system decomposes the work into stages, gives each stage a narrow job, lets stages use tools (like search), and — crucially — has one stage *check another's output* before it reaches you. Sage's deep mode is exactly that, with three roles:
+
+```
+   ┌─────────────────────────────────────────────────────────────┐
+   │                    ONE QUESTION                             │
+   │   "How did AI governance shift between May and October?"    │
+   └──────────────────────────┬──────────────────────────────────┘
+                              ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │  🔭 SCOUT — the planner                                      │
+   │  Reads the question + archive scope, writes 2-3 focused      │
+   │  search queries (JSON). Doesn't answer anything.             │
+   │     "EU AI Act enforcement May-Oct 2026"                     │
+   │     "US state AI legislation summer 2026"                    │
+   │     "export controls chips 2026 timeline"                    │
+   └──────────────────────────┬───────────────────────────────────┘
+                              ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │  🔍 RETRIEVAL — the tool (not an LLM)                        │
+   │  Hybrid search (words + meaning) per sub-query; results      │
+   │  AUGMENT the already-validated evidence — never replace it.  │
+   └──────────────────────────┬───────────────────────────────────┘
+                              ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │  ✍️ ANALYST — the writer                                     │
+   │  Sage's persona + the assembled context → a full draft:      │
+   │  Direct Answer → cited Evidence → "My read on this".         │
+   └──────────────────────────┬───────────────────────────────────┘
+                              ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │  ⚖️ FACT-CHECKER — the reviewer                              │
+   │  Reads the draft AGAINST the exact context. Every statement  │
+   │  must be explicitly supported — exaggeration and added       │
+   │  framing count as unsupported. Returns a JSON list of        │
+   │  flagged claims (empty = clean).                             │
+   └──────────────┬───────────────────────────┬───────────────────┘
+                  │ clean                     │ claims flagged
+                  ▼                           ▼
+            publish draft        ┌────────────────────────────────┐
+                                 │  ✍️ ANALYST revision (ONE try) │
+                                 │  Drop flagged statements unless│
+                                 │  explicitly supported. Never   │
+                                 │  rephrase them into new claims.│
+                                 └───────────────┬────────────────┘
+                                                 ▼
+                                           publish final
+```
+
+Notice what each role is *not* allowed to do: the Scout never answers, the Fact-Checker never rewrites, the Analyst never searches. Narrow jobs are what make the pipeline debuggable — when something goes wrong, you know which stage to blame.
+
+### A worked example
+
+Question: *"What major AI governance shifts occurred since May 2026?"*
+
+1. **Scout** emits three sub-queries covering legislation, export controls, and international policy — facets one keyword search would blur together.
+2. **Retrieval** runs each through the hybrid engine (exact-word search + meaning-vector search, fused by rank). The hits *append* to the evidence the fast path already validated.
+3. **Analyst** drafts a chronological account citing `[Governance, Safety & Policy · Month 2026-05]` rollups and dated articles.
+4. **Fact-Checker** flags one sentence: *"the U.S. government's volatile use of export controls as diplomatic leverage"* — the sources mention export controls, but "volatile diplomatic leverage" is the writer's framing, not the archive's words.
+5. **Revision** drops that sentence entirely (it cannot be cited), keeps everything else, and publishes.
+
+You see the whole story in the UI: the 🔬 caption ("3 sub-queries · fact-check 1 claim flagged · revised · 41s"), and a Pipeline-detail expander with the sub-queries, per-stage latencies, and the flagged claim itself.
+
+### Every reply leaves one audit trail
+
+Agentic systems are hard to debug *unless you instrument them first* — that was the roadmap's explicit gate before this phase was allowed to exist. Each deep reply produces **one trace** in Langfuse:
+
+```
+ sage.pipeline                        ← the whole reply, one trace id
+ ├─ gateway.sage_scout                ← planner call (model, tokens, latency)
+ ├─ sage.retrieval  "EU AI Act…"      ← one span per sub-query
+ │   └─ gateway.embedding             ← the meaning-vector lookup
+ ├─ sage.retrieval  "US state AI…"
+ │   └─ gateway.embedding
+ ├─ gateway.sage_analyst              ← the draft
+ ├─ gateway.sage_factcheck            ← the review
+ └─ gateway.sage_analyst              ← the revision (only if flagged)
+```
+
+Every call also lands in the durable `llm_calls` table sharing one correlation id — so cost, latency, and model choice per stage are queryable in SQL, not just visible in a UI. If a reply looks wrong, you can open its trace and see exactly what the Scout asked, what retrieval returned, what the draft said, and what the checker flagged.
+
+### Why the checker matters: the gate caught the pipeline lying
+
+The first evaluation run scored deep mode **0.863** against the fast path's 0.950 — *worse*. Two causes, both instructive:
+
+- The pipeline originally **replaced** the fast path's evidence with sub-query hits. New articles tempted the Analyst into embellished narratives (one answer scored 0.50). Fix: validated evidence stays first; scout finds only append. **Augment grounding, never replace it.**
+- The revision instruction said "cite or drop". The model happily *rephrased* flagged claims into fresh unsupported assertions. Fix: the instruction now says **drop entirely unless explicitly supported**, and the checker treats exaggeration/generalisation as unsupported. **A revision rule must say "drop", not "fix".**
+
+After the fixes, the controlled gate passed: deep **0.950** vs fast 0.900 on the same 8 macro questions, same day — better truthfulness, 90% month coverage, ~44s mean latency. The lesson generalises: *every stage that transforms grounding is a new hallucination surface, and an eval gate is where those surfaces get audited.*
+
+### When to use which mode
+
+| | Fast (default) | 🔬 Deep research |
+|---|---|---|
+| Shape | one retrieval pass + one call | Scout → retrieval ×N → Analyst → Checker → ≤1 revision |
+| Latency | ~10–20s | ~30–50s |
+| LLM calls | 1 | 3–5 |
+| Best for | "what happened last week?", quick facts | multi-month arcs, comparisons, anything you'll act on |
+| Grounding | tier-aware context + hybrid evidence | same, plus sub-query evidence and a pre-publication check |
+
+Both modes are graded by the same post-publication faithfulness judge, and both cite only real links from the archive. Deep mode is a toggle on the Sage page — off by default, because most questions don't need a committee.
+
+*The agentic bet in one sentence: decompose the work, narrow each role, check before publishing, and trace everything — then let an eval gate tell you whether the committee actually beats the solo act.*
+
+---
+
 ## 2026-11-28 — Phase 7: Sage grows a pipeline — Scout, Fact-Checker, Analyst
 Labels: sage, gateway, evals
 
