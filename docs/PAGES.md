@@ -3,6 +3,14 @@
 All pages share `core/shared_sidebar.py` (nav + background-refresh status) and
 `core/design_system.py` (adaptive CSS tokens, `sanitize_summary_html()`).
 
+The sidebar nav is **grouped** (Daily intelligence / Sage & memory / Quality &
+evidence / Project) with caption separators; the Memory Wiki link is labeled
+"Memory Wiki · Ask Sage" to surface the conversational entry point. Each page
+calls `render_sidebar_nav(current=<nav key>)` so its own link renders bold
+with a ▸ active marker (keys live in `_NAV_GROUPS`). The summarisation-engine
+selectbox sits in a collapsed "⚙️ Engine Settings" expander; the mode still
+persists in `st.session_state["summariser_mode"]`.
+
 ## `app.py` — entry point
 
 Entry point, ingestion state machine, Thematic Pulse dashboard.

@@ -28,7 +28,7 @@ apply_design_system()
 def main() -> None:
     """Main trend analytics page."""
     check_and_show_bg_status()
-    render_sidebar_nav()
+    render_sidebar_nav(current="trends")
 
     st.title("📈 Trend Analytics")
     st.markdown("### Longitudinal Thematic Momentum & Historical Trajectories")

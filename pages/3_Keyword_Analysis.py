@@ -124,7 +124,7 @@ def main() -> None:
     themed_articles = get_session_data()
 
     check_and_show_bg_status()
-    render_sidebar_nav()
+    render_sidebar_nav(current="keywords")
 
     supabase = get_supabase_manager()
     history = load_full_history()

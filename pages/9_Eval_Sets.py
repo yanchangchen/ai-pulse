@@ -88,7 +88,7 @@ def _render_question(idx: int, q: dict, result: dict) -> None:
 def main() -> None:
     """Main eval sets page."""
     check_and_show_bg_status()
-    render_sidebar_nav()
+    render_sidebar_nav(current="eval_sets")
 
     st.title("🧪 Eval Sets")
     st.markdown("### Evaluation question sets & latest recorded scores")

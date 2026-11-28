@@ -39,7 +39,7 @@ def _load_entries(mtime: float):
 def main() -> None:
     """Main dev blog page."""
     check_and_show_bg_status()
-    render_sidebar_nav()
+    render_sidebar_nav(current="blog")
 
     st.title("📓 Dev Blog")
     st.markdown("### The AI Pulse development journal — search what we've built together")

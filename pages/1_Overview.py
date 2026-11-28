@@ -40,7 +40,7 @@ def main() -> None:
     check_and_show_bg_status()
 
     # Sidebar Navigation
-    render_sidebar_nav()
+    render_sidebar_nav(current="overview")
 
     # Header
     st.title("📋 Theme Overview")

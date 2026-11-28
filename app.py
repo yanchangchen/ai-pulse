@@ -102,7 +102,7 @@ def main() -> None:
     init_session_state()
 
     # Shared sidebar navigation & background refresher status
-    render_sidebar_nav()
+    render_sidebar_nav(current="home")
 
     # 1. Alert if background update finished while user was interacting
     from core.bg_refresher import check_and_show_bg_status

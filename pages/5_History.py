@@ -36,7 +36,7 @@ def main() -> None:
     st.divider()
 
     # Shared sidebar navigation
-    render_sidebar_nav()
+    render_sidebar_nav(current="memory")
 
     # Initialize Supabase
     supabase = get_supabase_manager()

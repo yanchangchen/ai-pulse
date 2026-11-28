@@ -37,7 +37,7 @@ def format_date(iso_str: str) -> str:
 def main() -> None:
     """Main Feedback & Roadmap page."""
     check_and_show_bg_status()
-    render_sidebar_nav()
+    render_sidebar_nav(current="feedback")
 
     st.title("💡 Feedback & Feature Roadmap")
     st.markdown("### Share feature ideas, report bugs, and track upcoming improvements")
