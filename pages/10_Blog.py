@@ -12,7 +12,7 @@ import streamlit as st
 from core.design_system import apply_design_system
 from core.shared_sidebar import render_sidebar_nav
 from core.bg_refresher import check_and_show_bg_status
-from core.blog_index import split_blog_entries, search_entries
+from core.blog_index import collect_labels, filter_entries, split_blog_entries
 
 # Page configuration
 st.set_page_config(
@@ -56,10 +56,20 @@ def main() -> None:
         key="blog_search_query",
         placeholder="e.g. embeddings, gateway, Sage, quota — all terms must match",
     )
-    matches = search_entries(entries, query)
+    selected_labels = st.multiselect(
+        "🏷️ Filter by label (matches any selected):",
+        collect_labels(entries),
+        key="blog_label_filter",
+    )
+    matches = filter_entries(entries, query, selected_labels)
 
-    if query.strip():
-        st.caption(f"**{len(matches)}** of **{len(entries)}** entries match “{query.strip()}”")
+    if query.strip() or selected_labels:
+        criteria = []
+        if query.strip():
+            criteria.append(f"“{query.strip()}”")
+        if selected_labels:
+            criteria.append("labels: " + ", ".join(selected_labels))
+        st.caption(f"**{len(matches)}** of **{len(entries)}** entries match {' + '.join(criteria)}")
     else:
         st.caption(f"**{len(entries)}** entries · newest first")
 
@@ -72,6 +82,8 @@ def main() -> None:
         if entry["date_label"]:
             heading = f"{entry['date_label']} — {heading}"
         st.markdown(f"## {heading}")
+        if entry.get("labels"):
+            st.caption("🏷️ " + " · ".join(entry["labels"]))
         st.markdown(entry["body"])
         st.divider()
 

@@ -1,7 +1,12 @@
 """Tests for BLOG.md parsing and search (core/blog_index.py)."""
 from pathlib import Path
 
-from core.blog_index import split_blog_entries, search_entries
+from core.blog_index import (
+    collect_labels,
+    filter_entries,
+    search_entries,
+    split_blog_entries,
+)
 
 _SAMPLE = """# AI Pulse — Development Blog
 
@@ -68,3 +73,80 @@ def test_real_blog_parses():
     # File order is newest first: leading dates never increase.
     leading = [e["date_label"][:10] for e in entries]
     assert leading == sorted(leading, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Labels (filter metadata)
+# ---------------------------------------------------------------------------
+
+_LABELED_SAMPLE = """# Blog
+
+## 2026-11-28 — Visual tour
+Labels: explainer, sage, retrieval
+
+The tour body.
+
+## 2026-11-27 — Fusion lesson
+Labels: sage, evals
+
+The fusion body.
+
+## 2026-03-03 — Day 1
+
+No labels here.
+"""
+
+
+def test_labels_parsed_and_stripped_from_body():
+    entries = split_blog_entries(_LABELED_SAMPLE)
+    assert entries[0]["labels"] == ["explainer", "sage", "retrieval"]
+    assert entries[0]["body"] == "The tour body."
+    assert "Labels:" not in entries[0]["body"]
+    assert entries[1]["labels"] == ["sage", "evals"]
+
+
+def test_labels_absent_and_case_insensitive():
+    entries = split_blog_entries(_LABELED_SAMPLE)
+    assert entries[2]["labels"] == []
+    assert entries[2]["body"] == "No labels here."
+    e = split_blog_entries("## T\nLABELS: Sage, EVALS\nbody")[0]
+    assert e["labels"] == ["sage", "evals"]
+    # Entries without the line stay backwards compatible.
+    assert split_blog_entries(_SAMPLE)[0]["labels"] == []
+
+
+def test_collect_labels_sorted_unique():
+    entries = split_blog_entries(_LABELED_SAMPLE)
+    assert collect_labels(entries) == ["evals", "explainer", "retrieval", "sage"]
+
+
+def test_filter_entries_labels_or_semantics():
+    entries = split_blog_entries(_LABELED_SAMPLE)
+    # ANY selected label matches.
+    assert len(filter_entries(entries, labels=["evals", "explainer"])) == 2
+    assert len(filter_entries(entries, labels=["retrieval"])) == 1
+    assert filter_entries(entries, labels=["nonexistent"]) == []
+    # Empty/None labels = no label constraint.
+    assert filter_entries(entries, labels=[]) == entries
+    assert filter_entries(entries) == entries
+
+
+def test_filter_entries_combines_search_and_labels():
+    entries = split_blog_entries(_LABELED_SAMPLE)
+    # Search AND labels intersect: "body" appears in both labeled entries,
+    # but only the fusion one carries "evals".
+    assert len(filter_entries(entries, "body", ["evals"])) == 1
+    assert filter_entries(entries, "tour", ["evals"]) == []
+    assert len(filter_entries(entries, "tour", ["explainer"])) == 1
+
+
+def test_real_blog_all_entries_labeled():
+    blog = Path(__file__).resolve().parent.parent / "BLOG.md"
+    entries = split_blog_entries(blog.read_text(encoding="utf-8"))
+    assert all(e["labels"] for e in entries)
+    taxonomy = {
+        "explainer", "sage", "retrieval", "pipeline", "gateway",
+        "evals", "supabase", "reliability", "ui",
+    }
+    assert set(collect_labels(entries)) <= taxonomy
+    assert all("Labels:" not in e["body"] for e in entries)

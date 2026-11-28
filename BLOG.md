@@ -5,6 +5,7 @@ Lessons learned building a multi-model AI news intelligence dashboard — one th
 ---
 
 ## 2026-11-28 — How Sage's data works: a visual tour for newcomers
+Labels: explainer, sage, retrieval, pipeline
 
 **Who this is for**: you're new to AI engineering or data engineering, and you want to understand *how an AI assistant can answer questions about months of news without having read it all*. No prior knowledge assumed — every term is explained where it first appears. This is the long, diagram-heavy companion to the brief in the README.
 
@@ -210,6 +211,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-28 — Phase 5: fusion is mechanical, decay is an opinion
+Labels: sage, retrieval, evals
 
 **Problem**: Sage found articles by keyword overlap; the dense index existed but served only the eval gate. Phase 5 wires both legs together — and the interesting engineering turned out to be neither the vectors nor the fusion, but how strongly *freshness* should vote.
 
@@ -230,6 +232,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-27 — The run that landed 8 hours in the future
+Labels: reliability, supabase, pipeline
 
 **Problem**: after a headless demo run, the Memory Wiki showed the newest run as *tomorrow morning* (28/11 07:27 instead of 27/11 23:27), and the sidebar reported the cache as "-7h ago".
 
@@ -248,6 +251,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-27 — Phase 4.6: ranking is a policy, not a sort
+Labels: pipeline, evals
 
 **Problem**: after 4.5 every overflow article eventually gets fed — but *which* articles fill the 50 slots was still a pure keyword-relevance sort with an aging boost. A syndicated reprint could occupy a slot twice, one prolific source could crowd out a quieter one, and a 13-day-old story could outrank this morning's at equal relevance.
 
@@ -268,6 +272,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-27 — The 139-minute "success": why wait_for is not a timeout
+Labels: reliability, gateway
 
 **Problem**: During the 4.4/4.5 gate experiments, two Gemini fallbacks logged `success=true` with latencies of 702s and 8329s — a 2.3-hour "successful" call. The provider already wrapped every SDK call in `asyncio.wait_for(..., 30s)`. The timeout existed; it just didn't bind.
 
@@ -286,6 +291,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-27 — Phase 4.5: map-reduce, or how to compress without forgetting
+Labels: pipeline, evals
 
 **Problem**: 4.4's audited gate left two honest residuals: pools over the ceiling wait (capacity gap), and a 50-article brief names only ~61% of what it's fed (naming gap). One call cannot compress 85 stories into 250 words without forgetting most of them. The roadmap's answer: never ask it to.
 
@@ -308,6 +314,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-27 — Special entry: the day we audited our own instruments
+Labels: evals, reliability
 
 *A retrospective, not a phase log. One session closed the Cloudflare watch, resurrected a lost eval set, shipped two UI pages and Phases 4.3–4.4 — and caught three of our own instruments lying before any of it shipped.*
 
@@ -326,6 +333,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-27 — Phase 4.4: raising the cap, and the metric that lied about it
+Labels: pipeline, evals
 
 **Problem**: The summariser hard-capped each theme at 12 articles while the Qwen prompt budget sat at 1.8M chars — 12 blocks use ~0.3% of it. The cap, not the context window, was the sole capacity constraint, and bursty themes accumulated backlog faster than 12/run could drain.
 
@@ -348,6 +356,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-27 — Phase 4.3: the backlog now drains or gets a death certificate
+Labels: pipeline, supabase
 
 **Problem**: The summariser feeds each theme only unprocessed articles, ranked by keyword relevance and hard-capped at 12. An article that loses the ranking re-competes next run while inside the 14-day fetch window — and otherwise ages out *silently*. Nothing counted how long an article had been waiting, and nothing recorded the ones that never made it. Coverage was observable (4.1) but not fair.
 
@@ -370,6 +379,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-27 — Closing the Cloudflare watch, resurrecting the lost eval set, and giving evals a UI
+Labels: retrieval, evals, ui
 
 **Problem**: The Phase 3.6 14-day metrics watch on the Cloudflare embedding migration had matured, but re-running its retrieval-quality gate was impossible: the hand-labelled question set (`data/eval_retrieval_questions.json`, the 8 questions behind Recall@10 = 0.833) lived in gitignored `data/` and was gone — from disk, git history, and scratch. The same set gates Phase 5's old-vs-new retrieval comparison, so losing it blocked two phases, not one.
 
@@ -394,6 +404,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-11-10 to 2026-11-11 — Ollama goes paid, and Qwen Cloud takes the generation stage
+Labels: gateway
 
 **Problem**: Ollama Cloud stopped being free, and it was still the primary engine for `summarise`, `synthesise`, `project`, and Sage chat. Keeping it as a dead fallback would leave the routing table lying about capacity; removing it without a replacement would collapse the generation path onto Gemini alone, losing provider diversity and putting cost and availability in one vendor's hands.
 
@@ -422,6 +433,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-10-26 to 2026-10-27 — Phase 4.1–4.2: Making article coverage observable, and fixing the extractive ledger lie
+Labels: pipeline, evals
 
 **Problem**: The summariser processes only a ranked subset of classified articles per theme (capped at `MAX_ARTICLES_PER_SUMMARY = 12`), but until now, the skipped articles — the ones classified but never fed to the LLM — were invisible. No count, no list, no signal. They quietly re-competed each run inside their 14-day fetch window and then aged out. Worse, on extractive fallback (gateway failure or user-selected Non-LLM mode), the non-LLM path stamped *all* input articles as "processed" despite only surfacing ~3–5 by name. The backlog silently drained, and the LLM would never revisit those articles even after recovery — a ledger asymmetry that made any future coverage metric deceptive by construction.
 
@@ -450,6 +462,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-10-22 to 2026-10-26 — Phase 3: Dense vector embeddings on articles, and the pgvector gate
+Labels: retrieval, supabase, evals
 
 **Problem**: FTS on Postgres (`match_articles` via `tsvector`) solved exact keyword search, but it had a semantic blind spot. A user asking Sage about "reasoning token overhead" or "test-time compute trade-offs" would get zero hits if the source articles used different phrasing (e.g., "thinking budget" or "inference-time scaling"). Sage needed dense semantic retrieval to bridge conceptual synonyms, but on Supabase's Free Tier (500 MB DB, micro compute RAM), we couldn't blindly chunk raw web pages or blow RAM on unconstrained index graphs.
 
@@ -476,6 +489,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-10-08 to 2026-10-12 — Phase 2.3: keyword matching moves into Postgres, and Sage learns to answer first
+Labels: sage, retrieval, supabase
 
 **Problem**: Two gaps. Retrieval: Sage's article evidence drew its candidate pool from the newest 300 rows — anything relevant-but-older was invisible, and the Python scorer wasn't word-aware (no stemming, no ranking, `LIKE`-style substring thinking). Answering: the persona forced every reply to open as a chronological walk, so a direct factual question ("what did Anthropic ship in September?") buried its answer under a timeline.
 
@@ -497,6 +511,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-10-01 to 2026-10-07 — RAG foundations: Sage joins the gateway, gets traced, and reads articles
+Labels: sage, gateway, retrieval
 
 **Problem**: `Future.md` lays out the path from prompt-stuffed Sage to a time-aware hierarchical RAG system, but three foundations were missing. Sage still called the LLM client directly, bypassing the gateway's fallback chain, health tracking, and provenance. Nothing anywhere recorded token usage — provider responses carried it and we threw it away. And Sage's only grounding was theme summaries, so a question like "what did that Mistral release actually say" had no article-level evidence to draw on.
 
@@ -526,6 +541,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-09-17 to 2026-09-30 — Sage grows a real memory
+Labels: sage, supabase
 
 **Problem**: Sage, the AI analyst persona, was confidently answering questions about "the latest runs" — but was silently reading the *oldest* data in the window. A user asking about September activity got July answers, with no indication anything was wrong. On top of that, long conversations had no persistence: closing the tab meant losing the thread entirely.
 
@@ -547,6 +563,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-09-11 to 2026-09-16 — Silent fallbacks and the cost of failing quietly
+Labels: gateway, reliability
 
 **Problem**: Three production issues in one week, all sharing the same root pattern — the system was failing *quietly*. Fallbacks did their job so well that nobody knew the primary path was gone.
 
@@ -569,6 +586,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-09-10 — The day classification went fully deterministic
+Labels: pipeline
 
 **Problem**: We had a 4-pass waterfall classifier (Keywords → TF-IDF → LLM → Heuristic). The LLM pass felt like insurance — but insurance costs tokens, latency, and failure modes.
 
@@ -584,6 +602,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-09-07 to 2026-09-10 — Gemini reliability and why routing matters
+Labels: gateway, reliability
 
 **Problem**: Gemini was our primary model for summarisation. In production it kept returning "unable to summarise" errors. Users had to manually trigger regeneration.
 
@@ -599,6 +618,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-09-02 — Modular AI gateway: one interface, five models
+Labels: gateway
 
 **What we built**: A task-typed routing layer that maps `categorise / extract / summarise / synthesise / project` to specific models with fallback chains, health tracking, context-fit checks, exponential-backoff retries, JSON-schema validation, and provenance tracking on every result.
 
@@ -609,6 +629,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-08-16 to 2026-08-26 — Sage, provenance, and the quota probe
+Labels: sage, gateway, reliability
 
 **Sage agent**: Built a conversational agent grounded in the Memory Wiki archive. Key insight — the LLM needs a time-windowed, character-budgeted context string, not raw data. We implemented relevance scoring (token overlap with the user's question) and chronological first-appearance annotations so Sage can say "I first saw this trend on [date]."
 
@@ -621,6 +642,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-08-06 to 2026-08-12 — Non-LLM summarisation and quality evaluation
+Labels: pipeline, evals
 
 **The non-LLM breakthrough**: We built a proper extractive summariser (LexRank graph centrality + Luhn keyword-cluster scoring + n-gram keyphrase extraction) that produces 5-section intelligence briefs. It runs in <50ms, costs zero tokens, and is 100% faithful to source articles.
 
@@ -633,6 +655,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-07-06 to 2026-08-06 — The UX redesign and page rationalisation
+Labels: ui, sage
 
 **What changed**: Comprehensive UX redesign with central design tokens, adaptive light/dark CSS, multi-theme CSV export, and renumbered sequential pages.
 
@@ -643,6 +666,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-06-03 to 2026-07-06 — Supabase, deduplication, and the first quality evaluation
+Labels: supabase, evals, pipeline
 
 **Supabase integration**: Added cloud persistence with 4 tables (trend_runs, theme_summaries, articles, sync_metadata). Key decision: use `(content_hash, theme_name)` UPSERT constraints so the same article isn't duplicated across runs.
 
@@ -653,6 +677,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-05-16 to 2026-06-03 — Memory wiki and the birth of longitudinal analysis
+Labels: sage, supabase, pipeline
 
 **The big idea**: What if the system remembers what happened last time? Every run's summaries are appended to `memory.md` (human-readable wiki) and `history.json` (machine-readable). The next run injects the last 2 runs' summaries into the LLM prompt so the model reports on *evolutions*, not static snapshots.
 
@@ -663,6 +688,7 @@ If you want the implementation depth behind each box: [docs/ARCHITECTURE.md](doc
 ---
 
 ## 2026-03-03 — Day 1: AI Pulse begins
+Labels: pipeline, reliability, gateway
 
 **What we built**: A Streamlit dashboard that fetches AI news from RSS feeds, classifies articles into themes, and produces LLM summaries.
 

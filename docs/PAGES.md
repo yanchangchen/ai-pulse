@@ -163,3 +163,10 @@ Searchable rendering of `BLOG.md` — the development journal, newest first.
 provides case-insensitive AND search across entry titles + bodies (substring terms,
 so partial words match). Results render inline (no expanders) so matches are
 immediately readable; the parse is cached with a 5-minute TTL keyed on file mtime.
+
+**Labels**: each entry carries a `Labels: a, b, c` line immediately after its
+heading (parsed into `entry["labels"]`, stripped from the rendered body, shown
+as a 🏷️ caption). A multiselect filters by label with **OR** semantics (any
+selected label matches), intersected with the search's AND terms
+(`filter_entries`). Taxonomy: `explainer, sage, retrieval, pipeline, gateway,
+evals, supabase, reliability, ui`. Entries without the line degrade to no labels.
